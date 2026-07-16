@@ -1,4 +1,4 @@
-unit Pipes.Threading;
+﻿unit Pipes.Threading;
 
 {$I pipes.inc}
 
