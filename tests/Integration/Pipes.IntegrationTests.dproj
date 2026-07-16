@@ -73,7 +73,11 @@
         <DCCReference Include="..\..\src\Pipes.Framing.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Windows.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Base.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Server.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Client.pas"/>
         <DCCReference Include="Pipes.TransportTests.pas"/>
+        <DCCReference Include="Pipes.EndToEndTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

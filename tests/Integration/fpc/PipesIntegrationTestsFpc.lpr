@@ -17,7 +17,8 @@ uses
   Interfaces, Forms, GuiTestRunner,
   {$ENDIF}
   Classes, consoletestrunner, testregistry,
-  Pipes.TransportTests;
+  Pipes.TransportTests,
+  Pipes.EndToEndTests;
 
 var
   ConsoleApp: TTestRunner;
