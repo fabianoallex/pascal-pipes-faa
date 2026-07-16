@@ -34,6 +34,7 @@ type
     FConnectedCount: Integer;
     FSrvDiscCount: Integer;
     FCliDiscCount: Integer;
+    FCliConnCount: Integer;
     // Handlers ('of object'):
     procedure OnSrvMessage(Sender: TObject; AConnId: TPipeConnectionId;
       const AData: TBytes);
@@ -42,7 +43,14 @@ type
     procedure OnSrvClientConnected(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnSrvClientDisconnected(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnCliDisconnected(Sender: TObject; AConnId: TPipeConnectionId);
+    procedure OnCliConnected(Sender: TObject; AConnId: TPipeConnectionId);
+    procedure OnSrvRequestEco(Sender: TObject; AConnId: TPipeConnectionId;
+      const ARequest: TBytes; out AReply: TBytes);
+    procedure OnSrvRequestLento(Sender: TObject; AConnId: TPipeConnectionId;
+      const ARequest: TBytes; out AReply: TBytes);
     procedure DoSendToInvalid;
+    procedure DoRequestNoHandler;
+    procedure DoRequestShortTimeout;
     // Sobe servidor+cliente conectados com os handlers acima.
     procedure OpenPair(ADispatchMode: TPipeDispatchMode = pdmPool);
     function WaitCount(var ACounter: Integer; AExpected: Integer;
@@ -59,6 +67,12 @@ type
     procedure DisconnectClientDoServidorDerrubaCliente;
     procedure StopComTrafego_TerminaRapido;
     procedure SendParaConexaoInexistente_Levanta;
+    procedure Broadcast_AtingeTodosOsClientes;
+    procedure RequestReply_EcoaComCorrelacao;
+    procedure Request_SemHandler_LevantaEPipeError;
+    procedure Request_Timeout_LevantaEPipeTimeout;
+    procedure AutoReconnect_ReconectaAposRestartDoServidor;
+    procedure MainThread_EventosViaCheckSynchronize;
   end;
 
 implementation
@@ -157,9 +171,38 @@ begin
   PipeAtomicInc(FCliDiscCount);
 end;
 
+procedure TPipeEndToEndTests.OnCliConnected(Sender: TObject;
+  AConnId: TPipeConnectionId);
+begin
+  PipeAtomicInc(FCliConnCount);
+end;
+
+procedure TPipeEndToEndTests.OnSrvRequestEco(Sender: TObject;
+  AConnId: TPipeConnectionId; const ARequest: TBytes; out AReply: TBytes);
+begin
+  AReply := PipeUtf8Encode('eco:' + PipeUtf8Decode(ARequest));
+end;
+
+procedure TPipeEndToEndTests.OnSrvRequestLento(Sender: TObject;
+  AConnId: TPipeConnectionId; const ARequest: TBytes; out AReply: TBytes);
+begin
+  Sleep(800); // maior que o timeout do teste (200 ms)
+  AReply := PipeUtf8Encode('tarde demais');
+end;
+
 procedure TPipeEndToEndTests.DoSendToInvalid;
 begin
   FServer.SendBytes(999999, PipeUtf8Encode('x'));
+end;
+
+procedure TPipeEndToEndTests.DoRequestNoHandler;
+begin
+  FClient.Request(PipeUtf8Encode('x'), 3000);
+end;
+
+procedure TPipeEndToEndTests.DoRequestShortTimeout;
+begin
+  FClient.Request(PipeUtf8Encode('x'), 200);
 end;
 
 procedure TPipeEndToEndTests.OpenPair(ADispatchMode: TPipeDispatchMode);
@@ -177,6 +220,7 @@ begin
   FClient := TNamedPipeClient.Create(LName);
   FClient.OnMessage := OnCliMessage;
   FClient.OnDisconnected := OnCliDisconnected;
+  FClient.OnConnected := OnCliConnected;
   FClient.Connect(3000);
   AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
 end;
@@ -317,6 +361,138 @@ procedure TPipeEndToEndTests.SendParaConexaoInexistente_Levanta;
 begin
   OpenPair;
   AssertException(EPipeError, DoSendToInvalid);
+end;
+
+procedure TPipeEndToEndTests.Broadcast_AtingeTodosOsClientes;
+var
+  LC2, LC3: TNamedPipeClient;
+  I: Integer;
+begin
+  OpenPair;
+  LC2 := TNamedPipeClient.Create(FServer.PipeName);
+  LC3 := TNamedPipeClient.Create(FServer.PipeName);
+  try
+    LC2.OnMessage := OnCliMessage;
+    LC3.OnMessage := OnCliMessage;
+    LC2.Connect(3000);
+    LC3.Connect(3000);
+    AssertTrue('3 conexoes esperadas', WaitCount(FConnectedCount, 3, 3000));
+    FServer.BroadcastText('aviso geral');
+    AssertTrue('broadcast nao atingiu os 3 clientes', WaitCount(FCliMsgCount, 3, 5000));
+    FLock.Enter;
+    try
+      AssertEquals(3, FClientTexts.Count);
+      for I := 0 to 2 do
+        AssertEquals('aviso geral', FClientTexts[I]);
+    finally
+      FLock.Leave;
+    end;
+  finally
+    LC2.Free;
+    LC3.Free;
+  end;
+end;
+
+procedure TPipeEndToEndTests.RequestReply_EcoaComCorrelacao;
+begin
+  OpenPair;
+  FServer.OnRequest := OnSrvRequestEco;
+  AssertEquals('eco:abc', FClient.RequestText('abc', 3000));
+  AssertEquals('eco:xyz', FClient.RequestText('xyz', 3000));
+end;
+
+procedure TPipeEndToEndTests.Request_SemHandler_LevantaEPipeError;
+var
+  T0: UInt64;
+begin
+  OpenPair; // sem OnRequest atribuido
+  T0 := PipeTickMs;
+  AssertException(EPipeError, DoRequestNoHandler);
+  // Voltou pelo reply de erro do servidor, nao pelo timeout de 3000 ms.
+  AssertTrue('devia falhar rapido (reply de erro), nao por timeout',
+    PipeTickMs - T0 < 2000);
+end;
+
+procedure TPipeEndToEndTests.Request_Timeout_LevantaEPipeTimeout;
+var
+  T0: UInt64;
+begin
+  OpenPair;
+  FServer.OnRequest := OnSrvRequestLento; // dorme 800 ms; timeout = 200 ms
+  T0 := PipeTickMs;
+  AssertException(EPipeTimeout, DoRequestShortTimeout);
+  AssertTrue('timeout retornou cedo demais', PipeTickMs - T0 >= 180);
+  AssertTrue('timeout demorou demais', PipeTickMs - T0 < 3000);
+end;
+
+procedure TPipeEndToEndTests.AutoReconnect_ReconectaAposRestartDoServidor;
+var
+  LName: string;
+begin
+  LName := UniquePipeName;
+  FServer := TNamedPipeServer.Create(LName);
+  FServer.OnMessage := OnSrvMessage;
+  FServer.Listen;
+
+  FClient := TNamedPipeClient.Create(LName);
+  FClient.OnConnected := OnCliConnected;
+  FClient.OnDisconnected := OnCliDisconnected;
+  FClient.AutoReconnect := True;
+  FClient.ReconnectDelayMs := 300;
+  FClient.Connect(3000);
+  AssertTrue('primeira conexao nao confirmou', WaitCount(FCliConnCount, 1, 3000));
+
+  FServer.Stop; // derruba o cliente
+  AssertTrue('queda nao notificada', WaitCount(FCliDiscCount, 1, 5000));
+
+  FServer.Listen; // "restart" do servidor no mesmo nome
+  AssertTrue('cliente nao reconectou', WaitCount(FCliConnCount, 2, 10000));
+
+  FClient.SendText('depois da reconexao');
+  AssertTrue('mensagem pos-reconexao nao chegou', WaitCount(FSrvMsgCount, 1, 5000));
+  FLock.Enter;
+  try
+    AssertEquals('depois da reconexao', FServerTexts[0]);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TPipeEndToEndTests.MainThread_EventosViaCheckSynchronize;
+var
+  LName: string;
+  LDeadline: UInt64;
+  I: Integer;
+begin
+  LName := UniquePipeName;
+  FServer := TNamedPipeServer.Create(LName);
+  FServer.DispatchMode := pdmMainThread;
+  FServer.OnMessage := OnSrvMessage;
+  FServer.Listen;
+
+  FClient := TNamedPipeClient.Create(LName);
+  FClient.Connect(3000);
+  FClient.SendText('via main thread');
+
+  // Console: quem drena a fila da main thread e' o CheckSynchronize (num app
+  // LCL/VCL o proprio loop de mensagens faz isso).
+  LDeadline := PipeTickMs + 5000;
+  while (PipeAtomicGet(FSrvMsgCount) < 1) and (PipeTickMs < LDeadline) do
+    CheckSynchronize(10);
+  AssertEquals(1, PipeAtomicGet(FSrvMsgCount));
+  FLock.Enter;
+  try
+    AssertEquals('via main thread', FServerTexts[0]);
+  finally
+    FLock.Leave;
+  end;
+
+  // Libera dentro do teste e drena stragglers da fila da main thread (um
+  // evento pos-destroy vira no-op pela guarda; drenar evita falso leak).
+  FreeAndNil(FClient);
+  FreeAndNil(FServer);
+  for I := 1 to 5 do
+    CheckSynchronize(10);
 end;
 
 initialization

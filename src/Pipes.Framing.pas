@@ -11,7 +11,8 @@ unit Pipes.Framing;
   Frame (header de 20 bytes, little-endian, + payload):
     offset 0  Magic    4 bytes  'NPF1' (sincronia + versao do protocolo)
     offset 4  Kind     1 byte   0=msg  1=request  2=reply  3=ping (reservado)
-    offset 5  Flags    1 byte   reservado (0)
+    offset 5  Flags    1 byte   bit 0 (PIPE_FLAG_ERROR): reply de erro — o
+                                payload e' a mensagem de erro em UTF-8
     offset 6  Reserved 2 bytes  (0)
     offset 8  CorrId   8 bytes  correlation id (request/reply; 0 em msg)
     offset 16 Length   4 bytes  tamanho do payload
@@ -32,19 +33,25 @@ uses
 
 const
   PIPE_FRAME_HEADER_SIZE = 20;
+  /// Flags bit 0: reply de erro (payload = mensagem de erro em UTF-8).
+  PIPE_FLAG_ERROR = $01;
 
 type
   TPipeFrameKind = (pfkMessage = 0, pfkRequest = 1, pfkReply = 2, pfkPing = 3);
 
   TPipeFrame = record
     Kind: TPipeFrameKind;
+    Flags: Byte;
     CorrId: UInt64;
     Payload: TBytes;
     /// Payload interpretado como texto UTF-8.
     function PayloadAsText: string;
+    function IsError: Boolean;
     class function Msg(const APayload: TBytes): TPipeFrame; static;
     class function Request(ACorrId: UInt64; const APayload: TBytes): TPipeFrame; static;
     class function Reply(ACorrId: UInt64; const APayload: TBytes): TPipeFrame; static;
+    /// Reply de erro (request-reply): PIPE_FLAG_ERROR + mensagem no payload.
+    class function ErrorReply(ACorrId: UInt64; const AMsgText: string): TPipeFrame; static;
   end;
 
 // --- Conversao string <-> UTF-8 ---------------------------------------------
@@ -161,9 +168,15 @@ begin
   Result := PipeUtf8Decode(Payload);
 end;
 
+function TPipeFrame.IsError: Boolean;
+begin
+  Result := (Flags and PIPE_FLAG_ERROR) <> 0;
+end;
+
 class function TPipeFrame.Msg(const APayload: TBytes): TPipeFrame;
 begin
   Result.Kind := pfkMessage;
+  Result.Flags := 0;
   Result.CorrId := 0;
   Result.Payload := APayload;
 end;
@@ -171,6 +184,7 @@ end;
 class function TPipeFrame.Request(ACorrId: UInt64; const APayload: TBytes): TPipeFrame;
 begin
   Result.Kind := pfkRequest;
+  Result.Flags := 0;
   Result.CorrId := ACorrId;
   Result.Payload := APayload;
 end;
@@ -178,8 +192,17 @@ end;
 class function TPipeFrame.Reply(ACorrId: UInt64; const APayload: TBytes): TPipeFrame;
 begin
   Result.Kind := pfkReply;
+  Result.Flags := 0;
   Result.CorrId := ACorrId;
   Result.Payload := APayload;
+end;
+
+class function TPipeFrame.ErrorReply(ACorrId: UInt64; const AMsgText: string): TPipeFrame;
+begin
+  Result.Kind := pfkReply;
+  Result.Flags := PIPE_FLAG_ERROR;
+  Result.CorrId := ACorrId;
+  Result.Payload := PipeUtf8Encode(AMsgText);
 end;
 
 { --- encode / read / write --- }
@@ -196,7 +219,7 @@ begin
   Result[2] := MAGIC2;
   Result[3] := MAGIC3;
   Result[4] := Ord(AFrame.Kind);
-  Result[5] := 0; // Flags
+  Result[5] := AFrame.Flags;
   Result[6] := 0; // Reserved
   Result[7] := 0;
   PutU64LE(Result, 8, AFrame.CorrId);
@@ -240,6 +263,7 @@ begin
     raise EPipeProtocol.CreateFmt('payload de %u bytes excede o maximo configurado (%u)',
       [LLen, AMaxPayload]);
   Result.Kind := TPipeFrameKind(LKind);
+  Result.Flags := LHeader[5];
   Result.CorrId := GetU64LE(LHeader, 8);
   SetLength(Result.Payload, LLen);
   if LLen > 0 then

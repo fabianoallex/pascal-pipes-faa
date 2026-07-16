@@ -18,7 +18,13 @@ unit Pipes.Base;
     referenciam (padrao DrainInFlight do pascal-amqp-faa).
   - NAO chame Stop/Disconnect/Destroy de DENTRO de um callback do proprio
     componente: o drain esperaria o proprio callback (auto-espera).
-  - pdmMainThread chega no milestone M6 (SetupDispatch rejeita por ora). }
+  - pdmMainThread: eventos vao para a main thread via TThread.Queue (LCL/VCL
+    os drenam no loop de mensagens; apps console precisam de CheckSynchronize).
+    Esses eventos NAO entram em FInFlight — drena-los a partir da main thread
+    seria auto-espera; em vez disso cada evento carrega um objeto-guarda
+    (TPipeGuard) refcounted que o destructor invalida: um evento que dispare
+    depois do Free do componente vira no-op, nunca use-after-free. Entre Stop
+    e Destroy a guarda segue valida (eventos pendentes ainda disparam). }
 
 interface
 
@@ -29,6 +35,21 @@ uses
   Pipes.Threading;
 
 type
+  { Guarda refcounted dos eventos pdmMainThread: o componente e' o dono e a
+    invalida no Destroy; cada evento enfileirado segura uma referencia e so
+    invoca o callback se a guarda ainda for valida. }
+  TPipeGuard = class
+  private
+    FRefs: Integer;
+    FValid: Integer;
+  public
+    constructor Create; // refs=1 (dono), valida
+    function IsValid: Boolean;
+    procedure Invalidate;
+    procedure AddRef;
+    procedure Release; // libera o objeto quando zera
+  end;
+
   TNamedPipeBase = class
   private
     FPipeName: string;
@@ -38,6 +59,7 @@ type
     FOnError: TPipeErrorEvent;
     FDispatchPool: TPipeThreadPool; // pool privado (pdmSerialized); nil = global
     FInFlight: Integer;             // work items despachados em execucao (atomico)
+    FGuard: TPipeGuard;             // guarda dos eventos pdmMainThread
     procedure SetPipeName(const AValue: string);
     procedure SetDispatchMode(AValue: TPipeDispatchMode);
     procedure SetMaxMessageSize(AValue: Cardinal);
@@ -76,6 +98,28 @@ type
 implementation
 
 type
+  TPipeQueuedKind = (qeMessage, qeConn, qeError);
+
+  { Evento enfileirado na MAIN THREAD (pdmMainThread) via TThread.Queue.
+    Nao conta em FInFlight (drain a partir da main thread = auto-espera);
+    a seguranca vem da guarda. Libera a si mesmo apos rodar. }
+  TPipeQueuedEvent = class
+  private
+    FGuard: TPipeGuard; // referencia propria (AddRef no create, Release no Run)
+    FOwner: TNamedPipeBase;
+    FKind: TPipeQueuedKind;
+    FMsgCb: TPipeMessageEvent;
+    FConnCb: TPipeConnectionEvent;
+    FErrCb: TPipeErrorEvent;
+    FConnId: TPipeConnectionId;
+    FData: TBytes;
+    FMsg: string;
+  public
+    constructor Create(AOwner: TNamedPipeBase; AKind: TPipeQueuedKind;
+      AConnId: TPipeConnectionId);
+    procedure Run; // executa na main thread (CheckSynchronize/loop LCL-VCL)
+  end;
+
   { Work items dos eventos: dados capturados em campos (sem closures), dec de
     FInFlight no finally — mesmo contrato do TAMQPDeliveryWork. }
   TPipeMessageWork = class(TPipeWorkItem)
@@ -112,6 +156,69 @@ type
       AConnId: TPipeConnectionId; const AMsg: string);
     procedure Execute; override;
   end;
+
+{ TPipeGuard }
+
+constructor TPipeGuard.Create;
+begin
+  inherited Create;
+  FRefs := 1;  // referencia do dono (o componente)
+  FValid := 1;
+end;
+
+function TPipeGuard.IsValid: Boolean;
+begin
+  Result := PipeAtomicGet(FValid) = 1;
+end;
+
+procedure TPipeGuard.Invalidate;
+begin
+  PipeAtomicSet(FValid, 0);
+end;
+
+procedure TPipeGuard.AddRef;
+begin
+  PipeAtomicInc(FRefs);
+end;
+
+procedure TPipeGuard.Release;
+begin
+  if PipeAtomicDec(FRefs) = 0 then
+    Free;
+end;
+
+{ TPipeQueuedEvent }
+
+constructor TPipeQueuedEvent.Create(AOwner: TNamedPipeBase;
+  AKind: TPipeQueuedKind; AConnId: TPipeConnectionId);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FKind := AKind;
+  FConnId := AConnId;
+  FGuard := AOwner.FGuard;
+  FGuard.AddRef;
+end;
+
+procedure TPipeQueuedEvent.Run;
+begin
+  try
+    if FGuard.IsValid then
+      try
+        case FKind of
+          qeMessage: FMsgCb(FOwner, FConnId, FData);
+          qeConn:    FConnCb(FOwner, FConnId);
+          qeError:   FErrCb(FOwner, FConnId, FMsg);
+        end;
+      except
+        // mesmo contrato do pool: excecao de callback nao derruba o chamador
+        // (aqui seria o CheckSynchronize/loop de mensagens da main thread)
+      end;
+  finally
+    FGuard.Release;
+    Free;
+  end;
+end;
 
 { TPipeMessageWork }
 
@@ -183,11 +290,15 @@ begin
   FPipeName := APipeName; // direto no campo: GetActive e' abstrato aqui
   FDispatchMode := pdmPool;
   FMaxMessageSize := PIPES_DEFAULT_MAX_MESSAGE_SIZE;
+  FGuard := TPipeGuard.Create;
 end;
 
 destructor TNamedPipeBase.Destroy;
 begin
   TeardownDispatch; // rede de seguranca (os descendentes ja pararam tudo)
+  // Eventos pdmMainThread ainda na fila da main thread viram no-op.
+  FGuard.Invalidate;
+  FGuard.Release;
   inherited;
 end;
 
@@ -227,8 +338,6 @@ end;
 
 procedure TNamedPipeBase.SetupDispatch;
 begin
-  if FDispatchMode = pdmMainThread then
-    raise EPipeError.Create('pdmMainThread sera suportado no milestone M6');
   if FDispatchMode = pdmSerialized then
     FDispatchPool := TPipeThreadPool.Create(1); // 1 worker: ordem FIFO global
 end;
@@ -258,19 +367,37 @@ procedure TNamedPipeBase.DispatchMessage(AConnId: TPipeConnectionId;
   const AData: TBytes);
 var
   LCallback: TPipeMessageEvent;
+  LQueued: TPipeQueuedEvent;
 begin
   LCallback := FOnMessage;
   if not Assigned(LCallback) then
     Exit;
+  if FDispatchMode = pdmMainThread then
+  begin
+    LQueued := TPipeQueuedEvent.Create(Self, qeMessage, AConnId);
+    LQueued.FMsgCb := LCallback;
+    LQueued.FData := AData;
+    TThread.Queue(nil, LQueued.Run);
+    Exit;
+  end;
   IncInFlight;
   EventPool.Queue(TPipeMessageWork.Create(Self, LCallback, AConnId, AData));
 end;
 
 procedure TNamedPipeBase.DispatchConnEvent(AEvent: TPipeConnectionEvent;
   AConnId: TPipeConnectionId);
+var
+  LQueued: TPipeQueuedEvent;
 begin
   if not Assigned(AEvent) then
     Exit;
+  if FDispatchMode = pdmMainThread then
+  begin
+    LQueued := TPipeQueuedEvent.Create(Self, qeConn, AConnId);
+    LQueued.FConnCb := AEvent;
+    TThread.Queue(nil, LQueued.Run);
+    Exit;
+  end;
   IncInFlight;
   EventPool.Queue(TPipeConnEventWork.Create(Self, AEvent, AConnId));
 end;
@@ -279,10 +406,19 @@ procedure TNamedPipeBase.DispatchError(AConnId: TPipeConnectionId;
   const AMsg: string);
 var
   LCallback: TPipeErrorEvent;
+  LQueued: TPipeQueuedEvent;
 begin
   LCallback := FOnError;
   if not Assigned(LCallback) then
     Exit;
+  if FDispatchMode = pdmMainThread then
+  begin
+    LQueued := TPipeQueuedEvent.Create(Self, qeError, AConnId);
+    LQueued.FErrCb := LCallback;
+    LQueued.FMsg := AMsg;
+    TThread.Queue(nil, LQueued.Run);
+    Exit;
+  end;
   IncInFlight;
   EventPool.Queue(TPipeErrorWork.Create(Self, LCallback, AConnId, AMsg));
 end;

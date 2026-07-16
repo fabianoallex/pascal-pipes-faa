@@ -29,6 +29,7 @@ type
     [Test] procedure RoundTrip_RequestReply_PreservaCorrId;
     [Test] procedure RoundTrip_PayloadVazio;
     [Test] procedure RoundTrip_MultiplosFramesEmSequencia;
+    [Test] procedure RoundTrip_ErrorReply_PreservaFlagEMensagem;
     [Test] procedure ReadFrame_MagicInvalido_Levanta;
     [Test] procedure ReadFrame_KindDesconhecido_Levanta;
     [Test] procedure ReadFrame_PayloadAcimaDoMaximo_Levanta;
@@ -199,6 +200,20 @@ begin
   Assert.IsTrue(LFrame.Kind = pfkReply);
   Assert.IsTrue(LFrame.CorrId = 7);
   EqualInt(0, Length(LFrame.Payload));
+end;
+
+procedure TPipeFramingTests.RoundTrip_ErrorReply_PreservaFlagEMensagem;
+var
+  LFrame: TPipeFrame;
+begin
+  FStream := TBytesStream.Create;
+  PipeWriteFrame(FStream, TPipeFrame.ErrorReply(7, 'falha proposital'), 1024);
+  FStream.Position := 0;
+  LFrame := PipeReadFrame(FStream, 1024);
+  Assert.IsTrue(LFrame.Kind = pfkReply, 'kind devia ser reply');
+  Assert.IsTrue(LFrame.IsError, 'flag de erro nao preservada');
+  Assert.IsTrue(LFrame.CorrId = 7, 'corrId nao preservado');
+  Assert.AreEqual('falha proposital', LFrame.PayloadAsText);
 end;
 
 procedure TPipeFramingTests.ReadFrame_MagicInvalido_Levanta;

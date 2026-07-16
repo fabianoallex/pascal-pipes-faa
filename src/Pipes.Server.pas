@@ -26,7 +26,14 @@ unit Pipes.Server;
     todas as conexoes -> join dos readers -> DrainInFlight -> libera.
     NAO chame Stop/Destroy de dentro de um callback do proprio servidor.
   - DisconnectClient e' ASSINCRONO (CloseAbort + limpeza no pool): pode ser
-    chamado ate de dentro de um callback da propria conexao. }
+    chamado ate de dentro de um callback da propria conexao.
+  - Broadcast tira um snapshot das conexoes sob FConnLock (com AddRef) e
+    envia FORA do lock: um cliente lento nao trava a lista nem os demais.
+  - OnRequest roda SEMPRE no pool (global ou serializado), nunca na main
+    thread mesmo em pdmMainThread: o reply e' enviado pelo proprio worker ao
+    fim do handler e nao pode ficar atras do loop de mensagens. Excecao no
+    handler (ou handler ausente) vira reply de erro (PIPE_FLAG_ERROR) — o
+    Request do cliente levanta EPipeError com a mensagem. }
 
 interface
 
@@ -77,6 +84,7 @@ type
     FMaxClients: Integer;
     FOnClientConnected: TPipeConnectionEvent;
     FOnClientDisconnected: TPipeConnectionEvent;
+    FOnRequest: TPipeRequestEvent;
     // Chamados pelas threads/works internos (mesma unit):
     procedure HandleAccepted(AEndpoint: TPipeEndpoint);
     procedure AcceptorFinished(const AError: string);
@@ -87,6 +95,10 @@ type
     function TakeConnection(AConn: TPipeServerConnection): Boolean;
     procedure QueueCleanup(AConn: TPipeServerConnection);
     procedure RunCleanup(AConn: TPipeServerConnection); // roda no pool global
+    procedure DispatchRequest(AConn: TPipeServerConnection; ACorrId: UInt64;
+      const AData: TBytes);
+    procedure ExecuteRequest(AConn: TPipeServerConnection; ACorrId: UInt64;
+      const AData: TBytes; ACallback: TPipeRequestEvent); // roda no pool
   protected
     function GetActive: Boolean; override;
   public
@@ -98,6 +110,10 @@ type
     procedure Stop;
     procedure SendBytes(AConnId: TPipeConnectionId; const AData: TBytes);
     procedure SendText(AConnId: TPipeConnectionId; const AText: string);
+    /// Envia a todos os clientes conectados. Falha de envio a UM cliente e'
+    /// ignorada (a desconexao dele sera notificada pelo proprio reader).
+    procedure Broadcast(const AData: TBytes);
+    procedure BroadcastText(const AText: string);
     /// Assincrono e idempotente: aborta a conexao; a limpeza roda no pool.
     procedure DisconnectClient(AConnId: TPipeConnectionId);
     function ClientCount: Integer;
@@ -107,6 +123,9 @@ type
       read FOnClientConnected write FOnClientConnected;
     property OnClientDisconnected: TPipeConnectionEvent
       read FOnClientDisconnected write FOnClientDisconnected;
+    /// Request-reply: o retorno em AReply vira o frame de resposta (mesmo
+    /// corrId), enviado pelo worker ao fim do handler. Roda sempre no pool.
+    property OnRequest: TPipeRequestEvent read FOnRequest write FOnRequest;
   end;
 
 implementation
@@ -138,6 +157,20 @@ type
     FConn: TPipeServerConnection;
   public
     constructor Create(AServer: TNamedPipeServer; AConn: TPipeServerConnection);
+    procedure Execute; override;
+  end;
+
+  { Um request em execucao: handler + envio do reply, no pool. }
+  TPipeRequestWork = class(TPipeWorkItem)
+  private
+    FServer: TNamedPipeServer;
+    FConn: TPipeServerConnection; // AddRef feito no despacho
+    FCorrId: UInt64;
+    FData: TBytes;
+    FCallback: TPipeRequestEvent; // capturado no despacho (pode ser nil)
+  public
+    constructor Create(AServer: TNamedPipeServer; AConn: TPipeServerConnection;
+      ACorrId: UInt64; const AData: TBytes; ACallback: TPipeRequestEvent);
     procedure Execute; override;
   end;
 
@@ -209,6 +242,25 @@ end;
 procedure TPipeConnCleanupWork.Execute;
 begin
   FServer.RunCleanup(FConn);
+end;
+
+{ TPipeRequestWork }
+
+constructor TPipeRequestWork.Create(AServer: TNamedPipeServer;
+  AConn: TPipeServerConnection; ACorrId: UInt64; const AData: TBytes;
+  ACallback: TPipeRequestEvent);
+begin
+  inherited Create;
+  FServer := AServer;
+  FConn := AConn;
+  FCorrId := ACorrId;
+  FData := AData;
+  FCallback := ACallback;
+end;
+
+procedure TPipeRequestWork.Execute;
+begin
+  FServer.ExecuteRequest(FConn, FCorrId, FData, FCallback);
 end;
 
 { TPipeServerConnection }
@@ -408,10 +460,51 @@ begin
   case AFrame.Kind of
     pfkMessage:
       DispatchMessage(AConn.FId, AFrame.Payload);
-    pfkPing:
-      ; // reservado
-    pfkRequest, pfkReply:
-      ; // request-reply chega no milestone M6
+    pfkRequest:
+      DispatchRequest(AConn, AFrame.CorrId, AFrame.Payload);
+    pfkPing, pfkReply:
+      ; // ping: reservado; reply: servidor nao faz requests na v1
+  end;
+end;
+
+procedure TNamedPipeServer.DispatchRequest(AConn: TPipeServerConnection;
+  ACorrId: UInt64; const AData: TBytes);
+begin
+  // Mesmo sem handler o work roda (para responder com erro ao cliente).
+  AConn.AddRef; // o work escreve o reply nesta conexao
+  IncInFlight;
+  EventPool.Queue(TPipeRequestWork.Create(Self, AConn, ACorrId, AData, FOnRequest));
+end;
+
+procedure TNamedPipeServer.ExecuteRequest(AConn: TPipeServerConnection;
+  ACorrId: UInt64; const AData: TBytes; ACallback: TPipeRequestEvent);
+var
+  LReply: TBytes;
+  LErr: string;
+begin
+  try
+    LReply := nil;
+    LErr := '';
+    if Assigned(ACallback) then
+      try
+        ACallback(Self, AConn.FId, AData, LReply);
+      except
+        on E: Exception do
+          LErr := E.Message; // excecao do handler vira reply de erro
+      end
+    else
+      LErr := 'servidor sem handler OnRequest';
+    try
+      if LErr <> '' then
+        AConn.SendFrame(TPipeFrame.ErrorReply(ACorrId, LErr))
+      else
+        AConn.SendFrame(TPipeFrame.Reply(ACorrId, LReply));
+    except
+      // conexao caiu antes do reply: o cliente ja vai receber EPipeClosed
+    end;
+  finally
+    AConn.Release;
+    DecInFlight;
   end;
 end;
 
@@ -479,6 +572,40 @@ procedure TNamedPipeServer.SendText(AConnId: TPipeConnectionId;
   const AText: string);
 begin
   SendBytes(AConnId, PipeUtf8Encode(AText));
+end;
+
+procedure TNamedPipeServer.Broadcast(const AData: TBytes);
+var
+  LConns: TArray<TPipeServerConnection>;
+  LConn: TPipeServerConnection;
+begin
+  // Snapshot com AddRef sob o lock; envio fora dele (cliente lento nao trava
+  // a lista) sob o write lock individual de cada conexao.
+  FConnLock.Enter;
+  try
+    LConns := FConnections.Values.ToArray;
+    for LConn in LConns do
+      LConn.AddRef;
+  finally
+    FConnLock.Leave;
+  end;
+  for LConn in LConns do
+  begin
+    try
+      try
+        LConn.SendFrame(TPipeFrame.Msg(AData));
+      except
+        // conexao caindo: o reader dela notificara; o broadcast segue
+      end;
+    finally
+      LConn.Release;
+    end;
+  end;
+end;
+
+procedure TNamedPipeServer.BroadcastText(const AText: string);
+begin
+  Broadcast(PipeUtf8Encode(AText));
 end;
 
 procedure TNamedPipeServer.DisconnectClient(AConnId: TPipeConnectionId);
