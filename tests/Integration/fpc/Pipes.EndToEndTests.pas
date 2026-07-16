@@ -428,6 +428,7 @@ end;
 procedure TPipeEndToEndTests.AutoReconnect_ReconectaAposRestartDoServidor;
 var
   LName: string;
+  LDeadline: UInt64;
 begin
   LName := UniquePipeName;
   FServer := TNamedPipeServer.Create(LName);
@@ -448,7 +449,22 @@ begin
   FServer.Listen; // "restart" do servidor no mesmo nome
   AssertTrue('cliente nao reconectou', WaitCount(FCliConnCount, 2, 10000));
 
-  FClient.SendText('depois da reconexao');
+  // Contrato do AutoReconnect: um send pode pegar uma janela de churn
+  // (EPipeClosed transitorio entre queda e re-reconexao) — o chamador
+  // re-tenta, como um app real faria.
+  LDeadline := PipeTickMs + 5000;
+  while True do
+  begin
+    try
+      FClient.SendText('depois da reconexao');
+      Break;
+    except
+      on EPipeClosed do
+        if PipeTickMs >= LDeadline then
+          raise;
+    end;
+    Sleep(50);
+  end;
   AssertTrue('mensagem pos-reconexao nao chegou', WaitCount(FSrvMsgCount, 1, 5000));
   FLock.Enter;
   try
