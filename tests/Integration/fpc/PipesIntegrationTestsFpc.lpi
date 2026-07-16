@@ -45,6 +45,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="Pipes.StressTests.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="Pipes.EndToEndTests.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

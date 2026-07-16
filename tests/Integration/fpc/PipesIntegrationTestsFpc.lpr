@@ -18,7 +18,8 @@ uses
   {$ENDIF}
   Classes, consoletestrunner, testregistry,
   Pipes.TransportTests,
-  Pipes.EndToEndTests;
+  Pipes.EndToEndTests,
+  Pipes.StressTests;
 
 var
   ConsoleApp: TTestRunner;
