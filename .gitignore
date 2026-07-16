@@ -1,0 +1,27 @@
+# saidas de compilacao
+build/
+lib/
+backup/
+*.exe
+*.o
+*.a
+*.ppu
+*.rsj
+*.compiled
+*.dcu
+*.res
+Win32/
+Win64/
+linux/
+
+# binarios ELF (sem extensao) gerados por lazbuild/fpc em Linux
+tests/Unit/fpc/PipesUnitTestsFpc
+tests/Integration/fpc/PipesIntegrationTestsFpc
+
+# arquivos de sessao/IDE
+*.lps
+*.local
+*.identcache
+*.stat
+__history/
+__recovery/
