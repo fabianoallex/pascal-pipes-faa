@@ -25,3 +25,4 @@ tests/Integration/fpc/PipesIntegrationTestsFpc
 *.stat
 __history/
 __recovery/
+packagefiles.xml

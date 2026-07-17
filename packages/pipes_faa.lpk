@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CONFIG>
+  <Package Version="5">
+    <PathDelim Value="\"/>
+    <Name Value="pipes_faa"/>
+    <Author Value="Fabiano Arndt"/>
+    <CompilerOptions>
+      <Version Value="11"/>
+      <PathDelim Value="\"/>
+      <SearchPaths>
+        <IncludeFiles Value="..\src"/>
+        <OtherUnitFiles Value="..\src"/>
+        <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
+      </SearchPaths>
+    </CompilerOptions>
+    <Description Value="Named Pipes (IPC local) multiplataforma para Delphi 12+ (Win64) e FPC/Lazarus (Linux x86_64/ARM64). No Windows usa Named Pipes reais (overlapped); no Linux, Unix Domain Sockets — mesma abordagem do .NET. Servidor multi-cliente, Broadcast, Request-Reply sincrono com timeout, AutoReconnect e despacho de eventos em pool, serializado ou na main thread."/>
+    <License Value="MIT"/>
+    <Version Minor="1"/>
+    <Files>
+      <Item>
+        <Filename Value="..\src\pipes.inc"/>
+        <Type Value="Include"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Threading.pas"/>
+        <UnitName Value="Pipes.Threading"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Types.pas"/>
+        <UnitName Value="Pipes.Types"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Framing.pas"/>
+        <UnitName Value="Pipes.Framing"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Transport.pas"/>
+        <UnitName Value="Pipes.Transport"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Transport.Windows.pas"/>
+        <UnitName Value="Pipes.Transport.Windows"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Transport.Posix.pas"/>
+        <UnitName Value="Pipes.Transport.Posix"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Base.pas"/>
+        <UnitName Value="Pipes.Base"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Server.pas"/>
+        <UnitName Value="Pipes.Server"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Client.pas"/>
+        <UnitName Value="Pipes.Client"/>
+      </Item>
+    </Files>
+    <RequiredPkgs>
+      <Item>
+        <PackageName Value="FCL"/>
+      </Item>
+    </RequiredPkgs>
+    <UsageOptions>
+      <!-- Alem dos ppus, o caminho dos FONTES: Pipes.Transport e o backend de
+           plataforma se usam mutuamente (interface <-> implementation) e o FPC
+           so resolve esse ciclo podendo recompilar o par a partir do fonte. -->
+      <UnitPath Value="$(PkgOutDir);..\src"/>
+    </UsageOptions>
+    <PublishOptions>
+      <Version Value="2"/>
+      <UseFileFilters Value="True"/>
+    </PublishOptions>
+  </Package>
+</CONFIG>

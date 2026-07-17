@@ -9,6 +9,15 @@
         <Projects Include="tests\Integration\Pipes.IntegrationTests.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="samples\EchoServer\EchoServer.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="samples\EchoClient\EchoClient.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="samples\ChatVcl\ChatVcl.dproj">
+            <Dependencies/>
+        </Projects>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Default.Personality.12</Borland.Personality>
@@ -35,14 +44,41 @@
     <Target Name="Pipes_IntegrationTests:Make">
         <MSBuild Projects="tests\Integration\Pipes.IntegrationTests.dproj" Targets="Make"/>
     </Target>
+    <Target Name="EchoServer">
+        <MSBuild Projects="samples\EchoServer\EchoServer.dproj"/>
+    </Target>
+    <Target Name="EchoServer:Clean">
+        <MSBuild Projects="samples\EchoServer\EchoServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EchoServer:Make">
+        <MSBuild Projects="samples\EchoServer\EchoServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="EchoClient">
+        <MSBuild Projects="samples\EchoClient\EchoClient.dproj"/>
+    </Target>
+    <Target Name="EchoClient:Clean">
+        <MSBuild Projects="samples\EchoClient\EchoClient.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EchoClient:Make">
+        <MSBuild Projects="samples\EchoClient\EchoClient.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="ChatVcl">
+        <MSBuild Projects="samples\ChatVcl\ChatVcl.dproj"/>
+    </Target>
+    <Target Name="ChatVcl:Clean">
+        <MSBuild Projects="samples\ChatVcl\ChatVcl.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="ChatVcl:Make">
+        <MSBuild Projects="samples\ChatVcl\ChatVcl.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests"/>
+        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;ChatVcl"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean"/>
+        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;ChatVcl:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make"/>
+        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;ChatVcl:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>
