@@ -119,6 +119,19 @@ Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol
   só os tipos de domínio (`TPdvItem`, `TPdvFormaPagamento`) através de uma fachada
   (`Pdv.OperadorChannel`/`Pdv.ClienteChannel`) que encapsula `TNamedPipeServer`/
   `TNamedPipeClient` e o protocolo de mensagens (`Pdv.Protocolo.pas`).
+- **FilaImpressao** (`FilaServidor` + `FilaCliente`) — mostra `pdmSerialized` vs `pdmPool` na
+  prática: um handler com estado compartilhado sem lock (de propósito) processa jobs vindos
+  em sequência; `FilaServidor pipe serialized` (padrão) nunca acusa reentrância e conclui na
+  ordem de chegada, `FilaServidor pipe pool` acusa concorrência real e conclusão fora de
+  ordem com a mesma carga.
+- **DespachoTarefas** (`DespachoServidor` + `DespachoWorker`) — mostra endereçamento por
+  conexão em vez de `Broadcast`: o operador digita `job <texto>` e o servidor despacha para
+  UM worker por vez (round-robin sobre `ClientIds`); também exercita `MaxClients`,
+  `DisconnectClient` (comando `kick`) e `list`.
+- **ServicoInstavel** (`ServicoInstavel` + `ClienteResiliente`) — servidor que simula
+  lentidão e falhas de negócio aleatórias em `OnRequest`; o cliente mostra um padrão de
+  retry com backoff exponencial que trata `EPipeTimeout`/`EPipeClosed` (transitório, repete)
+  e `EPipeError` (erro de negócio, não repete) de formas diferentes.
 
 ## Testes
 
@@ -144,7 +157,8 @@ vazamento de handle/fd em quedas abruptas repetidas e correlação RPC sob conco
 src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Windows|.Posix],
                      Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
 packages/            pipes_faa.lpk (pacote Lazarus)
-samples/             EchoServer, EchoClient, ChatVcl, PdvDualScreen (Operador + Cliente)
+samples/             EchoServer, EchoClient, ChatVcl, PdvDualScreen (Operador + Cliente),
+                     FilaImpressao, DespachoTarefas, ServicoInstavel
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)
 Pipes.groupproj      grupo de projetos Delphi    Pipes.lpg  grupo Lazarus
