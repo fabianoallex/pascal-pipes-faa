@@ -126,6 +126,12 @@ end;
 
 procedure TFilaServidorApp.OnConn(Sender: TObject; AConnId: TPipeConnectionId);
 begin
+  // FilaCliente sempre numera seus jobs a partir de 1 a cada execucao; sem
+  // este reset, uma 2a conexao reabriria a contagem em 1 enquanto o servidor
+  // ainda esperaria a sequencia da conexao anterior, acusando "fora de
+  // ordem" logo no 1o job por engano (rotulos de contadores diferentes, nao
+  // uma violacao de ordem real).
+  FProximoJob := 1;
   Log(Format('[conn %d] conectou', [AConnId]));
 end;
 

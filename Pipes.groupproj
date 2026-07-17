@@ -42,6 +42,12 @@
         <Projects Include="samples\ServicoInstavel\ClienteResiliente.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="samples\RpcConcorrente\RpcConcorrenteServidor.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="samples\RpcConcorrente\RpcConcorrenteCliente.dproj">
+            <Dependencies/>
+        </Projects>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Default.Personality.12</Borland.Personality>
@@ -167,14 +173,32 @@
     <Target Name="ClienteResiliente:Make">
         <MSBuild Projects="samples\ServicoInstavel\ClienteResiliente.dproj" Targets="Make"/>
     </Target>
+    <Target Name="RpcConcorrenteServidor">
+        <MSBuild Projects="samples\RpcConcorrente\RpcConcorrenteServidor.dproj"/>
+    </Target>
+    <Target Name="RpcConcorrenteServidor:Clean">
+        <MSBuild Projects="samples\RpcConcorrente\RpcConcorrenteServidor.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="RpcConcorrenteServidor:Make">
+        <MSBuild Projects="samples\RpcConcorrente\RpcConcorrenteServidor.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="RpcConcorrenteCliente">
+        <MSBuild Projects="samples\RpcConcorrente\RpcConcorrenteCliente.dproj"/>
+    </Target>
+    <Target Name="RpcConcorrenteCliente:Clean">
+        <MSBuild Projects="samples\RpcConcorrente\RpcConcorrenteCliente.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="RpcConcorrenteCliente:Make">
+        <MSBuild Projects="samples\RpcConcorrente\RpcConcorrenteCliente.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;ChatVcl;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente"/>
+        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;ChatVcl;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;ChatVcl:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean"/>
+        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;ChatVcl:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;ChatVcl:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make"/>
+        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;ChatVcl:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

@@ -132,6 +132,11 @@ Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol
   lentidão e falhas de negócio aleatórias em `OnRequest`; o cliente mostra um padrão de
   retry com backoff exponencial que trata `EPipeTimeout`/`EPipeClosed` (transitório, repete)
   e `EPipeError` (erro de negócio, não repete) de formas diferentes.
+- **RpcConcorrente** (`RpcConcorrenteServidor` + `RpcConcorrenteCliente`) — prova a garantia
+  de que chamadas `Request`/`RequestText` de várias threads no MESMO `TNamedPipeClient` são
+  suportadas: várias `TThread` compartilham uma única instância de cliente e disparam RPCs
+  em paralelo; cada uma confere que a resposta que voltou é exatamente a do pedido que ela
+  fez (correlation id), expondo qualquer cruzamento de respostas entre chamadores como bug.
 
 ## Testes
 
@@ -158,7 +163,7 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Wi
                      Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, ChatVcl, PdvDualScreen (Operador + Cliente),
-                     FilaImpressao, DespachoTarefas, ServicoInstavel
+                     FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)
 Pipes.groupproj      grupo de projetos Delphi    Pipes.lpg  grupo Lazarus
