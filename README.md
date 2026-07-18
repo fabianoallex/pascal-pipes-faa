@@ -1,8 +1,13 @@
-# pascal-named-pipes-faa
+# pascal-pipes-faa
 
-Biblioteca multiplataforma de **Named Pipes (IPC local)** para **Delphi 12+ (Win64)** e
+> Antes `pascal-named-pipes-faa`. O nome mudou porque o Named Pipe do Windows passou a ser
+> apenas um dos transportes suportados — a API antiga segue funcionando (ver
+> [Compatibilidade](#compatibilidade-com-a-api-anterior)).
+
+Biblioteca multiplataforma de **IPC local** para **Delphi 12+ (Win64)** e
 **FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**, com uma única base de código e uma API de
 alto nível que abstrai completamente as chamadas nativas do sistema operacional.
+O transporte local usa Named Pipes no Windows e Unix Domain Sockets no Linux.
 
 ```pascal
 // Servidor

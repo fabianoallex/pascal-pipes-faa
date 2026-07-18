@@ -1,4 +1,4 @@
-# pascal-named-pipes-faa
+# pascal-pipes-faa
 
 Biblioteca multiplataforma de Named Pipes (IPC local) para **Delphi 12+ (Win64)** e
 **FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**. API de alto nível que abstrai totalmente as
