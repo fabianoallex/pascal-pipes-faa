@@ -64,14 +64,14 @@ type
     FClosed: Integer;       // atomico
     function CreateInstance: THandle;
   public
-    constructor Create(const APipeName: string);
+    constructor Create(const AAddress: string);
     destructor Destroy; override;
     function Accept: TPipeEndpoint; override;
     procedure Close; override;
   end;
 
-function WinPipeCreateListener(const APipeName: string): TPipeListener;
-function WinPipeConnect(const APipeName: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function WinPipeCreateListener(const AAddress: string): TPipeListener;
+function WinPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
 
 {$ENDIF}
 
@@ -221,10 +221,10 @@ end;
 
 { TPipeWinListener }
 
-constructor TPipeWinListener.Create(const APipeName: string);
+constructor TPipeWinListener.Create(const AAddress: string);
 begin
   inherited Create;
-  FNativeName := PipeNativeName(APipeName);
+  FNativeName := PipeNativeName(AAddress);
   FConnectEvent := NewManualResetEvent;
   FStopEvent := NewManualResetEvent;
   // Primeira instancia criada JA na construcao: um cliente que conecte entre
@@ -327,12 +327,12 @@ end;
 
 { --- fabricas --- }
 
-function WinPipeCreateListener(const APipeName: string): TPipeListener;
+function WinPipeCreateListener(const AAddress: string): TPipeListener;
 begin
-  Result := TPipeWinListener.Create(APipeName);
+  Result := TPipeWinListener.Create(AAddress);
 end;
 
-function WinPipeConnect(const APipeName: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function WinPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
 var
   LNative: string;
   LDeadline: UInt64;
@@ -341,7 +341,7 @@ var
   LErr: DWORD;
   LWaitMs: DWORD;
 begin
-  LNative := PipeNativeName(APipeName);
+  LNative := PipeNativeName(AAddress);
   LDeadline := PipeTickMs + ATimeoutMs;
   while True do
   begin

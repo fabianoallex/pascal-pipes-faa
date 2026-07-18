@@ -24,7 +24,7 @@ unit Pipes.Transport.Posix;
 
   Seguranca: o socket e' criado com a umask do processo no diretorio escolhido
   (padrao /tmp). Restringir o acesso = criar em diretorio proprio com
-  permissoes adequadas e passar o caminho absoluto como PipeName. }
+  permissoes adequadas e passar o caminho absoluto como Address. }
 
 interface
 
@@ -65,14 +65,14 @@ type
     FStopW: cint;     // self-pipe: lado de escrita (Close escreve 1 byte)
     FClosed: Integer; // atomico
   public
-    constructor Create(const APipeName: string);
+    constructor Create(const AAddress: string);
     destructor Destroy; override;
     function Accept: TPipeEndpoint; override;
     procedure Close; override;
   end;
 
-function PosixPipeCreateListener(const APipeName: string): TPipeListener;
-function PosixPipeConnect(const APipeName: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function PosixPipeCreateListener(const AAddress: string): TPipeListener;
+function PosixPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
 
 {$ENDIF}
 
@@ -233,7 +233,7 @@ end;
 
 { TPipePosixListener }
 
-constructor TPipePosixListener.Create(const APipeName: string);
+constructor TPipePosixListener.Create(const AAddress: string);
 var
   LAddr: TUnixSockAddr;
   LLen: Longint;
@@ -242,7 +242,7 @@ begin
   FFd := -1;
   FStopR := -1;
   FStopW := -1;
-  FNativePath := PipeNativeName(APipeName);
+  FNativePath := PipeNativeName(AAddress);
   BuildUnixAddr(FNativePath, LAddr, LLen);
   NewSelfPipe(FStopR, FStopW);
   FFd := fpSocket(AF_UNIX, SOCK_STREAM, 0);
@@ -320,12 +320,12 @@ end;
 
 { --- fabricas --- }
 
-function PosixPipeCreateListener(const APipeName: string): TPipeListener;
+function PosixPipeCreateListener(const AAddress: string): TPipeListener;
 begin
-  Result := TPipePosixListener.Create(APipeName);
+  Result := TPipePosixListener.Create(AAddress);
 end;
 
-function PosixPipeConnect(const APipeName: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function PosixPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
 var
   LNative: string;
   LAddr: TUnixSockAddr;
@@ -333,7 +333,7 @@ var
   LDeadline: UInt64;
   LFd, LErr: cint;
 begin
-  LNative := PipeNativeName(APipeName);
+  LNative := PipeNativeName(AAddress);
   BuildUnixAddr(LNative, LAddr, LLen);
   LDeadline := PipeTickMs + ATimeoutMs;
   while True do

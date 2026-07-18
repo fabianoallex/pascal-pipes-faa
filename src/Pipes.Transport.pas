@@ -65,16 +65,16 @@ type
 
 /// Cria o ponto de escuta do servidor para o nome dado (ja deixa a primeira
 /// instancia/socket pronta: um cliente pode conectar antes do primeiro Accept).
-function PipeCreateListener(const APipeName: string): TPipeListener;
+function PipeCreateListener(const AAddress: string): TPipeListener;
 
 /// Conecta ao servidor, re-tentando ate ATimeoutMs (cobre servidor ainda nao
 /// iniciado e instancias momentaneamente ocupadas). EPipeTimeout no prazo.
-function PipeConnect(const APipeName: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
 
 /// Nome nativo do pipe: '\\.\pipe\<nome>' no Windows, '/tmp/<nome>.sock' no
-/// POSIX. Se APipeName ja for um caminho nativo ('\\...' ou '/...'), e' usado
+/// POSIX. Se AAddress ja for um caminho nativo ('\\...' ou '/...'), e' usado
 /// como esta (permite controlar o diretorio do socket no Linux).
-function PipeNativeName(const APipeName: string): string;
+function PipeNativeName(const AAddress: string): string;
 
 implementation
 
@@ -112,38 +112,38 @@ end;
 
 { --- fabricas --- }
 
-function PipeNativeName(const APipeName: string): string;
+function PipeNativeName(const AAddress: string): string;
 begin
-  if APipeName = '' then
+  if AAddress = '' then
     raise EPipeError.Create('nome do pipe vazio');
   {$IFDEF PIPES_WINDOWS}
-  if Pos('\\', APipeName) = 1 then
-    Result := APipeName // ja e' um caminho nativo (\\.\pipe\... ou \\server\pipe\...)
+  if Pos('\\', AAddress) = 1 then
+    Result := AAddress // ja e' um caminho nativo (\\.\pipe\... ou \\server\pipe\...)
   else
-    Result := '\\.\pipe\' + APipeName;
+    Result := '\\.\pipe\' + AAddress;
   {$ELSE}
-  if APipeName[1] = '/' then
-    Result := APipeName // caminho absoluto de socket, controlado pelo chamador
+  if AAddress[1] = '/' then
+    Result := AAddress // caminho absoluto de socket, controlado pelo chamador
   else
-    Result := '/tmp/' + APipeName + '.sock';
+    Result := '/tmp/' + AAddress + '.sock';
   {$ENDIF}
 end;
 
-function PipeCreateListener(const APipeName: string): TPipeListener;
+function PipeCreateListener(const AAddress: string): TPipeListener;
 begin
   {$IFDEF PIPES_WINDOWS}
-  Result := WinPipeCreateListener(APipeName);
+  Result := WinPipeCreateListener(AAddress);
   {$ELSE}
-  Result := PosixPipeCreateListener(APipeName);
+  Result := PosixPipeCreateListener(AAddress);
   {$ENDIF}
 end;
 
-function PipeConnect(const APipeName: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
 begin
   {$IFDEF PIPES_WINDOWS}
-  Result := WinPipeConnect(APipeName, ATimeoutMs);
+  Result := WinPipeConnect(AAddress, ATimeoutMs);
   {$ELSE}
-  Result := PosixPipeConnect(APipeName, ATimeoutMs);
+  Result := PosixPipeConnect(AAddress, ATimeoutMs);
   {$ENDIF}
 end;
 

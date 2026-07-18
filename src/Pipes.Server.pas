@@ -2,7 +2,7 @@ unit Pipes.Server;
 
 {$I pipes.inc}
 
-{ TNamedPipeServer: servidor de Named Pipes multi-cliente.
+{ TPipeServer: servidor de Named Pipes multi-cliente.
 
   Threads:
     1 acceptor (TPipeAcceptorThread) + 1 reader por conexao
@@ -49,12 +49,12 @@ uses
   Pipes.Base;
 
 type
-  TNamedPipeServer = class;
+  TPipeServer = class;
 
   { Conexao aceita (interna; a API publica enxerga so o TPipeConnectionId). }
   TPipeServerConnection = class
   private
-    FServer: TNamedPipeServer;
+    FServer: TPipeServer;
     FId: TPipeConnectionId;
     FEndpoint: TPipeEndpoint;
     FStream: TPipeEndpointStream;
@@ -66,13 +66,13 @@ type
     procedure StartReader;
     procedure SendFrame(const AFrame: TPipeFrame);
   public
-    constructor Create(AServer: TNamedPipeServer; AId: TPipeConnectionId;
+    constructor Create(AServer: TPipeServer; AId: TPipeConnectionId;
       AEndpoint: TPipeEndpoint);
     destructor Destroy; override;
     property Id: TPipeConnectionId read FId;
   end;
 
-  TNamedPipeServer = class(TNamedPipeBase)
+  TPipeServer = class(TPipeBase)
   private
     FListener: TPipeListener;
     FAcceptor: TThread;
@@ -102,7 +102,7 @@ type
   protected
     function GetActive: Boolean; override;
   public
-    constructor Create(const APipeName: string);
+    constructor Create(const AAddress: string);
     destructor Destroy; override;
     /// Nao-blocante: cria o listener e sobe a acceptor thread.
     procedure Listen;
@@ -128,16 +128,19 @@ type
     property OnRequest: TPipeRequestEvent read FOnRequest write FOnRequest;
   end;
 
+  /// Alias de compatibilidade (ver TNamedPipeBase em Pipes.Base).
+  TNamedPipeServer = TPipeServer;
+
 implementation
 
 type
   TPipeAcceptorThread = class(TThread)
   private
-    FServer: TNamedPipeServer;
+    FServer: TPipeServer;
   protected
     procedure Execute; override;
   public
-    constructor Create(AServer: TNamedPipeServer);
+    constructor Create(AServer: TPipeServer);
   end;
 
   TPipeServerReaderThread = class(TThread)
@@ -153,30 +156,30 @@ type
     (morte natural/DisconnectClient): join do reader + Release do registro. }
   TPipeConnCleanupWork = class(TPipeWorkItem)
   private
-    FServer: TNamedPipeServer;
+    FServer: TPipeServer;
     FConn: TPipeServerConnection;
   public
-    constructor Create(AServer: TNamedPipeServer; AConn: TPipeServerConnection);
+    constructor Create(AServer: TPipeServer; AConn: TPipeServerConnection);
     procedure Execute; override;
   end;
 
   { Um request em execucao: handler + envio do reply, no pool. }
   TPipeRequestWork = class(TPipeWorkItem)
   private
-    FServer: TNamedPipeServer;
+    FServer: TPipeServer;
     FConn: TPipeServerConnection; // AddRef feito no despacho
     FCorrId: UInt64;
     FData: TBytes;
     FCallback: TPipeRequestEvent; // capturado no despacho (pode ser nil)
   public
-    constructor Create(AServer: TNamedPipeServer; AConn: TPipeServerConnection;
+    constructor Create(AServer: TPipeServer; AConn: TPipeServerConnection;
       ACorrId: UInt64; const AData: TBytes; ACallback: TPipeRequestEvent);
     procedure Execute; override;
   end;
 
 { TPipeAcceptorThread }
 
-constructor TPipeAcceptorThread.Create(AServer: TNamedPipeServer);
+constructor TPipeAcceptorThread.Create(AServer: TPipeServer);
 begin
   FServer := AServer;
   FreeOnTerminate := False;
@@ -231,7 +234,7 @@ end;
 
 { TPipeConnCleanupWork }
 
-constructor TPipeConnCleanupWork.Create(AServer: TNamedPipeServer;
+constructor TPipeConnCleanupWork.Create(AServer: TPipeServer;
   AConn: TPipeServerConnection);
 begin
   inherited Create;
@@ -246,7 +249,7 @@ end;
 
 { TPipeRequestWork }
 
-constructor TPipeRequestWork.Create(AServer: TNamedPipeServer;
+constructor TPipeRequestWork.Create(AServer: TPipeServer;
   AConn: TPipeServerConnection; ACorrId: UInt64; const AData: TBytes;
   ACallback: TPipeRequestEvent);
 begin
@@ -265,7 +268,7 @@ end;
 
 { TPipeServerConnection }
 
-constructor TPipeServerConnection.Create(AServer: TNamedPipeServer;
+constructor TPipeServerConnection.Create(AServer: TPipeServer;
   AId: TPipeConnectionId; AEndpoint: TPipeEndpoint);
 begin
   inherited Create;
@@ -312,16 +315,16 @@ begin
   end;
 end;
 
-{ TNamedPipeServer }
+{ TPipeServer }
 
-constructor TNamedPipeServer.Create(const APipeName: string);
+constructor TPipeServer.Create(const AAddress: string);
 begin
-  inherited Create(APipeName);
+  inherited Create(AAddress);
   FConnections := TDictionary<TPipeConnectionId, TPipeServerConnection>.Create;
   FConnLock := TCriticalSection.Create;
 end;
 
-destructor TNamedPipeServer.Destroy;
+destructor TPipeServer.Destroy;
 begin
   try
     Stop; // idempotente
@@ -332,18 +335,18 @@ begin
   inherited;
 end;
 
-function TNamedPipeServer.GetActive: Boolean;
+function TPipeServer.GetActive: Boolean;
 begin
   Result := FActive;
 end;
 
-procedure TNamedPipeServer.Listen;
+procedure TPipeServer.Listen;
 begin
   if FActive then
     raise EPipeError.Create('servidor ja esta ativo');
   SetupDispatch;
   try
-    FListener := PipeCreateListener(PipeName);
+    FListener := PipeCreateListener(Address);
   except
     TeardownDispatch;
     raise;
@@ -353,7 +356,7 @@ begin
   FAcceptor := TPipeAcceptorThread.Create(Self);
 end;
 
-procedure TNamedPipeServer.Stop;
+procedure TPipeServer.Stop;
 var
   LConns: TArray<TPipeServerConnection>;
   LConn: TPipeServerConnection;
@@ -395,7 +398,7 @@ begin
   FActive := False;
 end;
 
-procedure TNamedPipeServer.HandleAccepted(AEndpoint: TPipeEndpoint);
+procedure TPipeServer.HandleAccepted(AEndpoint: TPipeEndpoint);
 var
   LConn: TPipeServerConnection;
   LId: TPipeConnectionId;
@@ -433,7 +436,7 @@ begin
   LConn.StartReader;
 end;
 
-procedure TNamedPipeServer.AcceptorFinished(const AError: string);
+procedure TPipeServer.AcceptorFinished(const AError: string);
 begin
   // Acceptor caiu com o servidor ativo (ex.: CreateNamedPipe falhou): o
   // servidor para de aceitar novos clientes, mas os conectados seguem; o
@@ -442,7 +445,7 @@ begin
     DispatchError(0, 'acceptor encerrado: ' + AError);
 end;
 
-procedure TNamedPipeServer.ReaderFinished(AConn: TPipeServerConnection;
+procedure TPipeServer.ReaderFinished(AConn: TPipeServerConnection;
   const AError: string);
 begin
   if not TakeConnection(AConn) then
@@ -454,7 +457,7 @@ begin
   QueueCleanup(AConn); // join deste proprio reader: precisa de outra thread
 end;
 
-procedure TNamedPipeServer.HandleFrame(AConn: TPipeServerConnection;
+procedure TPipeServer.HandleFrame(AConn: TPipeServerConnection;
   const AFrame: TPipeFrame);
 begin
   case AFrame.Kind of
@@ -467,7 +470,7 @@ begin
   end;
 end;
 
-procedure TNamedPipeServer.DispatchRequest(AConn: TPipeServerConnection;
+procedure TPipeServer.DispatchRequest(AConn: TPipeServerConnection;
   ACorrId: UInt64; const AData: TBytes);
 begin
   // Mesmo sem handler o work roda (para responder com erro ao cliente).
@@ -476,7 +479,7 @@ begin
   EventPool.Queue(TPipeRequestWork.Create(Self, AConn, ACorrId, AData, FOnRequest));
 end;
 
-procedure TNamedPipeServer.ExecuteRequest(AConn: TPipeServerConnection;
+procedure TPipeServer.ExecuteRequest(AConn: TPipeServerConnection;
   ACorrId: UInt64; const AData: TBytes; ACallback: TPipeRequestEvent);
 var
   LReply: TBytes;
@@ -508,7 +511,7 @@ begin
   end;
 end;
 
-function TNamedPipeServer.TakeConnection(AConn: TPipeServerConnection): Boolean;
+function TPipeServer.TakeConnection(AConn: TPipeServerConnection): Boolean;
 var
   LCur: TPipeServerConnection;
 begin
@@ -522,7 +525,7 @@ begin
   end;
 end;
 
-procedure TNamedPipeServer.QueueCleanup(AConn: TPipeServerConnection);
+procedure TPipeServer.QueueCleanup(AConn: TPipeServerConnection);
 begin
   // Sempre no pool GLOBAL: nao pode entrar atras de callbacks do usuario no
   // pool serializado. Contada em FInFlight para o Stop/Destroy esperarem.
@@ -530,7 +533,7 @@ begin
   PipePool.Queue(TPipeConnCleanupWork.Create(Self, AConn));
 end;
 
-procedure TNamedPipeServer.RunCleanup(AConn: TPipeServerConnection);
+procedure TPipeServer.RunCleanup(AConn: TPipeServerConnection);
 begin
   try
     if Assigned(AConn.FReader) then
@@ -544,7 +547,7 @@ begin
   end;
 end;
 
-procedure TNamedPipeServer.SendBytes(AConnId: TPipeConnectionId;
+procedure TPipeServer.SendBytes(AConnId: TPipeConnectionId;
   const AData: TBytes);
 var
   LConn: TPipeServerConnection;
@@ -568,13 +571,13 @@ begin
   end;
 end;
 
-procedure TNamedPipeServer.SendText(AConnId: TPipeConnectionId;
+procedure TPipeServer.SendText(AConnId: TPipeConnectionId;
   const AText: string);
 begin
   SendBytes(AConnId, PipeUtf8Encode(AText));
 end;
 
-procedure TNamedPipeServer.Broadcast(const AData: TBytes);
+procedure TPipeServer.Broadcast(const AData: TBytes);
 var
   LConns: TArray<TPipeServerConnection>;
   LConn: TPipeServerConnection;
@@ -603,12 +606,12 @@ begin
   end;
 end;
 
-procedure TNamedPipeServer.BroadcastText(const AText: string);
+procedure TPipeServer.BroadcastText(const AText: string);
 begin
   Broadcast(PipeUtf8Encode(AText));
 end;
 
-procedure TNamedPipeServer.DisconnectClient(AConnId: TPipeConnectionId);
+procedure TPipeServer.DisconnectClient(AConnId: TPipeConnectionId);
 var
   LConn: TPipeServerConnection;
 begin
@@ -625,7 +628,7 @@ begin
   QueueCleanup(LConn);
 end;
 
-function TNamedPipeServer.ClientCount: Integer;
+function TPipeServer.ClientCount: Integer;
 begin
   FConnLock.Enter;
   try
@@ -635,7 +638,7 @@ begin
   end;
 end;
 
-function TNamedPipeServer.ClientIds: TArray<TPipeConnectionId>;
+function TPipeServer.ClientIds: TArray<TPipeConnectionId>;
 begin
   FConnLock.Enter;
   try

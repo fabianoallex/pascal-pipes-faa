@@ -2,7 +2,7 @@ unit Pipes.Base;
 
 {$I pipes.inc}
 
-{ Base comum de TNamedPipeServer/TNamedPipeClient: configuracao (PipeName,
+{ Base comum de TPipeServer/TPipeClient: configuracao (Address,
   DispatchMode, MaxMessageSize), eventos comuns (OnMessage/OnError) e o motor
   de despacho de callbacks do usuario.
 
@@ -50,9 +50,9 @@ type
     procedure Release; // libera o objeto quando zera
   end;
 
-  TNamedPipeBase = class
+  TPipeBase = class
   private
-    FPipeName: string;
+    FAddress: string;
     FDispatchMode: TPipeDispatchMode;
     FMaxMessageSize: Cardinal;
     FOnMessage: TPipeMessageEvent;
@@ -60,7 +60,7 @@ type
     FDispatchPool: TPipeThreadPool; // pool privado (pdmSerialized); nil = global
     FInFlight: Integer;             // work items despachados em execucao (atomico)
     FGuard: TPipeGuard;             // guarda dos eventos pdmMainThread
-    procedure SetPipeName(const AValue: string);
+    procedure SetAddress(const AValue: string);
     procedure SetDispatchMode(AValue: TPipeDispatchMode);
     procedure SetMaxMessageSize(AValue: Cardinal);
   protected
@@ -85,15 +85,25 @@ type
       AConnId: TPipeConnectionId);
     procedure DispatchError(AConnId: TPipeConnectionId; const AMsg: string);
   public
-    constructor Create(const APipeName: string);
+    constructor Create(const AAddress: string);
     destructor Destroy; override;
-    property PipeName: string read FPipeName write SetPipeName;
+    /// Endereco do ponto de comunicacao. Para o transporte local e' o nome do
+    /// pipe ('MeuPipe') ou um caminho nativo ('\\.\pipe\X', '/tmp/x.sock').
+    property Address: string read FAddress write SetAddress;
+    /// Compatibilidade com a API anterior a generalizacao do transporte.
+    /// Mesmo campo de Address; sera marcada deprecated apos a migracao de
+    /// samples e testes.
+    property PipeName: string read FAddress write SetAddress;
     property Active: Boolean read GetActive;
     property DispatchMode: TPipeDispatchMode read FDispatchMode write SetDispatchMode;
     property MaxMessageSize: Cardinal read FMaxMessageSize write SetMaxMessageSize;
     property OnMessage: TPipeMessageEvent read FOnMessage write FOnMessage;
     property OnError: TPipeErrorEvent read FOnError write FOnError;
   end;
+
+  /// Alias de compatibilidade: o nome antigo amarrava a API ao Named Pipe do
+  /// Windows, que passa a ser apenas um dos transportes.
+  TNamedPipeBase = TPipeBase;
 
 implementation
 
@@ -106,7 +116,7 @@ type
   TPipeQueuedEvent = class
   private
     FGuard: TPipeGuard; // referencia propria (AddRef no create, Release no Run)
-    FOwner: TNamedPipeBase;
+    FOwner: TPipeBase;
     FKind: TPipeQueuedKind;
     FMsgCb: TPipeMessageEvent;
     FConnCb: TPipeConnectionEvent;
@@ -115,7 +125,7 @@ type
     FData: TBytes;
     FMsg: string;
   public
-    constructor Create(AOwner: TNamedPipeBase; AKind: TPipeQueuedKind;
+    constructor Create(AOwner: TPipeBase; AKind: TPipeQueuedKind;
       AConnId: TPipeConnectionId);
     procedure Run; // executa na main thread (CheckSynchronize/loop LCL-VCL)
   end;
@@ -124,35 +134,35 @@ type
     FInFlight no finally — mesmo contrato do TAMQPDeliveryWork. }
   TPipeMessageWork = class(TPipeWorkItem)
   private
-    FOwner: TNamedPipeBase;
+    FOwner: TPipeBase;
     FCallback: TPipeMessageEvent;
     FConnId: TPipeConnectionId;
     FData: TBytes;
   public
-    constructor Create(AOwner: TNamedPipeBase; ACallback: TPipeMessageEvent;
+    constructor Create(AOwner: TPipeBase; ACallback: TPipeMessageEvent;
       AConnId: TPipeConnectionId; const AData: TBytes);
     procedure Execute; override;
   end;
 
   TPipeConnEventWork = class(TPipeWorkItem)
   private
-    FOwner: TNamedPipeBase;
+    FOwner: TPipeBase;
     FCallback: TPipeConnectionEvent;
     FConnId: TPipeConnectionId;
   public
-    constructor Create(AOwner: TNamedPipeBase; ACallback: TPipeConnectionEvent;
+    constructor Create(AOwner: TPipeBase; ACallback: TPipeConnectionEvent;
       AConnId: TPipeConnectionId);
     procedure Execute; override;
   end;
 
   TPipeErrorWork = class(TPipeWorkItem)
   private
-    FOwner: TNamedPipeBase;
+    FOwner: TPipeBase;
     FCallback: TPipeErrorEvent;
     FConnId: TPipeConnectionId;
     FMsg: string;
   public
-    constructor Create(AOwner: TNamedPipeBase; ACallback: TPipeErrorEvent;
+    constructor Create(AOwner: TPipeBase; ACallback: TPipeErrorEvent;
       AConnId: TPipeConnectionId; const AMsg: string);
     procedure Execute; override;
   end;
@@ -189,7 +199,7 @@ end;
 
 { TPipeQueuedEvent }
 
-constructor TPipeQueuedEvent.Create(AOwner: TNamedPipeBase;
+constructor TPipeQueuedEvent.Create(AOwner: TPipeBase;
   AKind: TPipeQueuedKind; AConnId: TPipeConnectionId);
 begin
   inherited Create;
@@ -222,7 +232,7 @@ end;
 
 { TPipeMessageWork }
 
-constructor TPipeMessageWork.Create(AOwner: TNamedPipeBase;
+constructor TPipeMessageWork.Create(AOwner: TPipeBase;
   ACallback: TPipeMessageEvent; AConnId: TPipeConnectionId; const AData: TBytes);
 begin
   inherited Create;
@@ -243,7 +253,7 @@ end;
 
 { TPipeConnEventWork }
 
-constructor TPipeConnEventWork.Create(AOwner: TNamedPipeBase;
+constructor TPipeConnEventWork.Create(AOwner: TPipeBase;
   ACallback: TPipeConnectionEvent; AConnId: TPipeConnectionId);
 begin
   inherited Create;
@@ -263,7 +273,7 @@ end;
 
 { TPipeErrorWork }
 
-constructor TPipeErrorWork.Create(AOwner: TNamedPipeBase;
+constructor TPipeErrorWork.Create(AOwner: TPipeBase;
   ACallback: TPipeErrorEvent; AConnId: TPipeConnectionId; const AMsg: string);
 begin
   inherited Create;
@@ -282,18 +292,18 @@ begin
   end;
 end;
 
-{ TNamedPipeBase }
+{ TPipeBase }
 
-constructor TNamedPipeBase.Create(const APipeName: string);
+constructor TPipeBase.Create(const AAddress: string);
 begin
   inherited Create;
-  FPipeName := APipeName; // direto no campo: GetActive e' abstrato aqui
+  FAddress := AAddress; // direto no campo: GetActive e' abstrato aqui
   FDispatchMode := pdmPool;
   FMaxMessageSize := PIPES_DEFAULT_MAX_MESSAGE_SIZE;
   FGuard := TPipeGuard.Create;
 end;
 
-destructor TNamedPipeBase.Destroy;
+destructor TPipeBase.Destroy;
 begin
   TeardownDispatch; // rede de seguranca (os descendentes ja pararam tudo)
   // Eventos pdmMainThread ainda na fila da main thread viram no-op.
@@ -302,25 +312,25 @@ begin
   inherited;
 end;
 
-procedure TNamedPipeBase.EnsureInactive(const AWhat: string);
+procedure TPipeBase.EnsureInactive(const AWhat: string);
 begin
   if GetActive then
     raise EPipeError.CreateFmt('%s nao pode mudar com o componente ativo', [AWhat]);
 end;
 
-procedure TNamedPipeBase.SetPipeName(const AValue: string);
+procedure TPipeBase.SetAddress(const AValue: string);
 begin
-  EnsureInactive('PipeName');
-  FPipeName := AValue;
+  EnsureInactive('Address');
+  FAddress := AValue;
 end;
 
-procedure TNamedPipeBase.SetDispatchMode(AValue: TPipeDispatchMode);
+procedure TPipeBase.SetDispatchMode(AValue: TPipeDispatchMode);
 begin
   EnsureInactive('DispatchMode');
   FDispatchMode := AValue;
 end;
 
-procedure TNamedPipeBase.SetMaxMessageSize(AValue: Cardinal);
+procedure TPipeBase.SetMaxMessageSize(AValue: Cardinal);
 begin
   EnsureInactive('MaxMessageSize');
   if AValue = 0 then
@@ -328,7 +338,7 @@ begin
   FMaxMessageSize := AValue;
 end;
 
-function TNamedPipeBase.EventPool: TPipeThreadPool;
+function TPipeBase.EventPool: TPipeThreadPool;
 begin
   if Assigned(FDispatchPool) then
     Result := FDispatchPool
@@ -336,34 +346,34 @@ begin
     Result := PipePool;
 end;
 
-procedure TNamedPipeBase.SetupDispatch;
+procedure TPipeBase.SetupDispatch;
 begin
   if FDispatchMode = pdmSerialized then
     FDispatchPool := TPipeThreadPool.Create(1); // 1 worker: ordem FIFO global
 end;
 
-procedure TNamedPipeBase.TeardownDispatch;
+procedure TPipeBase.TeardownDispatch;
 begin
   FreeAndNil(FDispatchPool); // drena a propria fila no Destroy
 end;
 
-procedure TNamedPipeBase.DrainInFlight;
+procedure TPipeBase.DrainInFlight;
 begin
   while PipeAtomicGet(FInFlight) > 0 do
     Sleep(10);
 end;
 
-procedure TNamedPipeBase.IncInFlight;
+procedure TPipeBase.IncInFlight;
 begin
   PipeAtomicInc(FInFlight);
 end;
 
-procedure TNamedPipeBase.DecInFlight;
+procedure TPipeBase.DecInFlight;
 begin
   PipeAtomicDec(FInFlight);
 end;
 
-procedure TNamedPipeBase.DispatchMessage(AConnId: TPipeConnectionId;
+procedure TPipeBase.DispatchMessage(AConnId: TPipeConnectionId;
   const AData: TBytes);
 var
   LCallback: TPipeMessageEvent;
@@ -384,7 +394,7 @@ begin
   EventPool.Queue(TPipeMessageWork.Create(Self, LCallback, AConnId, AData));
 end;
 
-procedure TNamedPipeBase.DispatchConnEvent(AEvent: TPipeConnectionEvent;
+procedure TPipeBase.DispatchConnEvent(AEvent: TPipeConnectionEvent;
   AConnId: TPipeConnectionId);
 var
   LQueued: TPipeQueuedEvent;
@@ -402,7 +412,7 @@ begin
   EventPool.Queue(TPipeConnEventWork.Create(Self, AEvent, AConnId));
 end;
 
-procedure TNamedPipeBase.DispatchError(AConnId: TPipeConnectionId;
+procedure TPipeBase.DispatchError(AConnId: TPipeConnectionId;
   const AMsg: string);
 var
   LCallback: TPipeErrorEvent;

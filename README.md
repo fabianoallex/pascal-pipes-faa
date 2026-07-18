@@ -6,12 +6,12 @@ alto nível que abstrai completamente as chamadas nativas do sistema operacional
 
 ```pascal
 // Servidor
-Server := TNamedPipeServer.Create('meu_app');
+Server := TPipeServer.Create('meu_app');
 Server.OnMessage := MinhaClasse.HandleMessage;  // procedure ... of object
 Server.Listen;
 
 // Cliente
-Client := TNamedPipeClient.Create('meu_app');
+Client := TPipeClient.Create('meu_app');
 Client.Connect(5000);
 Client.SendText('olá!');
 Resposta := Client.RequestText('ping', 3000);   // RPC síncrono com timeout
@@ -30,7 +30,7 @@ No Linux, "named pipe" é implementado como **Unix Domain Socket** — a mesma a
 total com o Named Pipe do Windows: conexões por cliente, bidirecional, detecção de queda.
 FIFOs (`mkfifo`) ficaram fora da v1; a camada de transporte abstrata deixa a porta aberta.
 
-Se `PipeName` já for um caminho nativo (`\\.\pipe\...` ou `/caminho/abs.sock`), ele é usado
+Se `Address` já for um caminho nativo (`\\.\pipe\...` ou `/caminho/abs.sock`), ele é usado
 como está — útil para controlar o diretório (e as permissões) do socket no Linux.
 
 As mensagens trafegam num framing próprio (`NPF1`: header de 20 bytes little-endian com
@@ -82,11 +82,11 @@ requisitos do seu projeto (ou use `lazbuild --add-package-link packages\pipes_fa
 ## API (resumo)
 
 ```pascal
-TNamedPipeBase (abstrata)
-  PipeName, Active, DispatchMode, MaxMessageSize
+TPipeBase (abstrata)
+  Address, Active, DispatchMode, MaxMessageSize
   OnMessage: TPipeMessageEvent;  OnError: TPipeErrorEvent
 
-TNamedPipeServer
+TPipeServer
   Listen; Stop;                          // Listen não-blocante; Stop síncrono
   SendBytes/SendText(ConnId, ...)        // EPipeError se ConnId não existe
   Broadcast/BroadcastText(...)           // snapshot; falha por conexão é engolida
@@ -95,7 +95,7 @@ TNamedPipeServer
   OnClientConnected/OnClientDisconnected: TPipeConnectionEvent
   OnRequest: TPipeRequestEvent           // (const ARequest: TBytes; out AReply: TBytes)
 
-TNamedPipeClient
+TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect re-tenta até o prazo
   SendBytes/SendText(...)                // fire-and-forget
   Request/RequestText(..., TimeoutMs)    // RPC síncrono; EPipeTimeout no prazo
@@ -104,6 +104,21 @@ TNamedPipeClient
 
 Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol
 ```
+
+### Compatibilidade com a API anterior
+
+Os nomes antigos continuam válidos e compilam sem alteração — `TNamedPipeBase`,
+`TNamedPipeServer` e `TNamedPipeClient` são aliases dos tipos acima, e a property
+`PipeName` lê e escreve o mesmo campo de `Address`:
+
+```pascal
+Server := TNamedPipeServer.Create('meu_app');  // igual a TPipeServer
+Server.PipeName := 'outro';                    // igual a Server.Address
+```
+
+O nome antigo amarrava a API ao Named Pipe do Windows, que passa a ser apenas um dos
+transportes possíveis — no Linux o backend já é Unix Domain Socket. Os aliases serão
+marcados `deprecated` só depois que samples e testes migrarem.
 
 ## Samples (`samples/`)
 
@@ -117,8 +132,8 @@ Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol
   pede a forma de pagamento; o cliente acompanha e responde. Mostra o padrão recomendado
   para uso em produção: a UI de cada lado não fala `TBytes`/`TPipeConnectionId` diretamente,
   só os tipos de domínio (`TPdvItem`, `TPdvFormaPagamento`) através de uma fachada
-  (`Pdv.OperadorChannel`/`Pdv.ClienteChannel`) que encapsula `TNamedPipeServer`/
-  `TNamedPipeClient` e o protocolo de mensagens (`Pdv.Protocolo.pas`).
+  (`Pdv.OperadorChannel`/`Pdv.ClienteChannel`) que encapsula `TPipeServer`/
+  `TPipeClient` e o protocolo de mensagens (`Pdv.Protocolo.pas`).
 - **FilaImpressao** (`FilaServidor` + `FilaCliente`) — mostra `pdmSerialized` vs `pdmPool` na
   prática: um handler com estado compartilhado sem lock (de propósito) processa jobs vindos
   em sequência; `FilaServidor pipe serialized` (padrão) nunca acusa reentrância e conclui na
@@ -133,7 +148,7 @@ Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol
   retry com backoff exponencial que trata `EPipeTimeout`/`EPipeClosed` (transitório, repete)
   e `EPipeError` (erro de negócio, não repete) de formas diferentes.
 - **RpcConcorrente** (`RpcConcorrenteServidor` + `RpcConcorrenteCliente`) — prova a garantia
-  de que chamadas `Request`/`RequestText` de várias threads no MESMO `TNamedPipeClient` são
+  de que chamadas `Request`/`RequestText` de várias threads no MESMO `TPipeClient` são
   suportadas: várias `TThread` compartilham uma única instância de cliente e disparam RPCs
   em paralelo; cada uma confere que a resposta que voltou é exatamente a do pedido que ela
   fez (correlation id), expondo qualquer cruzamento de respostas entre chamadores como bug.

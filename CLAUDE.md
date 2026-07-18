@@ -53,9 +53,9 @@ implementar qualquer milestone.
 
 ## API pública (resumo)
 
-`TNamedPipeBase` (abstrata: PipeName, Active, DispatchMode, MaxMessageSize, OnMessage,
-OnError) → `TNamedPipeServer` (Listen, Stop, SendBytes/SendText por ConnId, Broadcast,
-DisconnectClient, OnClientConnected/Disconnected, OnRequest) e `TNamedPipeClient`
+`TPipeBase` (abstrata: Address, Active, DispatchMode, MaxMessageSize, OnMessage,
+OnError) → `TPipeServer` (Listen, Stop, SendBytes/SendText por ConnId, Broadcast,
+DisconnectClient, OnClientConnected/Disconnected, OnRequest) e `TPipeClient`
 (Connect, Disconnect, SendBytes/SendText, Request/RequestText síncrono com timeout,
 AutoReconnect, OnConnected/OnDisconnected). Assinaturas completas em `docs/ARQUITETURA.md`.
 

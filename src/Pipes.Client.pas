@@ -2,7 +2,7 @@ unit Pipes.Client;
 
 {$I pipes.inc}
 
-{ TNamedPipeClient: cliente de Named Pipes (uma conexao).
+{ TPipeClient: cliente de Named Pipes (uma conexao).
 
   Threads: 1 reader (TPipeClientReaderThread) + pool de despacho (Pipes.Base)
   + 1 thread efemera de reconexao (TPipeReconnectThread, FreeOnTerminate),
@@ -41,7 +41,7 @@ uses
   Pipes.Base;
 
 type
-  TNamedPipeClient = class(TNamedPipeBase)
+  TPipeClient = class(TPipeBase)
   private
     FEndpoint: TPipeEndpoint;
     FStream: TPipeEndpointStream;
@@ -72,7 +72,7 @@ type
   protected
     function GetActive: Boolean; override;
   public
-    constructor Create(const APipeName: string);
+    constructor Create(const AAddress: string);
     destructor Destroy; override;
     /// Conecta (re-tentando ate ATimeoutMs; EPipeTimeout no prazo). Se havia
     /// uma sessao anterior (viva ou morta), e' encerrada antes.
@@ -98,6 +98,9 @@ type
       read FOnDisconnected write FOnDisconnected;
   end;
 
+  /// Alias de compatibilidade (ver TNamedPipeBase em Pipes.Base).
+  TNamedPipeClient = TPipeClient;
+
 implementation
 
 type
@@ -118,21 +121,21 @@ type
 
   TPipeClientReaderThread = class(TThread)
   private
-    FClient: TNamedPipeClient;
+    FClient: TPipeClient;
   protected
     procedure Execute; override;
   public
-    constructor Create(AClient: TNamedPipeClient);
+    constructor Create(AClient: TPipeClient);
   end;
 
   { Thread efemera de reconexao (padrao TAMQPReconnectThread). }
   TPipeReconnectThread = class(TThread)
   private
-    FClient: TNamedPipeClient;
+    FClient: TPipeClient;
   protected
     procedure Execute; override;
   public
-    constructor Create(AClient: TNamedPipeClient);
+    constructor Create(AClient: TPipeClient);
   end;
 
 { TPipeRpcSlot }
@@ -151,7 +154,7 @@ end;
 
 { TPipeClientReaderThread }
 
-constructor TPipeClientReaderThread.Create(AClient: TNamedPipeClient);
+constructor TPipeClientReaderThread.Create(AClient: TPipeClient);
 begin
   FClient := AClient;
   FreeOnTerminate := False;
@@ -178,7 +181,7 @@ end;
 
 { TPipeReconnectThread }
 
-constructor TPipeReconnectThread.Create(AClient: TNamedPipeClient);
+constructor TPipeReconnectThread.Create(AClient: TPipeClient);
 begin
   FClient := AClient;
   FreeOnTerminate := True; // se auto-libera; quem sincroniza e' FReconnecting
@@ -215,18 +218,18 @@ begin
   PipeAtomicSet(FClient.FReconnecting, 0); // desistiu (deliberado ou esgotado)
 end;
 
-{ TNamedPipeClient }
+{ TPipeClient }
 
-constructor TNamedPipeClient.Create(const APipeName: string);
+constructor TPipeClient.Create(const AAddress: string);
 begin
-  inherited Create(APipeName);
+  inherited Create(AAddress);
   FWriteLock := TCriticalSection.Create;
   FRpcLock := TCriticalSection.Create;
   FRpcSlots := TDictionary<UInt64, TObject>.Create;
   FReconnectDelayMs := 2000;
 end;
 
-destructor TNamedPipeClient.Destroy;
+destructor TPipeClient.Destroy;
 begin
   try
     Disconnect; // idempotente
@@ -238,12 +241,12 @@ begin
   inherited;
 end;
 
-function TNamedPipeClient.GetActive: Boolean;
+function TPipeClient.GetActive: Boolean;
 begin
   Result := FConnected;
 end;
 
-procedure TNamedPipeClient.WaitReconnectDone;
+procedure TPipeClient.WaitReconnectDone;
 begin
   // FDeliberate ja esta em 1: a thread de reconexao desiste no proximo passo
   // (pior caso: espera um PipeConnect de ate ReconnectDelayMs terminar).
@@ -251,12 +254,12 @@ begin
     Sleep(5);
 end;
 
-procedure TNamedPipeClient.Connect(ATimeoutMs: Cardinal);
+procedure TPipeClient.Connect(ATimeoutMs: Cardinal);
 begin
   Disconnect; // encerra/limpa sessao anterior (viva ou morta); idempotente
   SetupDispatch;
   try
-    FEndpoint := PipeConnect(PipeName, ATimeoutMs);
+    FEndpoint := PipeConnect(Address, ATimeoutMs);
   except
     TeardownDispatch;
     raise;
@@ -269,7 +272,7 @@ begin
   DispatchConnEvent(FOnConnected, 0);
 end;
 
-procedure TNamedPipeClient.Disconnect;
+procedure TPipeClient.Disconnect;
 var
   LHadSession: Boolean;
 begin
@@ -300,7 +303,7 @@ begin
   end;
 end;
 
-function TNamedPipeClient.TryReopenSession: Boolean;
+function TPipeClient.TryReopenSession: Boolean;
 var
   LEndpoint: TPipeEndpoint;
 begin
@@ -323,7 +326,7 @@ begin
   try
     // O proprio PipeConnect re-tenta ate ReconnectDelayMs: e' o espacamento
     // entre tentativas (nao ha Sleep adicional).
-    LEndpoint := PipeConnect(PipeName, FReconnectDelayMs);
+    LEndpoint := PipeConnect(Address, FReconnectDelayMs);
   except
     on EPipeError do
       Exit; // inclui EPipeTimeout: proxima tentativa (ou desiste no teto)
@@ -352,13 +355,13 @@ begin
   Result := True;
 end;
 
-procedure TNamedPipeClient.NotifyDisconnectedOnce;
+procedure TPipeClient.NotifyDisconnectedOnce;
 begin
   if PipeAtomicCompareExchange(FDisconnectNotified, 1, 0) = 0 then
     DispatchConnEvent(FOnDisconnected, 0);
 end;
 
-procedure TNamedPipeClient.ReaderFinished(const AError: string);
+procedure TPipeClient.ReaderFinished(const AError: string);
 begin
   FConnected := False;
   FailPendingRpc; // Requests pendentes acordam com EPipeClosed
@@ -372,7 +375,7 @@ begin
     TPipeReconnectThread.Create(Self);
 end;
 
-procedure TNamedPipeClient.HandleFrame(const AFrame: TPipeFrame);
+procedure TPipeClient.HandleFrame(const AFrame: TPipeFrame);
 begin
   case AFrame.Kind of
     pfkMessage:
@@ -384,7 +387,7 @@ begin
   end;
 end;
 
-procedure TNamedPipeClient.ResolveRpc(const AFrame: TPipeFrame);
+procedure TPipeClient.ResolveRpc(const AFrame: TPipeFrame);
 var
   LObj: TObject;
   LSlot: TPipeRpcSlot;
@@ -410,7 +413,7 @@ begin
   end;
 end;
 
-procedure TNamedPipeClient.FailPendingRpc;
+procedure TPipeClient.FailPendingRpc;
 var
   LObj: TObject;
 begin
@@ -426,7 +429,7 @@ begin
   end;
 end;
 
-function TNamedPipeClient.Request(const AData: TBytes;
+function TPipeClient.Request(const AData: TBytes;
   ATimeoutMs: Cardinal): TBytes;
 var
   LCorrId: UInt64;
@@ -479,13 +482,13 @@ begin
   end;
 end;
 
-function TNamedPipeClient.RequestText(const AText: string;
+function TPipeClient.RequestText(const AText: string;
   ATimeoutMs: Cardinal): string;
 begin
   Result := PipeUtf8Decode(Request(PipeUtf8Encode(AText), ATimeoutMs));
 end;
 
-procedure TNamedPipeClient.SendBytes(const AData: TBytes);
+procedure TPipeClient.SendBytes(const AData: TBytes);
 begin
   FWriteLock.Enter;
   try
@@ -497,7 +500,7 @@ begin
   end;
 end;
 
-procedure TNamedPipeClient.SendText(const AText: string);
+procedure TPipeClient.SendText(const AText: string);
 begin
   SendBytes(PipeUtf8Encode(AText));
 end;

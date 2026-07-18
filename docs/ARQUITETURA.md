@@ -7,7 +7,7 @@ e invariantes) vive em `../CLAUDE.md`; este documento guarda o racional completo
 
 Biblioteca de IPC local de alto nível para Delphi 12+ (Win64) e FPC 3.2.2/Lazarus
 (Linux x86_64/ARM64), com codebase única. O desenvolvedor final trabalha só com
-`TNamedPipeServer`/`TNamedPipeClient`, eventos `of object` e `TBytes`/strings UTF-8 —
+`TPipeServer`/`TPipeClient`, eventos `of object` e `TBytes`/strings UTF-8 —
 nenhuma chamada de SO exposta.
 
 Modelo de concorrência derivado do projeto `pascal-amqp-faa` (comprovado em produção):
@@ -93,9 +93,9 @@ type
   EPipeTimeout = class(EPipeError);
   EPipeClosed  = class(EPipeError);
 
-  TNamedPipeBase = class abstract
+  TPipeBase = class abstract
   public
-    property PipeName: string;          // 'meu_app' → Win: \\.\pipe\meu_app
+    property Address: string;          // 'meu_app' → Win: \\.\pipe\meu_app
                                         //             Linux: /tmp/meu_app.pipe (configurável)
     property Active: Boolean;           // read-only
     property DispatchMode: TPipeDispatchMode;
@@ -104,7 +104,7 @@ type
     property OnError: TPipeErrorEvent;
   end;
 
-  TNamedPipeServer = class(TNamedPipeBase)
+  TPipeServer = class(TPipeBase)
   public
     procedure Listen;                   // não-blocante: sobe a thread acceptor
     procedure Stop;                     // síncrono e idempotente: join de todas as threads
@@ -121,7 +121,7 @@ type
     property  OnRequest: TPipeRequestEvent;  // retorno do handler vira frame reply
   end;
 
-  TNamedPipeClient = class(TNamedPipeBase)
+  TPipeClient = class(TPipeBase)
   public
     procedure Connect(ATimeoutMs: Cardinal = 5000);
     procedure Disconnect;               // síncrono e idempotente
@@ -246,8 +246,8 @@ Todos os handles com `FILE_FLAG_OVERLAPPED`; nenhuma chamada síncrona blocante.
 | `src/Pipes.Transport.pas` | `TPipeEndpoint`/`TPipeListener` abstratos (Read/Write/Accept interrompíveis + CloseAbort) |
 | `src/Pipes.Transport.Windows.pas` | Named Pipe overlapped (`{$IFDEF PIPES_WINDOWS}`) |
 | `src/Pipes.Transport.Posix.pas` | UDS + fpPoll + self-pipe (`{$IFDEF PIPES_POSIX}`) |
-| `src/Pipes.Server.pas` | `TNamedPipeServer` + acceptor + conexões |
-| `src/Pipes.Client.pas` | `TNamedPipeClient` + reconexão |
+| `src/Pipes.Server.pas` | `TPipeServer` + acceptor + conexões |
+| `src/Pipes.Client.pas` | `TPipeClient` + reconexão |
 | `tests/Unit`, `tests/Integration` | DUnit (Delphi) + fpcunit (FPC), layout espelhado do pascal-amqp-faa |
 | `samples/` | echo console; chat VCL/LCL |
 
