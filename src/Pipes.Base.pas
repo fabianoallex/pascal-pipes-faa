@@ -54,6 +54,7 @@ type
   private
     FAddress: string;
     FTransport: TPipeTransport;
+    FKeepAliveSeconds: Cardinal;
     FDispatchMode: TPipeDispatchMode;
     FMaxMessageSize: Cardinal;
     FOnMessage: TPipeMessageEvent;
@@ -63,6 +64,7 @@ type
     FGuard: TPipeGuard;             // guarda dos eventos pdmMainThread
     procedure SetAddress(const AValue: string);
     procedure SetTransport(AValue: TPipeTransport);
+    procedure SetKeepAliveSeconds(AValue: Cardinal);
     procedure SetDispatchMode(AValue: TPipeDispatchMode);
     procedure SetMaxMessageSize(AValue: Cardinal);
   protected
@@ -96,6 +98,16 @@ type
     property Address: string read FAddress write SetAddress;
     /// Transporte que carrega os frames (ptLocal por padrao).
     property Transport: TPipeTransport read FTransport write SetTransport;
+    /// Segundos de ociosidade antes do primeiro probe de keepalive TCP;
+    /// 0 desliga. So tem efeito em ptTcp (ptLocal ignora: a morte do processo
+    /// par sempre fecha o pipe/socket local).
+    ///
+    /// Serve a DOIS propositos, e o segundo costuma ser o mais importante:
+    /// detectar conexao morta em silencio, e manter vivo o mapeamento de
+    /// NAT/VPN de uma conexao ociosa — por isso o valor precisa ser MENOR que
+    /// o timeout de ociosidade do tunel, nao maior.
+    property KeepAliveSeconds: Cardinal
+      read FKeepAliveSeconds write SetKeepAliveSeconds;
     /// Compatibilidade com a API anterior a generalizacao do transporte.
     /// Mesmo campo de Address; sera marcada deprecated apos a migracao de
     /// samples e testes.
@@ -306,6 +318,7 @@ begin
   inherited Create;
   FAddress := AAddress; // direto no campo: GetActive e' abstrato aqui
   FTransport := ATransport;
+  FKeepAliveSeconds := PIPES_DEFAULT_KEEPALIVE_SECONDS;
   FDispatchMode := pdmPool;
   FMaxMessageSize := PIPES_DEFAULT_MAX_MESSAGE_SIZE;
   FGuard := TPipeGuard.Create;
@@ -336,6 +349,12 @@ procedure TPipeBase.SetTransport(AValue: TPipeTransport);
 begin
   EnsureInactive('Transport');
   FTransport := AValue;
+end;
+
+procedure TPipeBase.SetKeepAliveSeconds(AValue: Cardinal);
+begin
+  EnsureInactive('KeepAliveSeconds');
+  FKeepAliveSeconds := AValue;
 end;
 
 procedure TPipeBase.SetDispatchMode(AValue: TPipeDispatchMode);

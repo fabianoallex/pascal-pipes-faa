@@ -66,12 +66,14 @@ type
 /// Cria o ponto de escuta do servidor para o endereco dado (ja deixa a primeira
 /// instancia/socket pronta: um cliente pode conectar antes do primeiro Accept).
 function PipeCreateListener(const AAddress: string;
-  ATransport: TPipeTransport = ptLocal): TPipeListener;
+  ATransport: TPipeTransport = ptLocal;
+  AKeepAliveSeconds: Cardinal = 0): TPipeListener;
 
 /// Conecta ao servidor, re-tentando ate ATimeoutMs (cobre servidor ainda nao
 /// iniciado e instancias momentaneamente ocupadas). EPipeTimeout no prazo.
 function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
-  ATransport: TPipeTransport = ptLocal): TPipeEndpoint;
+  ATransport: TPipeTransport = ptLocal;
+  AKeepAliveSeconds: Cardinal = 0): TPipeEndpoint;
 
 /// Nome nativo do pipe: '\\.\pipe\<nome>' no Windows, '/tmp/<nome>.sock' no
 /// POSIX. Se AAddress ja for um caminho nativo ('\\...' ou '/...'), e' usado
@@ -209,11 +211,11 @@ begin
 end;
 
 function PipeCreateListener(const AAddress: string;
-  ATransport: TPipeTransport): TPipeListener;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeListener;
 begin
   PipeValidateAddress(AAddress, ATransport);
   if ATransport = ptTcp then
-    Exit(TcpPipeCreateListener(AAddress));
+    Exit(TcpPipeCreateListener(AAddress, AKeepAliveSeconds));
   {$IFDEF PIPES_WINDOWS}
   Result := WinPipeCreateListener(AAddress);
   {$ELSE}
@@ -222,11 +224,11 @@ begin
 end;
 
 function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
-  ATransport: TPipeTransport): TPipeEndpoint;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeEndpoint;
 begin
   PipeValidateAddress(AAddress, ATransport);
   if ATransport = ptTcp then
-    Exit(TcpPipeConnect(AAddress, ATimeoutMs));
+    Exit(TcpPipeConnect(AAddress, ATimeoutMs, AKeepAliveSeconds));
   {$IFDEF PIPES_WINDOWS}
   Result := WinPipeConnect(AAddress, ATimeoutMs);
   {$ELSE}

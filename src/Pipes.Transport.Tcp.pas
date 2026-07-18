@@ -63,7 +63,7 @@ type
     procedure WaitReadyOrStop(const AOp: string);
   public
     /// Assume a posse de ASocket (conectado).
-    constructor Create(ASocket: TSocket);
+    constructor Create(ASocket: TSocket; AKeepAliveSeconds: Cardinal);
     destructor Destroy; override;
     function Read(var ABuffer; ACount: Integer): Integer; override;
     procedure WriteExactly(const ABuffer; ACount: Integer); override;
@@ -76,18 +76,24 @@ type
     FAcceptEvent: WSAEVENT;
     FStopEvent: WSAEVENT;
     FClosed: Integer;
+    FKeepAliveSeconds: Cardinal; // reaplicado em cada socket aceito
   public
     /// Assume a posse de ASocket (ja em listen).
-    constructor Create(ASocket: TSocket);
+    constructor Create(ASocket: TSocket; AKeepAliveSeconds: Cardinal);
     destructor Destroy; override;
     function Accept: TPipeEndpoint; override;
     procedure Close; override;
   end;
 {$ENDIF}
 
-function TcpPipeCreateListener(const AAddress: string): TPipeListener;
-function TcpPipeConnect(const AAddress: string;
-  ATimeoutMs: Cardinal): TPipeEndpoint;
+/// AKeepAliveSeconds: ociosidade antes do primeiro probe (0 = desligado). No
+/// listener vale para as conexoes ACEITAS, que herdam a opcao do socket de
+/// escuta (comportamento documentado do accept nas duas plataformas); no
+/// Windows tambem e' reaplicada explicitamente em cada socket aceito.
+function TcpPipeCreateListener(const AAddress: string;
+  AKeepAliveSeconds: Cardinal): TPipeListener;
+function TcpPipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
+  AKeepAliveSeconds: Cardinal): TPipeEndpoint;
 
 implementation
 
@@ -181,6 +187,9 @@ const
   PIPE_FD_CLOSE     = $20;
   PIPE_TCP_NODELAY  = 1;
   PIPE_SOL_SOCKET   = $FFFF;
+  PIPE_SO_KEEPALIVE = $0008;
+  // _WSAIOW(IOC_VENDOR, 4) — mstcpip.h
+  PIPE_SIO_KEEPALIVE_VALS = LongWord($98000004);
   PIPE_WSA_INFINITE = Cardinal($FFFFFFFF);
   PIPE_WSA_WAIT_FAILED = Cardinal($FFFFFFFF);
   PIPE_WSA_WAIT_EVENT_0 = 0;
@@ -242,9 +251,52 @@ begin
   setsockopt(ASocket, PIPE_IPPROTO_TCP, PIPE_TCP_NODELAY, @LOn, SizeOf(LOn));
 end;
 
+type
+  { Layout de tcp_keepalive (mstcpip.h), argumento do SIO_KEEPALIVE_VALS. }
+  TPipeTcpKeepalive = record
+    onoff: LongWord;
+    keepalivetime: LongWord;     // ms de ociosidade antes do 1o probe
+    keepaliveinterval: LongWord; // ms entre probes
+  end;
+
+function pipe_WSAIoctl(ASocket: TSocket; ACode: LongWord;
+  AInBuf: Pointer; AInSize: LongWord; AOutBuf: Pointer; AOutSize: LongWord;
+  ABytesReturned: PLongWord; AOverlapped: Pointer;
+  ACompletion: Pointer): Integer; stdcall;
+  external 'ws2_32.dll' name 'WSAIoctl';
+
+// Liga keepalive com tempos POR SOCKET. Usa SIO_KEEPALIVE_VALS (existe desde o
+// Windows 2000) em vez de setsockopt(TCP_KEEPIDLE), que so chegou no Win10
+// 1709 — hardware de PDV costuma ser antigo demais para depender disso.
+//
+// O SIO_KEEPALIVE_VALS nao expoe a contagem de probes: no Windows ela e' fixa
+// (10 no XP/2003, 2 do Vista em diante), entao a deteccao la sai um pouco
+// diferente do POSIX. Manter vivo o mapeamento de NAT/VPN, que e' o objetivo
+// principal, depende so do keepalivetime e funciona igual nos dois.
+procedure SetKeepAlive(ASocket: TSocket; ASeconds: Cardinal);
+var
+  LVals: TPipeTcpKeepalive;
+  LOn: Integer;
+  LReturned: LongWord;
+begin
+  if ASeconds = 0 then
+    Exit;
+  LOn := 1;
+  setsockopt(ASocket, PIPE_SOL_SOCKET, PIPE_SO_KEEPALIVE, @LOn, SizeOf(LOn));
+  LVals.onoff := 1;
+  LVals.keepalivetime := ASeconds * 1000;
+  LVals.keepaliveinterval := PIPES_KEEPALIVE_INTERVAL_SECONDS * 1000;
+  LReturned := 0;
+  // Melhor esforco, como o TCP_NODELAY: sem keepalive a conexao ainda
+  // funciona, so perde a deteccao/manutencao de ociosidade.
+  pipe_WSAIoctl(ASocket, PIPE_SIO_KEEPALIVE_VALS, @LVals, SizeOf(LVals),
+    nil, 0, @LReturned, nil, nil);
+end;
+
 { TPipeTcpWinEndpoint }
 
-constructor TPipeTcpWinEndpoint.Create(ASocket: TSocket);
+constructor TPipeTcpWinEndpoint.Create(ASocket: TSocket;
+  AKeepAliveSeconds: Cardinal);
 begin
   inherited Create;
   FSocket := ASocket;
@@ -257,6 +309,7 @@ begin
     raise EPipeError.CreateFmt('WSAEventSelect falhou (WSA %d)',
       [WSAGetLastError]);
   SetNoDelay(FSocket);
+  SetKeepAlive(FSocket, AKeepAliveSeconds);
 end;
 
 destructor TPipeTcpWinEndpoint.Destroy;
@@ -355,12 +408,14 @@ end;
 
 { TPipeTcpWinListener }
 
-constructor TPipeTcpWinListener.Create(ASocket: TSocket);
+constructor TPipeTcpWinListener.Create(ASocket: TSocket;
+  AKeepAliveSeconds: Cardinal);
 begin
   inherited Create;
   FSocket := ASocket;
   FAcceptEvent := NewWsaEvent;
   FStopEvent := NewWsaEvent;
+  FKeepAliveSeconds := AKeepAliveSeconds;
   if WSAEventSelect(FSocket, FAcceptEvent, PIPE_FD_ACCEPT) <> 0 then
     raise EPipeError.CreateFmt('WSAEventSelect(accept) falhou (WSA %d)',
       [WSAGetLastError]);
@@ -404,7 +459,7 @@ begin
       Exit;
     LConn := WinSock2.accept(FSocket, nil, nil);
     if LConn <> INVALID_SOCKET then
-      Exit(TPipeTcpWinEndpoint.Create(LConn));
+      Exit(TPipeTcpWinEndpoint.Create(LConn, FKeepAliveSeconds));
     LErr := WSAGetLastError;
     if LErr <> WSAEWOULDBLOCK then
     begin
@@ -438,7 +493,8 @@ begin
   GWinsockReady := True;
 end;
 
-function TcpPipeCreateListener(const AAddress: string): TPipeListener;
+function TcpPipeCreateListener(const AAddress: string;
+  AKeepAliveSeconds: Cardinal): TPipeListener;
 var
   LInfo, LCur: PPipeAddrInfo;
   LSock: TSocket;
@@ -457,9 +513,13 @@ begin
       begin
         // Sem SO_REUSEADDR de proposito: no Windows ele permitiria outro
         // processo sequestrar a porta (ver cabecalho da unit).
+        // No socket de escuta as opcoes valem como molde: o accept devolve
+        // socket que as herda. No Windows o TPipeTcpWinEndpoint ainda reaplica
+        // explicitamente, entao a heranca aqui e' cinto e suspensorio.
+        SetKeepAlive(LSock, AKeepAliveSeconds);
         if (pipe_bind(LSock, LCur^.ai_addr, Integer(LCur^.ai_addrlen)) = 0)
           and (WinSock2.listen(LSock, PIPE_LISTEN_BACKLOG) = 0) then
-          Exit(TPipeTcpWinListener.Create(LSock));
+          Exit(TPipeTcpWinListener.Create(LSock, AKeepAliveSeconds));
         LErr := WSAGetLastError;
         closesocket(LSock);
       end
@@ -551,8 +611,8 @@ begin
   end;
 end;
 
-function TcpPipeConnect(const AAddress: string;
-  ATimeoutMs: Cardinal): TPipeEndpoint;
+function TcpPipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
+  AKeepAliveSeconds: Cardinal): TPipeEndpoint;
 var
   LInfo, LCur: PPipeAddrInfo;
   LSock: TSocket;
@@ -571,7 +631,7 @@ begin
       begin
         LSock := ConnectCandidate(LCur, LDeadline, LErr);
         if LSock <> INVALID_SOCKET then
-          Exit(TPipeTcpWinEndpoint.Create(LSock));
+          Exit(TPipeTcpWinEndpoint.Create(LSock, AKeepAliveSeconds));
         LCur := LCur^.ai_next;
       end;
       // Servidor ainda nao subiu ou backlog cheio: re-tenta ate o prazo, que
@@ -598,6 +658,13 @@ begin
     [AOp, AErr, SysErrorMessage(AErr)]);
 end;
 
+const
+  PIPE_TCP_NODELAY  = 1;
+  // <netinet/tcp.h> (Linux). Nao expostos pela unit Sockets do FPC 3.2.2.
+  PIPE_TCP_KEEPIDLE  = 4;
+  PIPE_TCP_KEEPINTVL = 5;
+  PIPE_TCP_KEEPCNT   = 6;
+
 procedure SetNoDelay(AFd: cint);
 var
   LOn: cint;
@@ -607,7 +674,27 @@ begin
   fpSetSockOpt(AFd, PIPE_IPPROTO_TCP, PIPE_TCP_NODELAY, @LOn, SizeOf(LOn));
 end;
 
-function TcpPipeCreateListener(const AAddress: string): TPipeListener;
+// Aqui, diferente do Windows, os tres parametros sao ajustaveis por socket, o
+// que torna a deteccao previsivel: ASeconds ociosos + PROBE_COUNT probes a
+// cada INTERVAL segundos.
+procedure SetKeepAlive(AFd: cint; ASeconds: Cardinal);
+var
+  LVal: cint;
+begin
+  if ASeconds = 0 then
+    Exit;
+  LVal := 1;
+  fpSetSockOpt(AFd, SOL_SOCKET, SO_KEEPALIVE, @LVal, SizeOf(LVal));
+  LVal := cint(ASeconds);
+  fpSetSockOpt(AFd, PIPE_IPPROTO_TCP, PIPE_TCP_KEEPIDLE, @LVal, SizeOf(LVal));
+  LVal := PIPES_KEEPALIVE_INTERVAL_SECONDS;
+  fpSetSockOpt(AFd, PIPE_IPPROTO_TCP, PIPE_TCP_KEEPINTVL, @LVal, SizeOf(LVal));
+  LVal := PIPES_KEEPALIVE_PROBE_COUNT;
+  fpSetSockOpt(AFd, PIPE_IPPROTO_TCP, PIPE_TCP_KEEPCNT, @LVal, SizeOf(LVal));
+end;
+
+function TcpPipeCreateListener(const AAddress: string;
+  AKeepAliveSeconds: Cardinal): TPipeListener;
 var
   LInfo, LCur: PPipeAddrInfo;
   LFd, LErr, LOn: cint;
@@ -625,6 +712,11 @@ begin
         // comportamento desejado, diferente do Windows.
         LOn := 1;
         fpSetSockOpt(LFd, SOL_SOCKET, SO_REUSEADDR, @LOn, SizeOf(LOn));
+        // No POSIX o socket aceito HERDA as opcoes do socket de escuta (nao ha
+        // hook de accept aqui: quem aceita e' o TPipePosixListener, que e'
+        // compartilhado com o transporte UDS). Por isso o keepalive e' setado
+        // no molde, antes do bind.
+        SetKeepAlive(LFd, AKeepAliveSeconds);
         if (fpBind(LFd, LCur^.ai_addr, LCur^.ai_addrlen) = 0)
           and (fpListen(LFd, PIPE_LISTEN_BACKLOG) = 0) then
           // Path vazio: nao ha arquivo de socket para remover no destructor.
@@ -714,8 +806,8 @@ begin
   Result := LFd;
 end;
 
-function TcpPipeConnect(const AAddress: string;
-  ATimeoutMs: Cardinal): TPipeEndpoint;
+function TcpPipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
+  AKeepAliveSeconds: Cardinal): TPipeEndpoint;
 var
   LInfo, LCur: PPipeAddrInfo;
   LFd, LErr: cint;
@@ -734,6 +826,7 @@ begin
         if LFd >= 0 then
         begin
           SetNoDelay(LFd);
+          SetKeepAlive(LFd, AKeepAliveSeconds);
           Exit(TPipePosixEndpoint.Create(LFd));
         end;
         LCur := LCur^.ai_next;

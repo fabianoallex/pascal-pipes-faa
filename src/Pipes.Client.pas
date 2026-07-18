@@ -261,7 +261,7 @@ begin
   Disconnect; // encerra/limpa sessao anterior (viva ou morta); idempotente
   SetupDispatch;
   try
-    FEndpoint := PipeConnect(Address, ATimeoutMs, Transport);
+    FEndpoint := PipeConnect(Address, ATimeoutMs, Transport, KeepAliveSeconds);
   except
     TeardownDispatch;
     raise;
@@ -328,7 +328,7 @@ begin
   try
     // O proprio PipeConnect re-tenta ate ReconnectDelayMs: e' o espacamento
     // entre tentativas (nao ha Sleep adicional).
-    LEndpoint := PipeConnect(Address, FReconnectDelayMs, Transport);
+    LEndpoint := PipeConnect(Address, FReconnectDelayMs, Transport, KeepAliveSeconds);
   except
     on EPipeError do
       Exit; // inclui EPipeTimeout: proxima tentativa (ou desiste no teto)

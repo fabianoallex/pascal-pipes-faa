@@ -65,6 +65,16 @@ const
   /// Teto padrao de payload por mensagem (protecao contra frame corrompido
   /// ou malicioso); ajustavel por instancia via MaxMessageSize.
   PIPES_DEFAULT_MAX_MESSAGE_SIZE = 16 * 1024 * 1024;
+  /// Ociosidade (segundos) antes do primeiro probe de keepalive em ptTcp.
+  /// 20s e' deliberadamente curto: o alvo sao conexoes sobre VPN/NAT, cujo
+  /// timeout de ociosidade costuma ficar entre 30s e poucos minutos — o probe
+  /// precisa acontecer ANTES disso para manter o mapeamento vivo. Ignorado por
+  /// ptLocal. Ajustavel por instancia via KeepAliveSeconds (0 = desligado).
+  PIPES_DEFAULT_KEEPALIVE_SECONDS = 20;
+  /// Intervalo entre probes e quantos probes sem resposta derrubam a conexao.
+  /// Com os padroes: par morto detectado em ~20 + 3*5 = 35s.
+  PIPES_KEEPALIVE_INTERVAL_SECONDS = 5;
+  PIPES_KEEPALIVE_PROBE_COUNT = 3;
 
 implementation
 

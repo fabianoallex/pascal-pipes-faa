@@ -66,10 +66,42 @@ funcionam. `TCP_NODELAY` é ligado (o atraso do Nagle penalizaria muito `Request
 > (ACL do Windows, permissão de arquivo do UDS). Um listener em `0.0.0.0` aceita qualquer
 > um que alcance a porta — autenticar é responsabilidade da aplicação.
 
-> **Ainda não implementado para rede:** keepalive/heartbeat. Uma conexão TCP pode morrer
-> em silêncio (cabo, NAT timeout) sem que nenhum dos lados perceba; hoje o reader ficaria
-> esperando indefinidamente. Em IPC local isso não acontecia, porque a queda do processo
-> par sempre fecha o pipe. Se você depende de detectar peer morto, trate na aplicação.
+### Keepalive (`KeepAliveSeconds`)
+
+Uma conexão TCP pode morrer em silêncio — cabo, máquina desligada, ou o timeout de
+ociosidade de um túnel VPN/NAT. Nenhum dos dois lados é avisado, e o reader ficaria
+esperando para sempre. Em IPC local isso não existe: a morte do processo par sempre fecha
+o pipe.
+
+Por isso `ptTcp` liga keepalive TCP por padrão, com **20 s** de ociosidade
+(`PIPES_DEFAULT_KEEPALIVE_SECONDS`). `ptLocal` ignora a property.
+
+```pascal
+Server.KeepAliveSeconds := 20;  // padrão
+Server.KeepAliveSeconds := 0;   // desliga
+```
+
+O valor serve a **dois propósitos**, e o segundo costuma ser o mais importante:
+
+1. **Detectar** conexão morta — com os padrões, em ~35 s (20 s ociosos + 3 probes a cada
+   5 s). A detecção vira `EPipeClosed`, que dispara `OnClientDisconnected` no servidor e
+   `OnDisconnected` + `AutoReconnect` no cliente.
+2. **Manter vivo** o mapeamento de NAT/VPN de uma conexão ociosa, evitando que ela morra.
+   Por isso o valor precisa ser **menor que o timeout de ociosidade do túnel**, não maior
+   — se a sua VPN derruba sessão ociosa em 30 s, `KeepAliveSeconds` tem que ficar
+   confortavelmente abaixo disso.
+
+No servidor isso importa mais do que parece: sem keepalive ele acumula conexões zumbi
+indefinidamente — `Broadcast` escrevendo para clientes que não existem mais e
+`ClientCount` mentindo.
+
+**Diferença entre plataformas:** no POSIX os três parâmetros (ocioso, intervalo, número
+de probes) são ajustáveis por socket, então a detecção é exatamente a descrita. No Windows
+usa-se `SIO_KEEPALIVE_VALS` (disponível desde o Windows 2000, ao contrário de
+`setsockopt(TCP_KEEPIDLE)`, que exige Win10 1709+ — relevante para hardware antigo), e ele
+não expõe a contagem de probes: ela é fixa no SO (2 do Vista em diante). O tempo até
+detectar difere um pouco; a manutenção do mapeamento NAT/VPN, que depende só do tempo
+ocioso, é idêntica nos dois.
 
 As mensagens trafegam num framing próprio (`NPF1`: header de 20 bytes little-endian com
 magic, kind, correlation id e length), idêntico nos dois SOs — fronteiras de mensagem são
@@ -121,7 +153,7 @@ requisitos do seu projeto (ou use `lazbuild --add-package-link packages\pipes_fa
 
 ```pascal
 TPipeBase (abstrata)
-  Address, Transport, Active, DispatchMode, MaxMessageSize
+  Address, Transport, KeepAliveSeconds, Active, DispatchMode, MaxMessageSize
   OnMessage: TPipeMessageEvent;  OnError: TPipeErrorEvent
 
 TPipeServer

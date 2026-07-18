@@ -348,7 +348,7 @@ begin
     raise EPipeError.Create('servidor ja esta ativo');
   SetupDispatch;
   try
-    FListener := PipeCreateListener(Address, Transport);
+    FListener := PipeCreateListener(Address, Transport, KeepAliveSeconds);
   except
     TeardownDispatch;
     raise;
