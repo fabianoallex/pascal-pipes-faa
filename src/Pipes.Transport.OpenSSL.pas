@@ -87,12 +87,41 @@ type
     procedure DoHandshake;
     procedure ShutdownTls;
   public
+    /// Uso interno: inicializa campos SEM negociar (o lado servidor negocia
+    /// depois, na reader thread da conexao).
+    constructor CreateDeferred(AUnderlying: TStream);
     constructor Create(AUnderlying: TStream; const ATargetName: string;
       AVerifyPeer: Boolean);
     destructor Destroy; override;
     function Read(var Buffer; Count: Longint): Longint; override;
     function Write(const Buffer; Count: Longint): Longint; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+  end;
+
+  { Stream TLS SERVIDOR sobre OpenSSL. Reaproveita quase tudo do cliente: os
+    BIOs de memoria sao agnosticos de direcao e o proprio DoHandshake serve
+    aos dois lados (SSL_do_handshake), porque a direcao e' escolhida por
+    SSL_set_accept_state em vez de SSL_set_connect_state.
+
+    So o setup difere: TLS_server_method, certificado + chave PEM, e nenhuma
+    validacao do par (mTLS e' T4).
+
+    Como no Schannel, a negociacao NAO acontece no construtor — quem dispara
+    e' Negotiate, chamada pela reader thread da conexao. }
+  TPipeOpenSslServerStream = class(TPipeOpenSslStream)
+  private
+    FCertFile: AnsiString;
+    FKeyFile: AnsiString;
+    FNegotiated: Boolean;
+    procedure SetupServerSsl;
+  public
+    /// ACertFile/AKeyFile em PEM. Diferente do Windows (que usa PFX unico), o
+    /// OpenSSL le certificado e chave separados — formato nativo do mundo
+    /// POSIX, e o que openssl(1) gera por padrao.
+    constructor Create(AUnderlying: TStream;
+      const ACertFile, AKeyFile: string);
+    /// Idempotente. Levanta EPipeTls se a negociacao falhar.
+    procedure Negotiate;
   end;
 
 {$ENDIF PIPES_OPENSSL}
@@ -163,6 +192,8 @@ const
   SSL_CTRL_SET_MIN_PROTO_VERSION  = 123;
   TLSEXT_NAMETYPE_HOST_NAME       = 0;
   TLS1_2_VERSION                  = $0303;
+  // <openssl/ssl.h>: formato do arquivo de chave privada.
+  SSL_FILETYPE_PEM = 1;
 
   X509_V_OK = 0;
 
@@ -171,6 +202,12 @@ const
 var
   // libssl
   p_TLS_client_method: function: Pointer; cdecl;
+  p_TLS_server_method: function: Pointer; cdecl;
+  p_SSL_CTX_use_certificate_chain_file: function(ACtx: Pointer;
+    AFile: PAnsiChar): Integer; cdecl;
+  p_SSL_CTX_use_PrivateKey_file: function(ACtx: Pointer; AFile: PAnsiChar;
+    AType: Integer): Integer; cdecl;
+  p_SSL_CTX_check_private_key: function(ACtx: Pointer): Integer; cdecl;
   p_SSL_CTX_new: function(AMeth: Pointer): Pointer; cdecl;
   p_SSL_CTX_free: procedure(ACtx: Pointer); cdecl;
   p_SSL_CTX_ctrl: function(ACtx: Pointer; ACmd: Integer; ALarg: TSslLong;
@@ -185,6 +222,7 @@ var
   p_SSL_set1_host: function(ASsl: Pointer; AHost: PAnsiChar): Integer; cdecl;
   p_SSL_set_bio: procedure(ASsl: Pointer; ARbio, AWbio: Pointer); cdecl;
   p_SSL_set_connect_state: procedure(ASsl: Pointer); cdecl;
+  p_SSL_set_accept_state: procedure(ASsl: Pointer); cdecl;
   p_SSL_do_handshake: function(ASsl: Pointer): Integer; cdecl;
   p_SSL_read: function(ASsl: Pointer; ABuf: Pointer; ANum: Integer): Integer; cdecl;
   p_SSL_write: function(ASsl: Pointer; ABuf: Pointer; ANum: Integer): Integer; cdecl;
@@ -312,6 +350,14 @@ begin
       p_SSL_set1_host := SslMustGet(LSsl, 'SSL_set1_host', LSslName);
       p_SSL_set_bio := SslMustGet(LSsl, 'SSL_set_bio', LSslName);
       p_SSL_set_connect_state := SslMustGet(LSsl, 'SSL_set_connect_state', LSslName);
+      p_SSL_set_accept_state := SslMustGet(LSsl, 'SSL_set_accept_state', LSslName);
+      p_TLS_server_method := SslMustGet(LSsl, 'TLS_server_method', LSslName);
+      p_SSL_CTX_use_certificate_chain_file :=
+        SslMustGet(LSsl, 'SSL_CTX_use_certificate_chain_file', LSslName);
+      p_SSL_CTX_use_PrivateKey_file :=
+        SslMustGet(LSsl, 'SSL_CTX_use_PrivateKey_file', LSslName);
+      p_SSL_CTX_check_private_key :=
+        SslMustGet(LSsl, 'SSL_CTX_check_private_key', LSslName);
       p_SSL_do_handshake := SslMustGet(LSsl, 'SSL_do_handshake', LSslName);
       p_SSL_read := SslMustGet(LSsl, 'SSL_read', LSslName);
       p_SSL_write := SslMustGet(LSsl, 'SSL_write', LSslName);
@@ -380,15 +426,20 @@ end;
 
 { TPipeOpenSslStream }
 
-constructor TPipeOpenSslStream.Create(AUnderlying: TStream;
-  const ATargetName: string; AVerifyPeer: Boolean);
+constructor TPipeOpenSslStream.CreateDeferred(AUnderlying: TStream);
 begin
   inherited Create;
   FUnderlying := AUnderlying;
-  FTargetName := AnsiString(ATargetName);
-  FVerifyPeer := AVerifyPeer;
   FLock := TCriticalSection.Create;
   FSendLock := TCriticalSection.Create;
+end;
+
+constructor TPipeOpenSslStream.Create(AUnderlying: TStream;
+  const ATargetName: string; AVerifyPeer: Boolean);
+begin
+  CreateDeferred(AUnderlying);
+  FTargetName := AnsiString(ATargetName);
+  FVerifyPeer := AVerifyPeer;
   // Se algo abaixo levantar, o destrutor (auto-chamado) libera o que existir
   // (handles guardados em campos) e o stream de baixo — nada de cleanup manual
   // aqui (seria double-free). Mesmo contrato do TPipeSchannelStream.
@@ -731,6 +782,69 @@ begin
   finally
     FSendLock.Leave;
   end;
+end;
+
+{ TPipeOpenSslServerStream }
+
+constructor TPipeOpenSslServerStream.Create(AUnderlying: TStream;
+  const ACertFile, AKeyFile: string);
+begin
+  CreateDeferred(AUnderlying);
+  if (ACertFile = '') or (AKeyFile = '') then
+    raise EPipeTls.Create('servidor TLS exige certificado e chave');
+  FCertFile := AnsiString(ACertFile);
+  FKeyFile := AnsiString(AKeyFile);
+  FVerifyPeer := False; // sem mTLS ainda: o cliente nao apresenta certificado
+end;
+
+procedure TPipeOpenSslServerStream.Negotiate;
+begin
+  if FNegotiated then
+    Exit;
+  EnsureOpenSsl;
+  SetupServerSsl;
+  DoHandshake; // SSL_do_handshake serve aos dois lados
+  FNegotiated := True;
+end;
+
+procedure TPipeOpenSslServerStream.SetupServerSsl;
+begin
+  FCtx := p_SSL_CTX_new(p_TLS_server_method());
+  if FCtx = nil then
+    raise EPipeTls.CreateFmt('SSL_CTX_new(server) falhou (%s)',
+      [LastSslErrorText]);
+
+  // Mesmo piso do lado cliente e do SChannel.
+  p_SSL_CTX_ctrl(FCtx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, nil);
+
+  if p_SSL_CTX_use_certificate_chain_file(FCtx, PAnsiChar(FCertFile)) <> 1 then
+    raise EPipeTls.CreateFmt('nao foi possivel carregar o certificado %s (%s)',
+      [string(FCertFile), LastSslErrorText]);
+  if p_SSL_CTX_use_PrivateKey_file(FCtx, PAnsiChar(FKeyFile),
+       SSL_FILETYPE_PEM) <> 1 then
+    raise EPipeTls.CreateFmt('nao foi possivel carregar a chave %s (%s)',
+      [string(FKeyFile), LastSslErrorText]);
+  // Detecta cedo o par cert/chave trocado: sem esta checagem o erro so
+  // apareceria no handshake, longe da causa.
+  if p_SSL_CTX_check_private_key(FCtx) <> 1 then
+    raise EPipeTls.CreateFmt('a chave %s nao corresponde ao certificado %s (%s)',
+      [string(FKeyFile), string(FCertFile), LastSslErrorText]);
+
+  // Sem validacao do par: mTLS e' T4.
+  p_SSL_CTX_set_verify(FCtx, SSL_VERIFY_NONE, nil);
+
+  // Mesma ordem de criacao do lado cliente, pela mesma razao de cleanup.
+  FBioIn := p_BIO_new(p_BIO_s_mem());
+  FBioOut := p_BIO_new(p_BIO_s_mem());
+  if (FBioIn = nil) or (FBioOut = nil) then
+    raise EPipeTls.Create('BIO_new(BIO_s_mem) falhou');
+  FSsl := p_SSL_new(FCtx);
+  if FSsl = nil then
+    raise EPipeTls.CreateFmt('SSL_new falhou (%s)', [LastSslErrorText]);
+  p_SSL_set_bio(FSsl, FBioIn, FBioOut);
+
+  // A unica diferenca de direcao no handshake.
+  p_SSL_set_accept_state(FSsl);
 end;
 
 initialization

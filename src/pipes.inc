@@ -25,3 +25,19 @@
 {$IFNDEF PIPES_WINDOWS}
   {$DEFINE PIPES_POSIX}
 {$ENDIF}
+
+{ Backend TLS ativo. PIPES_WINDOWS sozinho NAO significa Schannel: um build
+  Windows com PIPES_OPENSSL usa OpenSSL nos dois lados. Definir isso aqui evita
+  espalhar IFDEFs aninhados por todo o codigo de TLS.
+
+  PIPES_OPENSSL  - opt-in; unico backend no POSIX, opcional no Windows.
+  PIPES_SCHANNEL - SSPI nativo; padrao no Windows quando OpenSSL nao foi pedido.
+  PIPES_TLS      - ha ALGUM backend; sem ele, ptTls nao esta disponivel. }
+{$IFDEF PIPES_OPENSSL}
+  {$DEFINE PIPES_TLS}
+{$ELSE}
+  {$IFDEF PIPES_WINDOWS}
+    {$DEFINE PIPES_SCHANNEL}
+    {$DEFINE PIPES_TLS}
+  {$ENDIF}
+{$ENDIF}
