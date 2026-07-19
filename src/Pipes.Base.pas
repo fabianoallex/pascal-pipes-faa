@@ -54,7 +54,7 @@ type
     procedure SetCertPassword(const AValue: string);
     procedure SetKeyFile(const AValue: string);
     procedure SetCaFile(const AValue: string);
-    procedure SetVerifyPeer(AValue: Boolean);
+    procedure SetSkipServerVerification(AValue: Boolean);
     procedure SetHandshakeTimeoutMs(AValue: Cardinal);
   public
     constructor Create(AOwner: TPipeBase);
@@ -72,8 +72,10 @@ type
     /// mTLS — quem nao apresentar certificado dela e' recusado.
     /// Cliente: CA que valida o servidor (vazio = trust store do sistema).
     property CaFile: string read FOptions.CaFile write SetCaFile;
-    /// Cliente: valida a cadeia do servidor. Desligar so' em laboratorio.
-    property VerifyPeer: Boolean read FOptions.VerifyPeer write SetVerifyPeer;
+    /// Cliente: desliga a validacao da cadeia do servidor (default False =
+    /// valida). Ligar so' em laboratorio — sem validacao a sessao e' MITM-avel.
+    property SkipServerVerification: Boolean
+      read FOptions.SkipServerVerification write SetSkipServerVerification;
     /// Prazo do handshake; 0 = PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT.
     property HandshakeTimeoutMs: Cardinal
       read FOptions.HandshakeTimeoutMs write SetHandshakeTimeoutMs;
@@ -399,10 +401,10 @@ begin
   FOptions.CaFile := AValue;
 end;
 
-procedure TPipeTlsConfig.SetVerifyPeer(AValue: Boolean);
+procedure TPipeTlsConfig.SetSkipServerVerification(AValue: Boolean);
 begin
-  FOwner.EnsureInactive('TlsOptions.VerifyPeer');
-  FOptions.VerifyPeer := AValue;
+  FOwner.EnsureInactive('TlsOptions.SkipServerVerification');
+  FOptions.SkipServerVerification := AValue;
 end;
 
 procedure TPipeTlsConfig.SetHandshakeTimeoutMs(AValue: Cardinal);

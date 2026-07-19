@@ -246,7 +246,7 @@ nenhum caso. Para `ptTls` depende do backend:
 TPipeBase (abstrata)
   Address, Transport, KeepAliveSeconds, Active, DispatchMode, MaxMessageSize
   TlsOptions: TPipeTlsConfig             // só usado em ptTls; lido no Listen/Connect
-    CertFile, CertPassword, KeyFile, CaFile, VerifyPeer, HandshakeTimeoutMs
+    CertFile, CertPassword, KeyFile, CaFile, SkipServerVerification, HandshakeTimeoutMs
   OnMessage: TPipeMessageEvent;  OnError: TPipeErrorEvent
 
 TPipeServer

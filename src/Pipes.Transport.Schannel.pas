@@ -89,8 +89,12 @@ type
     /// depois, na reader thread da conexao.
     constructor CreateDeferred(AUnderlying: TStream);
     /// ACertContext <> nil faz o cliente APRESENTAR esse certificado (mTLS).
-    /// ACaStore <> 0 usa essa CA como raiz confiavel para validar o servidor
-    /// (PKI propria, cujo certificado nao esta no store da maquina).
+    /// ACaStore: no SChannel o cliente com AVerifyPeer valida via
+    /// SCH_CRED_AUTO_CRED_VALIDATION, contra o trust store do SO — hRootStore
+    /// e' server-side e AQUI e' IGNORADO. Uma PKI propria fora do store da
+    /// maquina exige instalar a CA no SO ou usar o backend OpenSSL (ver README,
+    /// "O que muda entre os backends"). O parametro fica na assinatura por
+    /// simetria com o lado servidor; passar <> 0 no cliente nao tem efeito.
     constructor Create(AUnderlying: TStream; const ATargetName: string;
       AVerifyPeer: Boolean; ACertContext: Pointer = nil;
       ACaStore: THandle = 0);
@@ -1078,9 +1082,12 @@ begin
   LRemote := nil;
   LStatus := QueryContextAttributesW(@FCtxt, SECPKG_ATTR_REMOTE_CERT_CONTEXT,
     @LRemote);
-  if StatusFailed(LStatus) or (LRemote = nil) then
+  if (Cardinal(LStatus) = SEC_E_NO_CREDENTIALS) or (LRemote = nil) then
+    raise EPipeTls.Create('mTLS: o cliente nao apresentou certificado')
+  else if StatusFailed(LStatus) then
     raise EPipeTls.CreateFmt(
-      'mTLS: o cliente nao apresentou certificado (0x%.8x)', [Cardinal(LStatus)]);
+      'mTLS: nao foi possivel obter o certificado do cliente (0x%.8x)',
+      [Cardinal(LStatus)]);
   try
     // 1. Construir a cadeia. FCaStore entra como store ADICIONAL: fornece o
     // emissor, mas nao o torna confiavel — isso e' o passo 3.
@@ -1110,9 +1117,17 @@ begin
           'mTLS: cadeia do cliente invalida (dwErrorStatus 0x%.8x)', [LErrors]);
 
       // 3. O passo que de fato autentica: a RAIZ da cadeia construida tem de
-      // ser byte a byte um certificado do nosso store de CAs. Sem isto, um
-      // cliente que mandasse leaf + a propria CA auto-assinada montaria uma
-      // cadeia integra e so com UNTRUSTED_ROOT — e passaria no passo 2.
+      // ser um certificado do nosso store de CAs. Sem isto, um cliente que
+      // mandasse leaf + a propria CA auto-assinada montaria uma cadeia integra
+      // e so com UNTRUSTED_ROOT — e passaria no passo 2.
+      //
+      // CERT_FIND_EXISTING = "exact match" na doc da MS, sem definir o criterio.
+      // No crypt32 do Windows a comparacao e' do certificado INTEIRO (verificado
+      // empiricamente: uma CA forjada com o MESMO issuer+serial mas chave
+      // diferente NAO casa). ATENCAO ao portar: o crypt32 do Wine implementa o
+      // "exact match" so' por issuer+serial (ver compare_existing_cert ->
+      // CertCompareCertificate), o que aqui seria um bypass. Sob Wine, trocar
+      // por comparacao explicita de pbCertEncoded/cbCertEncoded.
       if LCtx^.cChain < 1 then
         raise EPipeTls.Create('mTLS: cadeia do cliente vazia');
       LSimple := PCertSimpleChain(PPointer(LCtx^.rgpChain)^);

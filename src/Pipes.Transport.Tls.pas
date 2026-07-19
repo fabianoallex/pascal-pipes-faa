@@ -195,8 +195,8 @@ begin
     if AOptions.CaFile <> '' then
       FClientCaStore := PipeSchannelLoadCaStore(AOptions.CaFile);
     LRaw := TPipeEndpointStream.Create(AInner);
-    FTls := TPipeSchannelStream.Create(LRaw, ATargetName, AOptions.VerifyPeer,
-      FClientCert, FClientCaStore);
+    FTls := TPipeSchannelStream.Create(LRaw, ATargetName,
+      not AOptions.SkipServerVerification, FClientCert, FClientCaStore);
   except
     // O stream nao chegou a existir; estas credenciais sao nossas.
     PipeSchannelFreeCert(FClientCert);

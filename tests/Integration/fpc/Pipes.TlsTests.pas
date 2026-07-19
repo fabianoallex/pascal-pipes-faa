@@ -39,6 +39,7 @@ type
     FClient: TPipeClient;
     FEcho: TEvent;
     FConnected: TEvent;
+    FErroEvt: TEvent;   // sinalizado quando o servidor reporta um erro de conexao
     FRecebido: string;
     FErroServidor: string;
     procedure OnServerMsg(Sender: TObject; AConnId: TPipeConnectionId;
@@ -61,6 +62,11 @@ type
     /// True se o servidor tratou o cliente como AUTENTICADO — OnClientConnected
     /// so dispara depois do handshake, entao e' o sinal de que ele entrou.
     function ClienteAutenticado(ATimeoutMs: Integer): Boolean;
+    /// True se o servidor reportou um erro de conexao no prazo (OnError). E' o
+    /// sinal POSITIVO de que o servidor desistiu sozinho — sem ele, um teste de
+    /// timeout so' confirmaria a ausencia de autenticacao, que passaria mesmo
+    /// com a reader thread presa para sempre.
+    function EsperaErroServidor(ATimeoutMs: Integer): Boolean;
     /// Round-trip completo (eco). False se nao voltou no prazo.
     function Eco(const ATexto: string; ATimeoutMs: Integer): Boolean;
   end;
@@ -158,6 +164,7 @@ begin
   inherited Create;
   FEcho := TEvent.Create(nil, True, False, '');
   FConnected := TEvent.Create(nil, True, False, '');
+  FErroEvt := TEvent.Create(nil, True, False, '');
   FServer := TPipeServer.Create(AAddress, ptTls);
   FClient := TPipeClient.Create(AAddress, ptTls);
   FServer.OnMessage := OnServerMsg;
@@ -174,6 +181,7 @@ begin
   FServer.Free;
   FEcho.Free;
   FConnected.Free;
+  FErroEvt.Free;
   inherited;
 end;
 
@@ -200,6 +208,7 @@ procedure TTlsHarness.OnServerError(Sender: TObject;
   AConnId: TPipeConnectionId; const AMsg: string);
 begin
   FErroServidor := AMsg;
+  FErroEvt.SetEvent;
 end;
 
 // Os dois backends leem formatos diferentes: o SChannel um PFX (certificado +
@@ -232,7 +241,7 @@ begin
   AErro := '';
   // A PKI de teste nao esta no trust store da maquina; validar o servidor nao
   // e' o objeto destes testes (o objeto e' o servidor validar o CLIENTE).
-  FClient.TlsOptions.VerifyPeer := False;
+  FClient.TlsOptions.SkipServerVerification := True;
   if ACliCert <> '' then
     AplicaCredencial(FClient.TlsOptions, ACliCert);
   try
@@ -250,6 +259,11 @@ end;
 function TTlsHarness.ClienteAutenticado(ATimeoutMs: Integer): Boolean;
 begin
   Result := FConnected.WaitFor(ATimeoutMs) = wrSignaled;
+end;
+
+function TTlsHarness.EsperaErroServidor(ATimeoutMs: Integer): Boolean;
+begin
+  Result := FErroEvt.WaitFor(ATimeoutMs) = wrSignaled;
 end;
 
 function TTlsHarness.Eco(const ATexto: string; ATimeoutMs: Integer): Boolean;
@@ -285,10 +299,11 @@ end;
 procedure TPipeTlsTests.Tls_RoundTripCifrado;
 var
   LErro: string;
+  LOk: Boolean;
 begin
   FHarness.Listen(''); // sem mTLS
-  AssertTrue('cliente deveria conectar: ' + LErro,
-    FHarness.TryConnect('', LErro));
+  LOk := FHarness.TryConnect('', LErro); // separado: LErro so' vale apos a chamada
+  AssertTrue('cliente deveria conectar: ' + LErro, LOk);
   AssertTrue('servidor nao registrou o cliente como conectado',
     FHarness.ClienteAutenticado(5000));
   AssertTrue('eco cifrado nao voltou integro', FHarness.Eco('ola tls', 5000));
@@ -297,10 +312,11 @@ end;
 procedure TPipeTlsTests.Mtls_ClienteComCertDaCa_Conecta;
 var
   LErro: string;
+  LOk: Boolean;
 begin
   FHarness.Listen(Pki('ca_cert.pem')); // mTLS ligado
-  AssertTrue('cliente legitimo foi recusado: ' + LErro,
-    FHarness.TryConnect('cli', LErro));
+  LOk := FHarness.TryConnect('cli', LErro);
+  AssertTrue('cliente legitimo foi recusado: ' + LErro, LOk);
   AssertTrue('servidor nao autenticou o cliente legitimo',
     FHarness.ClienteAutenticado(5000));
   AssertTrue('eco nao voltou integro', FHarness.Eco('mtls ok', 5000));
@@ -374,11 +390,18 @@ begin
   try
     LT0 := PipeTickMs;
     LMudo.Connect(5000);
-    // O servidor tem de desistir sozinho: nada e' enviado por este cliente.
+    // O sinal que de fato prova o timeout: o servidor tem de REPORTAR o erro
+    // (OnError) sozinho, sem ninguem fechar a conexao. Sem o prazo, a reader
+    // thread ficaria presa lendo e este evento nunca chegaria — daí esperar
+    // pelo erro, e nao so' pela ausencia de autenticacao (que passaria mesmo
+    // com a thread travada).
+    AssertTrue('servidor nao abortou o handshake no prazo (reader presa?)',
+      FHarness.EsperaErroServidor(4000));
+    // O erro chegou perto do prazo (1500ms), nao no fim de uma espera longa.
+    AssertTrue('servidor demorou muito alem do prazo do handshake',
+      PipeTickMs - LT0 < 4000);
     AssertFalse('cliente mudo nao deveria ser autenticado',
-      FHarness.ClienteAutenticado(4000));
-    AssertTrue('servidor nao desistiu no prazo do handshake',
-      PipeTickMs - LT0 < 8000);
+      FHarness.ClienteAutenticado(200));
   finally
     LMudo.Free;
   end;

@@ -184,8 +184,13 @@ begin
   // Porta nova a cada teste: evita TIME_WAIT barrar o rebind (no Windows o
   // listener nao usa SO_REUSEADDR, de proposito). A base varia por execucao
   // para nao colidir com uma rodada anterior ainda drenando.
+  //
+  // Faixa 20000..40000, ABAIXO da faixa efemera (49152+): acima dela o Windows
+  // reserva blocos dinamicos (Hyper-V/WSL/Docker) onde o bind falha com
+  // WSAEACCES (10013). A faixa antiga (40000..60000) atravessava essas reservas
+  // e falhava de forma intermitente conforme a porta sorteada.
   Result := '127.0.0.1:' +
-    IntToStr(40000 + (Int64(PipeTickMs) mod 20000) + PipeAtomicInc(GNameSeq));
+    IntToStr(20000 + (Int64(PipeTickMs) mod 18000) + PipeAtomicInc(GNameSeq));
 end;
 
 function TPipeTcpTransportTests.MissingAddress: string;

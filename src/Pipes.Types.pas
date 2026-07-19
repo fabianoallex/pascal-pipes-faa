@@ -53,9 +53,16 @@ type
     KeyFile       chave PEM (so OpenSSL)          idem
     CaFile        CA que assina os certificados   CA que valida o servidor
                   de CLIENTE. Preenchido, LIGA    (vazio = usa o trust store
-                  mTLS: quem nao apresentar       do sistema)
-                  certificado valido e' recusado
-    VerifyPeer    (implicito por CaFile)          valida a cadeia do servidor
+                  mTLS: quem nao apresentar       do sistema; so' OpenSSL, ver
+                  certificado valido e' recusado  abaixo)
+    SkipServer... (implicito por CaFile)          NAO valida a cadeia do servidor
+    Verification
+
+    O campo de validacao do servidor e' NEGATIVO de proposito: um record zerado
+    por FillChar valida o servidor (o comportamento seguro), e desligar exige
+    dizer SkipServerVerification := True em voz alta. So faz sentido em
+    laboratorio — sem isso, o cliente cifra o trafego mas nao sabe com quem
+    fala, e a sessao e' MITM-avel.
 
     Sobre formatos: o Schannel le um PFX unico (certificado + chave), enquanto o
     OpenSSL le PEM separados — dai CertFile/KeyFile em vez de um campo so. }
@@ -64,7 +71,9 @@ type
     CertPassword: string;
     KeyFile: string;
     CaFile: string;
-    VerifyPeer: Boolean;
+    /// Cliente: desliga a validacao da cadeia do servidor (default False =
+    /// valida). Negativo para que o zero seja o seguro. Ignorado no servidor.
+    SkipServerVerification: Boolean;
     /// Prazo do handshake TLS. 0 = PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT, para que
     /// um record zerado por FillChar caia no comportamento seguro; desligar
     /// exige o valor explicito PIPE_TLS_HANDSHAKE_NO_TIMEOUT.
@@ -113,6 +122,7 @@ const
   /// Intervalo entre probes e quantos probes sem resposta derrubam a conexao.
   /// Com os padroes: par morto detectado em ~20 + 3*5 = 35s.
   PIPES_KEEPALIVE_INTERVAL_SECONDS = 5;
+  PIPES_KEEPALIVE_PROBE_COUNT = 3;
   /// Prazo padrao do handshake TLS (TPipeTlsOptions.HandshakeTimeoutMs = 0).
   /// 15s cobre com folga um handshake sobre VPN ruim — o alvo nao e' a rede
   /// lenta, e' o par que nunca fala.
@@ -121,7 +131,6 @@ const
   /// essa protecao devia estar dizendo isso em voz alta, nao deixando um campo
   /// em zero.
   PIPE_TLS_HANDSHAKE_NO_TIMEOUT = Cardinal($FFFFFFFF);
-  PIPES_KEEPALIVE_PROBE_COUNT = 3;
 
 /// Descreve o backend TLS efetivamente em uso (biblioteca, versao e de onde foi
 /// carregada), para log e diagnostico — a mensagem de "handshake falhou" sozinha

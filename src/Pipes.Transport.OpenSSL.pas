@@ -450,7 +450,7 @@ begin
   CreateDeferred(AUnderlying);
   FTargetName := AnsiString(ATargetName);
   FOptions := AOptions;
-  FVerifyPeer := AOptions.VerifyPeer;
+  FVerifyPeer := not AOptions.SkipServerVerification; // default valida
   // Se algo abaixo levantar, o destrutor (auto-chamado) libera o que existir
   // (handles guardados em campos) e o stream de baixo — nada de cleanup manual
   // aqui (seria double-free). Mesmo contrato do TPipeSchannelStream.
