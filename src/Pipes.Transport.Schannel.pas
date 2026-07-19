@@ -117,6 +117,10 @@ type
     FNegotiated: Boolean;
     procedure AcquireServerCred;
     procedure DoServerHandshake;
+    /// mTLS: valida a cadeia do certificado que o cliente apresentou contra
+    /// FCaStore. Levanta EPipeTls se nao passar (nunca devolve "aceito com
+    /// ressalva"). So faz sentido depois do handshake.
+    procedure VerifyClientChain;
   public
     /// ACertContext continua sendo do chamador: varias conexoes compartilham
     /// o mesmo certificado do servidor, entao esta classe nao o libera.
@@ -269,10 +273,90 @@ const
   CRYPT_STRING_BASE64HEADER = 3; // PEM: base64 entre -----BEGIN/END-----
   ASC_REQ_MUTUAL_AUTH      = $00000002;
 
+  // Validacao manual da cadeia do cliente (mTLS).
+  SECPKG_ATTR_REMOTE_CERT_CONTEXT = 83;
+  SEC_E_NO_CREDENTIALS     = $8009030E; // o cliente nao mandou certificado
+  CERT_FIND_EXISTING       = $000D0000; // acha o certificado IDENTICO ao dado
+  USAGE_MATCH_TYPE_AND     = 0;
+  // Unico defeito de cadeia que toleramos: a nossa CA de teste/privada nao esta
+  // no store de raizes do Windows. O passo seguinte (raiz == a nossa CA) e' o
+  // que substitui essa confianca — por isso ignorar aqui nao afrouxa nada.
+  CERT_TRUST_IS_UNTRUSTED_ROOT = $00000020;
+  CERT_CHAIN_POLICY_SSL    = 4; // passado como MAKEINTRESOURCE, nao como OID
+  CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG = $00000010;
+  AUTHTYPE_CLIENT          = 2;
+  szOID_PKIX_KP_CLIENT_AUTH = '1.3.6.1.5.5.7.3.2';
+
 type
   TCryptDataBlob = record
     cbData: DWORD;
     pbData: Pointer;
+  end;
+
+  // Layout binario exato do crypt32 (x86 e x64: o alinhamento default do
+  // compilador coincide com o do C aqui).
+  TCertTrustStatus = record
+    dwErrorStatus: DWORD;
+    dwInfoStatus: DWORD;
+  end;
+
+  PCertChainElement = ^TCertChainElement;
+  TCertChainElement = record
+    cbSize: DWORD;
+    pCertContext: Pointer;
+    // demais campos existem, mas nao os lemos
+  end;
+
+  PCertSimpleChain = ^TCertSimpleChain;
+  TCertSimpleChain = record
+    cbSize: DWORD;
+    TrustStatus: TCertTrustStatus;
+    cElement: DWORD;
+    rgpElement: Pointer; // ^array of PCertChainElement
+  end;
+
+  PCertChainContext = ^TCertChainContext;
+  TCertChainContext = record
+    cbSize: DWORD;
+    TrustStatus: TCertTrustStatus;
+    cChain: DWORD;
+    rgpChain: Pointer;   // ^array of PCertSimpleChain
+  end;
+
+  TCertEnhKeyUsage = record
+    cUsageIdentifier: DWORD;
+    rgpszUsageIdentifier: Pointer;
+  end;
+
+  TCertUsageMatch = record
+    dwType: DWORD;
+    Usage: TCertEnhKeyUsage;
+  end;
+
+  TCertChainPara = record
+    cbSize: DWORD;
+    RequestedUsage: TCertUsageMatch;
+  end;
+
+  TCertChainPolicyPara = record
+    cbSize: DWORD;
+    dwFlags: DWORD;
+    pvExtraPolicyPara: Pointer;
+  end;
+
+  TCertChainPolicyStatus = record
+    cbSize: DWORD;
+    dwError: DWORD;
+    lChainIndex: LongInt;
+    lElementIndex: LongInt;
+    pvExtraPolicyStatus: Pointer;
+  end;
+
+  TSslExtraCertChainPolicyPara = record
+    cbSize: DWORD;
+    dwAuthType: DWORD;
+    fdwChecks: DWORD;
+    pwszServerName: PWideChar;
   end;
 
 function AcceptSecurityContext(phCredential: PCredHandle;
@@ -309,6 +393,22 @@ function CryptStringToBinaryA(pszString: PAnsiChar; cchString: DWORD;
   dwFlags: DWORD; pbBinary: Pointer; var pcbBinary: DWORD;
   pdwSkip, pdwFlags: Pointer): BOOL; stdcall;
   external 'crypt32.dll' name 'CryptStringToBinaryA';
+function CertGetCertificateChain(hChainEngine: THandle; pCertContext: Pointer;
+  pTime: Pointer; hAdditionalStore: THandle; pChainPara: Pointer;
+  dwFlags: DWORD; pvReserved: Pointer; var ppChainContext: Pointer): BOOL;
+  stdcall; external 'crypt32.dll' name 'CertGetCertificateChain';
+procedure CertFreeCertificateChain(pChainContext: Pointer); stdcall;
+  external 'crypt32.dll' name 'CertFreeCertificateChain';
+// pszPolicyOID e' LPCSTR, mas as politicas embutidas sao MAKEINTRESOURCE(n) —
+// um inteiro pequeno disfarcado de ponteiro. Daí o parametro como Pointer.
+function CertVerifyCertificateChainPolicy(pszPolicyOID: Pointer;
+  pChainContext: Pointer; pPolicyPara: Pointer;
+  pPolicyStatus: Pointer): BOOL; stdcall;
+  external 'crypt32.dll' name 'CertVerifyCertificateChainPolicy';
+function CertFindCertificateInStore(hCertStore: THandle;
+  dwCertEncodingType, dwFindFlags, dwFindType: DWORD; pvFindPara: Pointer;
+  pPrevCertContext: Pointer): Pointer; stdcall;
+  external 'crypt32.dll' name 'CertFindCertificateInStore';
 
 function AcquireCredentialsHandleW(pszPrincipal, pszPackage: PWideChar;
   fCredentialUse: ULONG; pvLogonID, pAuthData, pGetKeyFn, pvGetKeyArgument: Pointer;
@@ -936,22 +1036,6 @@ begin
   CreateDeferred(AUnderlying);
   if ACertContext = nil then
     raise EPipeTls.Create('servidor TLS exige certificado');
-  if ACaStore <> 0 then
-    // FALHA FECHADA, de proposito. Uma versao anterior deste codigo assumia
-    // que hRootStore + ASC_REQ_MUTUAL_AUTH bastavam para o SChannel validar a
-    // cadeia do cliente. NAO bastam: o SChannel apenas EXIGE que o cliente
-    // apresente um certificado e entrega esse certificado a aplicacao — quem
-    // decide se a cadeia e' confiavel e' ela. Na pratica, aquela versao aceitou
-    // um certificado de CA desconhecida numa sonda de teste.
-    //
-    // Autenticacao que aceita qualquer certificado e' pior do que nenhuma,
-    // porque parece existir. Ate a validacao manual estar implementada
-    // (SECPKG_ATTR_REMOTE_CERT_CONTEXT + CertGetCertificateChain +
-    // CertVerifyCertificateChainPolicy contra ACaStore), pedir mTLS aqui e'
-    // erro, nao um modo degradado.
-    raise EPipeTls.Create('mTLS ainda nao implementado no backend SChannel: ' +
-      'a validacao da cadeia do certificado de cliente precisa ser feita ' +
-      'explicitamente (use o backend OpenSSL, ou nao configure CaFile)');
   FCertContext := ACertContext;
   FCaStore := ACaStore;
   FVerifyPeer := ACaStore <> 0; // mTLS ligado quando ha CA de clientes
@@ -963,7 +1047,116 @@ begin
     Exit;
   AcquireServerCred;
   DoServerHandshake;
+  // A ordem importa: o handshake termina "com sucesso" mesmo com um certificado
+  // de cliente que nao confiamos — quem reprova e' este passo. Antes de marcar
+  // FNegotiated, para que uma falha aqui deixe o stream inutilizavel.
+  if FCaStore <> 0 then
+    VerifyClientChain;
   FNegotiated := True;
+end;
+
+procedure TPipeSchannelServerStream.VerifyClientChain;
+var
+  LRemote: Pointer;
+  LStatus: SECURITY_STATUS;
+  LOid: AnsiString;
+  LUsage: array[0..0] of PAnsiChar;
+  LPara: TCertChainPara;
+  LChain: Pointer;
+  LCtx: PCertChainContext;
+  LSimple: PCertSimpleChain;
+  LElem: PCertChainElement;
+  LFound: Pointer;
+  LPolicyPara: TCertChainPolicyPara;
+  LSslPara: TSslExtraCertChainPolicyPara;
+  LPolicyStatus: TCertChainPolicyStatus;
+  LErrors: DWORD;
+begin
+  // 0. Pegar o certificado que o cliente apresentou. Com ASC_REQ_MUTUAL_AUTH o
+  // SChannel PEDE o certificado, mas completa o handshake mesmo sem ele — quem
+  // recusa e' aqui (SEC_E_NO_CREDENTIALS).
+  LRemote := nil;
+  LStatus := QueryContextAttributesW(@FCtxt, SECPKG_ATTR_REMOTE_CERT_CONTEXT,
+    @LRemote);
+  if StatusFailed(LStatus) or (LRemote = nil) then
+    raise EPipeTls.CreateFmt(
+      'mTLS: o cliente nao apresentou certificado (0x%.8x)', [Cardinal(LStatus)]);
+  try
+    // 1. Construir a cadeia. FCaStore entra como store ADICIONAL: fornece o
+    // emissor, mas nao o torna confiavel — isso e' o passo 3.
+    LOid := szOID_PKIX_KP_CLIENT_AUTH;
+    LUsage[0] := PAnsiChar(LOid);
+    FillChar(LPara, SizeOf(LPara), 0);
+    LPara.cbSize := SizeOf(LPara);
+    LPara.RequestedUsage.dwType := USAGE_MATCH_TYPE_AND;
+    LPara.RequestedUsage.Usage.cUsageIdentifier := 1;
+    LPara.RequestedUsage.Usage.rgpszUsageIdentifier := @LUsage[0];
+
+    LChain := nil;
+    if not CertGetCertificateChain(0, LRemote, nil, FCaStore, @LPara, 0, nil,
+         LChain) then
+      raise EPipeTls.CreateFmt('mTLS: CertGetCertificateChain falhou (erro %d)',
+        [GetLastError]);
+    try
+      LCtx := PCertChainContext(LChain);
+
+      // 2. Qualquer defeito reprova — expirado, revogado, assinatura invalida,
+      // uso errado. Menos "raiz desconhecida", que e' o esperado numa PKI
+      // privada e fica coberto pelo passo 3.
+      LErrors := LCtx^.TrustStatus.dwErrorStatus and
+        (not DWORD(CERT_TRUST_IS_UNTRUSTED_ROOT));
+      if LErrors <> 0 then
+        raise EPipeTls.CreateFmt(
+          'mTLS: cadeia do cliente invalida (dwErrorStatus 0x%.8x)', [LErrors]);
+
+      // 3. O passo que de fato autentica: a RAIZ da cadeia construida tem de
+      // ser byte a byte um certificado do nosso store de CAs. Sem isto, um
+      // cliente que mandasse leaf + a propria CA auto-assinada montaria uma
+      // cadeia integra e so com UNTRUSTED_ROOT — e passaria no passo 2.
+      if LCtx^.cChain < 1 then
+        raise EPipeTls.Create('mTLS: cadeia do cliente vazia');
+      LSimple := PCertSimpleChain(PPointer(LCtx^.rgpChain)^);
+      if LSimple^.cElement < 1 then
+        raise EPipeTls.Create('mTLS: cadeia do cliente sem elementos');
+      LElem := PCertChainElement(PPointer(PByte(LSimple^.rgpElement) +
+        (LSimple^.cElement - 1) * SizeOf(Pointer))^);
+
+      LFound := CertFindCertificateInStore(FCaStore,
+        X509_ASN_ENCODING or PKCS_7_ASN_ENCODING, 0, CERT_FIND_EXISTING,
+        LElem^.pCertContext, nil);
+      if LFound = nil then
+        raise EPipeTls.Create('mTLS: certificado de cliente nao encadeia ate ' +
+          'a CA configurada');
+      CertFreeCertificateContext(LFound);
+
+      // 4. Politica SSL para cliente (validade, EKU, formato). ALLOW_UNKNOWN_CA
+      // porque a confianca na raiz ja foi estabelecida no passo 3.
+      FillChar(LSslPara, SizeOf(LSslPara), 0);
+      LSslPara.cbSize := SizeOf(LSslPara);
+      LSslPara.dwAuthType := AUTHTYPE_CLIENT;
+      FillChar(LPolicyPara, SizeOf(LPolicyPara), 0);
+      LPolicyPara.cbSize := SizeOf(LPolicyPara);
+      LPolicyPara.dwFlags := CERT_CHAIN_POLICY_ALLOW_UNKNOWN_CA_FLAG;
+      LPolicyPara.pvExtraPolicyPara := @LSslPara;
+      FillChar(LPolicyStatus, SizeOf(LPolicyStatus), 0);
+      LPolicyStatus.cbSize := SizeOf(LPolicyStatus);
+      if not CertVerifyCertificateChainPolicy(
+           Pointer(NativeUInt(CERT_CHAIN_POLICY_SSL)), LChain, @LPolicyPara,
+           @LPolicyStatus) then
+        raise EPipeTls.CreateFmt(
+          'mTLS: CertVerifyCertificateChainPolicy falhou (erro %d)',
+          [GetLastError]);
+      if LPolicyStatus.dwError <> 0 then
+        raise EPipeTls.CreateFmt(
+          'mTLS: certificado de cliente recusado pela politica SSL (0x%.8x)',
+          [LPolicyStatus.dwError]);
+    finally
+      CertFreeCertificateChain(LChain);
+    end;
+  finally
+    // QueryContextAttributes(REMOTE_CERT_CONTEXT) devolve uma referencia NOSSA.
+    CertFreeCertificateContext(LRemote);
+  end;
 end;
 
 procedure TPipeSchannelServerStream.AcquireServerCred;
@@ -979,10 +1172,10 @@ begin
   LCred.paCred := @LCertArray[0];
   LCred.dwFlags := SCH_CRED_NO_SYSTEM_MAPPER;
   if FCaStore <> 0 then
-    // Com hRootStore o proprio SChannel valida a cadeia do certificado do
-    // cliente contra esta CA durante o handshake — sem isso seria preciso
-    // pegar o SECPKG_ATTR_REMOTE_CERT_CONTEXT e chamar CertGetCertificateChain
-    // + CertVerifyCertificateChainPolicy na mao.
+    // ATENCAO: hRootStore NAO faz o SChannel validar a cadeia do cliente. Ele
+    // so' usa este store para montar a lista de CAs aceitaveis enviada no
+    // CertificateRequest (ajuda o cliente a escolher o certificado certo). A
+    // validacao de verdade e' VerifyClientChain, depois do handshake.
     LCred.hRootStore := FCaStore;
   // grbitEnabledProtocols = 0: o SChannel escolhe (TLS 1.2/1.3).
 
