@@ -356,7 +356,11 @@ begin
     raise EPipeError.Create('servidor ja esta ativo');
   SetupDispatch;
   try
-    FListener := PipeCreateListener(Address, Transport, KeepAliveSeconds);
+    // TlsOptions so' e' consultado em ptTls; nos demais a sobrecarga delega
+    // para a forma sem opcoes. Erro de certificado/senha aparece AQUI, no
+    // Listen, e nao quando o primeiro cliente conectar.
+    FListener := PipeCreateListener(Address, Transport, KeepAliveSeconds,
+      TlsOptions.AsOptions);
   except
     TeardownDispatch;
     raise;

@@ -92,15 +92,28 @@ type
 
 /// Cria o ponto de escuta do servidor para o endereco dado (ja deixa a primeira
 /// instancia/socket pronta: um cliente pode conectar antes do primeiro Accept).
+///
+/// A forma sem ATlsOptions RECUSA ptTls: sem credenciais nao ha servidor TLS
+/// possivel, e cair para texto claro por omissao seria a pior saida.
 function PipeCreateListener(const AAddress: string;
   ATransport: TPipeTransport = ptLocal;
-  AKeepAliveSeconds: Cardinal = 0): TPipeListener;
+  AKeepAliveSeconds: Cardinal = 0): TPipeListener; overload;
+function PipeCreateListener(const AAddress: string;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal;
+  const ATlsOptions: TPipeTlsOptions): TPipeListener; overload;
 
 /// Conecta ao servidor, re-tentando ate ATimeoutMs (cobre servidor ainda nao
 /// iniciado e instancias momentaneamente ocupadas). EPipeTimeout no prazo.
+///
+/// Mesma regra da forma sem ATlsOptions: ptTls e' recusado. No cliente as
+/// credenciais podem ate' ser vazias (TLS so' de servidor), mas a politica de
+/// validacao vem de la — silenciar isso seria conectar sem validar nada.
 function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
   ATransport: TPipeTransport = ptLocal;
-  AKeepAliveSeconds: Cardinal = 0): TPipeEndpoint;
+  AKeepAliveSeconds: Cardinal = 0): TPipeEndpoint; overload;
+function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal;
+  const ATlsOptions: TPipeTlsOptions): TPipeEndpoint; overload;
 
 /// Nome nativo do pipe: '\\.\pipe\<nome>' no Windows, '/tmp/<nome>.sock' no
 /// POSIX. Se AAddress ja for um caminho nativo ('\\...' ou '/...'), e' usado
@@ -123,7 +136,10 @@ procedure PipeValidateAddress(const AAddress: string;
 implementation
 
 uses
+  // Pipes.Transport.Tls usa ESTA unit na interface; a dependencia so' fecha
+  // porque aqui e' na implementation.
   Pipes.Transport.Tcp,
+  Pipes.Transport.Tls,
 {$IFDEF PIPES_WINDOWS}
   Pipes.Transport.Windows;
 {$ELSE}
@@ -235,23 +251,37 @@ var
 begin
   if AAddress = '' then
     raise EPipeError.Create('Address vazio');
+  // Sem 'else': um transporte novo que esqueca de entrar aqui passaria sem
+  // validacao nenhuma. O else torna esse esquecimento barulhento.
   case ATransport of
     ptLocal:
       ; // qualquer nome/caminho serve; PipeNativeName resolve
-    ptTcp:
+    ptTcp, ptTls:
       begin
+        // ptTls e' TCP por baixo: mesmo Address, mesma validacao.
         if (Pos('\\', AAddress) = 1) or (AAddress[1] = '/') then
           raise EPipeError.CreateFmt(
-            'Address "%s" e um caminho local, incompativel com ptTcp ' +
-            '(esperado "host:porta")', [AAddress]);
+            'Address "%s" e um caminho local, incompativel com o transporte ' +
+            'escolhido (esperado "host:porta")', [AAddress]);
         PipeParseHostPort(AAddress, LHost, LPort); // valida o formato
       end;
+  else
+    raise EPipeError.CreateFmt('transporte desconhecido (%d)', [Ord(ATransport)]);
   end;
+end;
+
+// Erro comum as duas fabricas sem opcoes TLS.
+procedure RaiseTlsNeedsOptions;
+begin
+  raise EPipeTls.Create('ptTls exige TlsOptions (certificado e politica de ' +
+    'validacao); use a forma que recebe TPipeTlsOptions');
 end;
 
 function PipeCreateListener(const AAddress: string;
   ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeListener;
 begin
+  if ATransport = ptTls then
+    RaiseTlsNeedsOptions;
   PipeValidateAddress(AAddress, ATransport);
   if ATransport = ptTcp then
     Exit(TcpPipeCreateListener(AAddress, AKeepAliveSeconds));
@@ -262,9 +292,21 @@ begin
   {$ENDIF}
 end;
 
+function PipeCreateListener(const AAddress: string;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal;
+  const ATlsOptions: TPipeTlsOptions): TPipeListener;
+begin
+  if ATransport <> ptTls then
+    Exit(PipeCreateListener(AAddress, ATransport, AKeepAliveSeconds));
+  PipeValidateAddress(AAddress, ATransport);
+  Result := TlsPipeCreateListener(AAddress, AKeepAliveSeconds, ATlsOptions);
+end;
+
 function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
   ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeEndpoint;
 begin
+  if ATransport = ptTls then
+    RaiseTlsNeedsOptions;
   PipeValidateAddress(AAddress, ATransport);
   if ATransport = ptTcp then
     Exit(TcpPipeConnect(AAddress, ATimeoutMs, AKeepAliveSeconds));
@@ -273,6 +315,16 @@ begin
   {$ELSE}
   Result := PosixPipeConnect(AAddress, ATimeoutMs);
   {$ENDIF}
+end;
+
+function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal;
+  const ATlsOptions: TPipeTlsOptions): TPipeEndpoint;
+begin
+  if ATransport <> ptTls then
+    Exit(PipeConnect(AAddress, ATimeoutMs, ATransport, AKeepAliveSeconds));
+  PipeValidateAddress(AAddress, ATransport);
+  Result := TlsPipeConnect(AAddress, ATimeoutMs, AKeepAliveSeconds, ATlsOptions);
 end;
 
 end.

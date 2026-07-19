@@ -36,8 +36,12 @@ type
     - ptTcp: socket TCP, identico nas duas plataformas. Address e' 'host:porta'
       ('0.0.0.0:5000', '127.0.0.1:5000', '[::1]:5000').
     Diferente de ptLocal, ptTcp NAO herda controle de acesso do SO: o listener
-    fica exposto a rede e a autenticacao e' responsabilidade da aplicacao. }
-  TPipeTransport = (ptLocal, ptTcp);
+    fica exposto a rede e a autenticacao e' responsabilidade da aplicacao.
+    - ptTls: o mesmo socket TCP, com TLS por cima. Address tem o formato de
+      ptTcp; as credenciais vem de TlsOptions. E' a resposta ao paragrafo
+      acima: cifra o trafego e, com CaFile no servidor (mTLS), autentica o
+      cliente por certificado. Exige build com backend TLS (ver pipes.inc). }
+  TPipeTransport = (ptLocal, ptTcp, ptTls);
 
   { Credenciais e politica de validacao do ptTls. O mesmo record serve aos dois
     lados; o que muda e' a leitura de cada campo:

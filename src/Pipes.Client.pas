@@ -261,7 +261,8 @@ begin
   Disconnect; // encerra/limpa sessao anterior (viva ou morta); idempotente
   SetupDispatch;
   try
-    FEndpoint := PipeConnect(Address, ATimeoutMs, Transport, KeepAliveSeconds);
+    FEndpoint := PipeConnect(Address, ATimeoutMs, Transport, KeepAliveSeconds,
+      TlsOptions.AsOptions);
   except
     TeardownDispatch;
     raise;
@@ -328,7 +329,10 @@ begin
   try
     // O proprio PipeConnect re-tenta ate ReconnectDelayMs: e' o espacamento
     // entre tentativas (nao ha Sleep adicional).
-    LEndpoint := PipeConnect(Address, FReconnectDelayMs, Transport, KeepAliveSeconds);
+    // Reconexao usa as MESMAS credenciais: um cliente que reconecta sem elas
+    // voltaria em texto claro, ou seria recusado pelo servidor mTLS.
+    LEndpoint := PipeConnect(Address, FReconnectDelayMs, Transport,
+      KeepAliveSeconds, TlsOptions.AsOptions);
   except
     on EPipeError do
       Exit; // inclui EPipeTimeout: proxima tentativa (ou desiste no teto)

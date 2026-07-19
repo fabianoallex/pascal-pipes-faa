@@ -35,6 +35,50 @@ uses
   Pipes.Threading;
 
 type
+  TPipeBase = class;
+
+  { Credenciais e politica de validacao do ptTls, como propriedades editaveis
+    uma a uma (Srv.TlsOptions.CertFile := ...). Envolve o record
+    TPipeTlsOptions, que continua sendo o que trafega para a camada de
+    transporte, via AsOptions.
+
+    Existe como classe em vez de campo publico por causa de EnsureInactive: o
+    transporte le estas opcoes UMA vez, no Listen/Connect. Um campo solto
+    aceitaria calado um CertFile trocado com o servidor no ar — a configuracao
+    pareceria aplicada sem nunca ter efeito. }
+  TPipeTlsConfig = class
+  private
+    FOwner: TPipeBase;
+    FOptions: TPipeTlsOptions;
+    procedure SetCertFile(const AValue: string);
+    procedure SetCertPassword(const AValue: string);
+    procedure SetKeyFile(const AValue: string);
+    procedure SetCaFile(const AValue: string);
+    procedure SetVerifyPeer(AValue: Boolean);
+    procedure SetHandshakeTimeoutMs(AValue: Cardinal);
+  public
+    constructor Create(AOwner: TPipeBase);
+    /// Snapshot para a camada de transporte.
+    function AsOptions: TPipeTlsOptions;
+    /// Servidor: certificado a apresentar (PFX no Schannel, PEM no OpenSSL);
+    /// obrigatorio. Cliente: certificado a apresentar em mTLS (vazio = nenhum).
+    property CertFile: string read FOptions.CertFile write SetCertFile;
+    /// Senha do PFX (so Schannel).
+    property CertPassword: string
+      read FOptions.CertPassword write SetCertPassword;
+    /// Chave privada em PEM (so OpenSSL; no Schannel a chave vem no PFX).
+    property KeyFile: string read FOptions.KeyFile write SetKeyFile;
+    /// Servidor: CA que assina os certificados de CLIENTE. Preenchido, LIGA
+    /// mTLS — quem nao apresentar certificado dela e' recusado.
+    /// Cliente: CA que valida o servidor (vazio = trust store do sistema).
+    property CaFile: string read FOptions.CaFile write SetCaFile;
+    /// Cliente: valida a cadeia do servidor. Desligar so' em laboratorio.
+    property VerifyPeer: Boolean read FOptions.VerifyPeer write SetVerifyPeer;
+    /// Prazo do handshake; 0 = PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT.
+    property HandshakeTimeoutMs: Cardinal
+      read FOptions.HandshakeTimeoutMs write SetHandshakeTimeoutMs;
+  end;
+
   { Guarda refcounted dos eventos pdmMainThread: o componente e' o dono e a
     invalida no Destroy; cada evento enfileirado segura uma referencia e so
     invoca o callback se a guarda ainda for valida. }
@@ -62,6 +106,7 @@ type
     FDispatchPool: TPipeThreadPool; // pool privado (pdmSerialized); nil = global
     FInFlight: Integer;             // work items despachados em execucao (atomico)
     FGuard: TPipeGuard;             // guarda dos eventos pdmMainThread
+    FTlsConfig: TPipeTlsConfig;     // sempre existe; so' consultado em ptTls
     procedure SetAddress(const AValue: string);
     procedure SetTransport(AValue: TPipeTransport);
     procedure SetKeepAliveSeconds(AValue: Cardinal);
@@ -70,6 +115,8 @@ type
   protected
     function GetActive: Boolean; virtual; abstract;
     /// Propriedades de configuracao so mudam com o componente inativo.
+    /// TPipeTlsConfig tambem chama, para guardar as proprias mudancas (mesma
+    /// unit: protected e' acessivel entre classes daqui).
     procedure EnsureInactive(const AWhat: string);
     /// Pool onde os eventos do usuario executam.
     function EventPool: TPipeThreadPool;
@@ -98,6 +145,9 @@ type
     property Address: string read FAddress write SetAddress;
     /// Transporte que carrega os frames (ptLocal por padrao).
     property Transport: TPipeTransport read FTransport write SetTransport;
+    /// Credenciais e politica de validacao usadas quando Transport = ptTls;
+    /// ignoradas nos outros transportes. Lidas UMA vez, no Listen/Connect.
+    property TlsOptions: TPipeTlsConfig read FTlsConfig;
     /// Segundos de ociosidade antes do primeiro probe de keepalive TCP;
     /// 0 desliga. So tem efeito em ptTcp (ptLocal ignora: a morte do processo
     /// par sempre fecha o pipe/socket local).
@@ -310,6 +360,57 @@ begin
   end;
 end;
 
+{ TPipeTlsConfig }
+
+constructor TPipeTlsConfig.Create(AOwner: TPipeBase);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  // FOptions zerado: HandshakeTimeoutMs = 0 significa o prazo padrao, nao
+  // "sem prazo" (ver PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT).
+end;
+
+function TPipeTlsConfig.AsOptions: TPipeTlsOptions;
+begin
+  Result := FOptions;
+end;
+
+procedure TPipeTlsConfig.SetCertFile(const AValue: string);
+begin
+  FOwner.EnsureInactive('TlsOptions.CertFile');
+  FOptions.CertFile := AValue;
+end;
+
+procedure TPipeTlsConfig.SetCertPassword(const AValue: string);
+begin
+  FOwner.EnsureInactive('TlsOptions.CertPassword');
+  FOptions.CertPassword := AValue;
+end;
+
+procedure TPipeTlsConfig.SetKeyFile(const AValue: string);
+begin
+  FOwner.EnsureInactive('TlsOptions.KeyFile');
+  FOptions.KeyFile := AValue;
+end;
+
+procedure TPipeTlsConfig.SetCaFile(const AValue: string);
+begin
+  FOwner.EnsureInactive('TlsOptions.CaFile');
+  FOptions.CaFile := AValue;
+end;
+
+procedure TPipeTlsConfig.SetVerifyPeer(AValue: Boolean);
+begin
+  FOwner.EnsureInactive('TlsOptions.VerifyPeer');
+  FOptions.VerifyPeer := AValue;
+end;
+
+procedure TPipeTlsConfig.SetHandshakeTimeoutMs(AValue: Cardinal);
+begin
+  FOwner.EnsureInactive('TlsOptions.HandshakeTimeoutMs');
+  FOptions.HandshakeTimeoutMs := AValue;
+end;
+
 { TPipeBase }
 
 constructor TPipeBase.Create(const AAddress: string;
@@ -322,6 +423,7 @@ begin
   FDispatchMode := pdmPool;
   FMaxMessageSize := PIPES_DEFAULT_MAX_MESSAGE_SIZE;
   FGuard := TPipeGuard.Create;
+  FTlsConfig := TPipeTlsConfig.Create(Self);
 end;
 
 destructor TPipeBase.Destroy;
@@ -330,6 +432,7 @@ begin
   // Eventos pdmMainThread ainda na fila da main thread viram no-op.
   FGuard.Invalidate;
   FGuard.Release;
+  FTlsConfig.Free;
   inherited;
 end;
 
