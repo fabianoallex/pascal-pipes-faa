@@ -52,6 +52,10 @@
         <Filename Value="Pipes.EndToEndTests.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>
+      <Unit>
+        <Filename Value="Pipes.TlsTests.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
     </Units>
   </ProjectOptions>
   <CompilerOptions>
@@ -61,6 +65,7 @@
       <Filename Value="PipesIntegrationTestsFpc"/>
     </Target>
     <SearchPaths>
+      <IncludeFiles Value="..\..\..\src"/>
       <OtherUnitFiles Value="..\..\..\src"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>

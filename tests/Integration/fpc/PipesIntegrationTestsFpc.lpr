@@ -19,7 +19,8 @@ uses
   Classes, consoletestrunner, testregistry,
   Pipes.TransportTests,
   Pipes.EndToEndTests,
-  Pipes.StressTests;
+  Pipes.StressTests,
+  Pipes.TlsTests;
 
 var
   ConsoleApp: TTestRunner;

@@ -93,6 +93,7 @@
         <DCC_ExeOutput>.\$(Platform)\$(Config)</DCC_ExeOutput>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
         <DCC_UnitSearchPath>$(DUnitX);..\..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_IncludePath>..\..\src;$(DCC_IncludePath)</DCC_IncludePath>
         <SanitizedProjectName>Pipes_IntegrationTests</SanitizedProjectName>
         <UsingDelphiRTL>true</UsingDelphiRTL>
     </PropertyGroup>
@@ -178,6 +179,7 @@
         <DCCReference Include="Pipes.TransportTests.pas"/>
         <DCCReference Include="Pipes.EndToEndTests.pas"/>
         <DCCReference Include="Pipes.StressTests.pas"/>
+        <DCCReference Include="Pipes.TlsTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

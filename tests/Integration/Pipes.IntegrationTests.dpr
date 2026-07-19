@@ -21,7 +21,8 @@ uses
   Pipes.Client in '..\..\src\Pipes.Client.pas',
   Pipes.TransportTests in 'Pipes.TransportTests.pas',
   Pipes.EndToEndTests in 'Pipes.EndToEndTests.pas',
-  Pipes.StressTests in 'Pipes.StressTests.pas';
+  Pipes.StressTests in 'Pipes.StressTests.pas',
+  Pipes.TlsTests in 'Pipes.TlsTests.pas';
 
 var
   runner: ITestRunner;
