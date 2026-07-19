@@ -59,6 +59,10 @@ type
     /// Conecta o cliente; ACliCert <> '' apresenta certificado (mTLS).
     /// Devolve False (sem levantar) se a conexao foi recusada.
     function TryConnect(const ACliCert: string; out AErro: string): Boolean;
+    /// Conecta com o DEFAULT de validacao (SkipServerVerification=False): o
+    /// cliente valida a cadeia do servidor. Diferente de TryConnect, que a
+    /// desliga. False (sem levantar) se recusada. Sem certificado de cliente.
+    function TryConnectValidandoServidor(out AErro: string): Boolean;
     /// True se o servidor tratou o cliente como AUTENTICADO — OnClientConnected
     /// so dispara depois do handshake, entao e' o sinal de que ele entrou.
     function ClienteAutenticado(ATimeoutMs: Integer): Boolean;
@@ -85,6 +89,8 @@ type
     // --- caminho feliz ---
     [Test] procedure Tls_RoundTripCifrado;
     [Test] procedure Mtls_ClienteComCertDaCa_Conecta;
+    // --- validacao do servidor pelo cliente (default seguro) ---
+    [Test] procedure Tls_ClienteValidaServidorPorPadrao_Recusa;
     // --- recusa (o que de fato prova que ha autenticacao) ---
     [Test] procedure Mtls_ClienteSemCert_Recusado;
     [Test] procedure Mtls_ClienteDeOutraCa_Recusado;
@@ -271,6 +277,23 @@ begin
   end;
 end;
 
+function TTlsHarness.TryConnectValidandoServidor(out AErro: string): Boolean;
+begin
+  AErro := '';
+  // NAO mexe em SkipServerVerification: fica no default (False = valida). A CA
+  // de teste nao esta no trust store, entao a validacao tem de RECUSAR.
+  try
+    FClient.Connect(5000);
+    Result := True;
+  except
+    on E: Exception do
+    begin
+      AErro := E.ClassName + ': ' + E.Message;
+      Result := False;
+    end;
+  end;
+end;
+
 function TTlsHarness.ClienteAutenticado(ATimeoutMs: Integer): Boolean;
 begin
   Result := FConnected.WaitFor(ATimeoutMs) = wrSignaled;
@@ -333,6 +356,25 @@ begin
   AssertTrue('servidor nao autenticou o cliente legitimo',
     FHarness.ClienteAutenticado(5000));
   AssertTrue('eco nao voltou integro', FHarness.Eco('mtls ok', 5000));
+end;
+
+procedure TPipeTlsTests.Tls_ClienteValidaServidorPorPadrao_Recusa;
+var
+  LErro: string;
+  LOk: Boolean;
+begin
+  // Guarda do DEFAULT seguro (SkipServerVerification=False): o cliente valida
+  // a cadeia do servidor. O servidor apresenta o cert da PKI de teste, cuja CA
+  // NAO esta no trust store do SO — a validacao tem de RECUSAR. Se alguem
+  // reverter o default para "nao valida por padrao", so' este teste fica
+  // vermelho: todos os outros desligam a validacao no harness.
+  FHarness.Listen(''); // servidor TLS simples (sem mTLS): o unico motivo de
+                       // recusa aqui e' o cliente reprovar o cert do servidor.
+  LOk := FHarness.TryConnectValidandoServidor(LErro);
+  AssertFalse('GRAVE: cliente aceitou servidor de PKI nao-confiavel com o ' +
+    'default — a validacao do servidor esta desligada por padrao?', LOk);
+  AssertFalse('cliente nao deveria autenticar contra servidor nao validado',
+    FHarness.ClienteAutenticado(1000));
 end;
 
 procedure TPipeTlsTests.Mtls_ClienteSemCert_Recusado;
