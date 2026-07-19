@@ -331,6 +331,13 @@ marcados `deprecated` só depois que samples e testes migrarem.
 - **ChatVcl** — chat com UI (VCL no Delphi, LCL no Lazarus, mesmo fonte): uma instância é o
   servidor-hub (retransmite via `Broadcast`), as outras são clientes. Vitrine do
   `pdmMainThread` (handlers mexem na UI direto) e do `AutoReconnect`.
+- **ChatSeguro** — o mesmo chat sobre `ptTls` com mTLS, e a diferença não é só a cifra:
+  **quem está na sala vem do certificado, não de um apelido digitado.** O hub rotula cada
+  mensagem com o `CommonName` que `TryClientIdentity` devolve, e a lista de participantes
+  sai de `ClientIds` — que só mostra conexões estabelecidas. O combo de identidade troca o
+  certificado apresentado, incluindo os que **devem ser recusados** (`rogue`, `selfsigned`):
+  é aí que se vê o mTLS trabalhando, e não no caminho feliz. Precisa da PKI de
+  [`tests/pki/`](tests/pki/LEIA-ME.md), que o próprio form localiza.
 - **PdvDualScreen** (`Operador` + `Cliente`) — PDV de tela dupla: o operador lança itens e
   pede a forma de pagamento; o cliente acompanha e responde. Mostra o padrão recomendado
   para uso em produção: a UI de cada lado não fala `TBytes`/`TPipeConnectionId` diretamente,
@@ -408,7 +415,7 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Wi
                      rede: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
 packages/            pipes_faa.lpk (pacote Lazarus)
-samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl,
+samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PdvDualScreen (Operador + Cliente), FilaImpressao, DespachoTarefas,
                      ServicoInstavel, RpcConcorrente
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)

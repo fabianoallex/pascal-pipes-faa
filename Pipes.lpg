@@ -32,6 +32,11 @@
           <Mode Name="Default"/>
         </BuildModes>
       </Target>
+      <Target FileName="samples\ChatSeguro\ChatSeguro.lpi">
+        <BuildModes>
+          <Mode Name="Default"/>
+        </BuildModes>
+      </Target>
       <Target FileName="samples\ChatVcl\ChatVcl.lpi">
         <BuildModes>
           <Mode Name="Default"/>
