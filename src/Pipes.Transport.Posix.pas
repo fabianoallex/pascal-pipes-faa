@@ -46,6 +46,7 @@ type
     FStopR: cint;     // self-pipe: lado de leitura (entra em todo fpPoll)
     FStopW: cint;     // self-pipe: lado de escrita (CloseAbort escreve 1 byte)
     FClosed: Integer; // atomico: 1 apos CloseAbort
+    FIoTimeoutMs: Cardinal; // 0 = espera sem prazo (ver SetIoDeadline)
     /// Espera o fd ficar pronto (AEvents) ou o stop sinalizar (EPipeClosed).
     procedure WaitReadyOrStop(AEvents: SmallInt; const AOp: string);
   public
@@ -55,6 +56,7 @@ type
     function Read(var ABuffer; ACount: Integer): Integer; override;
     procedure WriteExactly(const ABuffer; ACount: Integer); override;
     procedure CloseAbort; override;
+    procedure SetIoDeadline(ATimeoutMs: Cardinal); override;
   end;
 
   TPipePosixListener = class(TPipeListener)
@@ -158,24 +160,47 @@ begin
   fpShutdown(FFd, PIPE_SHUT_RDWR); // desarma read/write residual no kernel
 end;
 
+procedure TPipePosixEndpoint.SetIoDeadline(ATimeoutMs: Cardinal);
+begin
+  FIoTimeoutMs := ATimeoutMs;
+end;
+
 procedure TPipePosixEndpoint.WaitReadyOrStop(AEvents: SmallInt; const AOp: string);
 var
   LFds: array[0..1] of pollfd;
   LRc: cint;
+  LDeadline: UInt64;
+  LWait: Int64;
 begin
   if PipeAtomicGet(FClosed) <> 0 then
     raise EPipeClosed.Create(AOp + ' em endpoint fechado');
+  LDeadline := 0;
+  if FIoTimeoutMs <> 0 then
+    LDeadline := PipeTickMs + FIoTimeoutMs;
   repeat
+    if FIoTimeoutMs = 0 then
+      LWait := -1
+    else
+    begin
+      // Recalculado a cada volta: sem isso um EINTR reiniciaria o prazo, e uma
+      // rajada de sinais esticaria a espera indefinidamente.
+      LWait := Int64(LDeadline) - Int64(PipeTickMs);
+      if LWait < 0 then
+        LWait := 0;
+    end;
     LFds[0].fd := FFd;
     LFds[0].events := AEvents;
     LFds[0].revents := 0;
     LFds[1].fd := FStopR;
     LFds[1].events := POLLIN;
     LFds[1].revents := 0;
-    LRc := fpPoll(@LFds[0], 2, -1);
+    LRc := fpPoll(@LFds[0], 2, LWait);
   until (LRc >= 0) or (fpgeterrno <> ESysEINTR);
   if LRc < 0 then
     RaiseIoError(AOp + ' (poll)', fpgeterrno);
+  if (LRc = 0) and (FIoTimeoutMs <> 0) then
+    raise EPipeTimeout.CreateFmt('%s: o par nao respondeu em %u ms',
+      [AOp, FIoTimeoutMs]);
   if ((LFds[1].revents and POLLIN) <> 0) or (PipeAtomicGet(FClosed) <> 0) then
     raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
   // POLLERR/POLLHUP no fd da operacao: deixa o recv/send reportar — ainda

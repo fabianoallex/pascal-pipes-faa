@@ -71,6 +71,7 @@ type
   private
     FInner: TPipeEndpoint;   // endpoint TCP; propriedade desta classe
     FTls: TStream;           // stream do backend; dono do TPipeEndpointStream
+    FHandshakeTimeoutMs: Cardinal; // ja resolvido (0 = sem prazo)
     // <> nil enquanto ha negociacao de servidor pendente. So um dos dois
     // existe por build: o backend e' escolhido em tempo de compilacao.
     {$IFDEF PIPES_OPENSSL}
@@ -138,6 +139,19 @@ implementation
 uses
   Pipes.Transport.Tcp;
 
+// Traduz HandshakeTimeoutMs para o valor que SetIoDeadline entende: 0 no
+// record significa "o padrao", e so' o sentinela explicito desliga o prazo
+// (0 la' embaixo). Ver PIPE_TLS_HANDSHAKE_NO_TIMEOUT.
+function ResolveHandshakeTimeout(const AOptions: TPipeTlsOptions): Cardinal;
+begin
+  if AOptions.HandshakeTimeoutMs = PIPE_TLS_HANDSHAKE_NO_TIMEOUT then
+    Result := 0
+  else if AOptions.HandshakeTimeoutMs = 0 then
+    Result := PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT
+  else
+    Result := AOptions.HandshakeTimeoutMs;
+end;
+
 { TPipeTlsEndpoint }
 
 constructor TPipeTlsEndpoint.Create(AInner: TPipeEndpoint;
@@ -149,6 +163,12 @@ begin
   FInner := AInner; // posse assumida JA: se o handshake abaixo levantar, o
                     // destructor desta classe e' chamado e libera AInner — o
                     // chamador nao deve liberar nada depois de chamar Create.
+  FHandshakeTimeoutMs := ResolveHandshakeTimeout(AOptions);
+  // No CLIENTE o handshake acontece dentro do construtor do backend, logo
+  // abaixo — o prazo tem de estar armado ANTES dele, e removido no fim deste
+  // construtor. Sem try/finally porque falha aqui destroi o endpoint inteiro:
+  // nao sobra ninguem para herdar o prazo residual.
+  FInner.SetIoDeadline(FHandshakeTimeoutMs);
   // TPipeEndpointStream nao e' dono do endpoint; o backend TLS passa a ser
   // dono DELE (nao do endpoint).
   //
@@ -189,6 +209,8 @@ begin
   {$IFNDEF PIPES_TLS}
   raise EPipeTls.Create('build sem backend TLS: compile com PIPES_OPENSSL');
   {$ENDIF}
+  // Handshake concluido: a sessao volta a esperar sem prazo (ver Handshake).
+  FInner.SetIoDeadline(0);
 end;
 
 constructor TPipeTlsEndpoint.CreateServer(AInner: TPipeEndpoint;
@@ -199,6 +221,8 @@ var
 begin
   inherited Create;
   FInner := AInner; // posse assumida ja (mesma regra do construtor cliente)
+  // No SERVIDOR nada e' negociado aqui; o prazo entra em Handshake.
+  FHandshakeTimeoutMs := ResolveHandshakeTimeout(AOptions);
   LRaw := TPipeEndpointStream.Create(AInner);
   {$IFDEF PIPES_OPENSSL}
   FServerSsl := TPipeOpenSslServerStream.Create(LRaw, AOptions);
@@ -218,14 +242,27 @@ procedure TPipeTlsEndpoint.Handshake;
 begin
   // So o lado servidor tem negociacao pendente; no cliente ela ja aconteceu
   // no construtor, na thread de quem chamou Connect.
-  {$IFDEF PIPES_OPENSSL}
-  if Assigned(FServerSsl) then
-    FServerSsl.Negotiate;
-  {$ENDIF}
-  {$IFDEF PIPES_SCHANNEL}
-  if Assigned(FServerTls) then
-    FServerTls.Negotiate;
-  {$ENDIF}
+
+  // O prazo vale so' durante a negociacao. Depois dela a conexao volta a
+  // esperar sem limite: uma sessao legitima pode ficar horas ociosa, e quem
+  // cuida de par morto ali e' o keepalive. Aqui e' diferente — o par ainda nao
+  // provou nada e ja segura uma thread.
+  FInner.SetIoDeadline(FHandshakeTimeoutMs);
+  try
+    {$IFDEF PIPES_OPENSSL}
+    if Assigned(FServerSsl) then
+      FServerSsl.Negotiate;
+    {$ENDIF}
+    {$IFDEF PIPES_SCHANNEL}
+    if Assigned(FServerTls) then
+      FServerTls.Negotiate;
+    {$ENDIF}
+  finally
+    // try/finally e nao so' no caminho feliz: no timeout o endpoint continua
+    // vivo ate' o servidor derrubar a conexao, e ficar com prazo residual
+    // faria uma leitura ociosa normal estourar depois.
+    FInner.SetIoDeadline(0);
+  end;
 end;
 
 destructor TPipeTlsEndpoint.Destroy;

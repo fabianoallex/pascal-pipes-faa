@@ -61,6 +61,14 @@ type
     KeyFile: string;
     CaFile: string;
     VerifyPeer: Boolean;
+    /// Prazo do handshake TLS. 0 = PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT, para que
+    /// um record zerado por FillChar caia no comportamento seguro; desligar
+    /// exige o valor explicito PIPE_TLS_HANDSHAKE_NO_TIMEOUT.
+    ///
+    /// Sem prazo, quem abre o TCP e nunca manda o ClientHello prende a reader
+    /// thread daquela conexao para sempre — algumas dezenas de conexoes
+    /// meia-abertas esgotam o servidor sem enviar um byte util.
+    HandshakeTimeoutMs: Cardinal;
   end;
 
   TPipeMessageEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
@@ -101,6 +109,14 @@ const
   /// Intervalo entre probes e quantos probes sem resposta derrubam a conexao.
   /// Com os padroes: par morto detectado em ~20 + 3*5 = 35s.
   PIPES_KEEPALIVE_INTERVAL_SECONDS = 5;
+  /// Prazo padrao do handshake TLS (TPipeTlsOptions.HandshakeTimeoutMs = 0).
+  /// 15s cobre com folga um handshake sobre VPN ruim — o alvo nao e' a rede
+  /// lenta, e' o par que nunca fala.
+  PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT = 15000;
+  /// Desliga o prazo do handshake. Valor explicito de proposito: quem remove
+  /// essa protecao devia estar dizendo isso em voz alta, nao deixando um campo
+  /// em zero.
+  PIPE_TLS_HANDSHAKE_NO_TIMEOUT = Cardinal($FFFFFFFF);
   PIPES_KEEPALIVE_PROBE_COUNT = 3;
 
 /// Descreve o backend TLS efetivamente em uso (biblioteca, versao e de onde foi

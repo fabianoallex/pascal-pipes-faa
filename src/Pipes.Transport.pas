@@ -45,6 +45,24 @@ type
     /// idempotente; chamavel de qualquer thread. O handle/fd e' liberado de
     /// fato no destructor (apos o join da reader thread).
     procedure CloseAbort; virtual; abstract;
+    /// Impoe um prazo as esperas de IO deste endpoint: passado ATimeoutMs sem
+    /// o socket ficar pronto, Read/WriteExactly levantam EPipeTimeout em vez de
+    /// esperar para sempre. 0 remove o prazo.
+    ///
+    /// Vale a partir da proxima espera e conta por espera, nao pela operacao
+    /// inteira — serve para "o par parou de falar", nao como orcamento total.
+    /// Chamar da propria thread que le/escreve.
+    ///
+    /// Existe para o handshake TLS (ver TPipeTlsEndpoint.Handshake), a unica
+    /// fase em que o par ainda nao provou nada e ja consome uma thread. Fora
+    /// dela o padrao continua sendo esperar indefinidamente e depender de
+    /// CloseAbort/keepalive.
+    ///
+    /// O padrao NAO FAZ NADA: transportes que nao implementam simplesmente
+    /// esperam sem prazo. Hoje so o TCP implementa, que e' o unico que o TLS
+    /// envolve — um backend novo sob TLS precisa implementar isto tambem, ou o
+    /// prazo some em silencio.
+    procedure SetIoDeadline(ATimeoutMs: Cardinal); virtual;
   end;
 
   { Ponto de escuta do servidor. }
@@ -117,6 +135,11 @@ uses
 procedure TPipeEndpoint.Handshake;
 begin
   // Nada a negociar por padrao.
+end;
+
+procedure TPipeEndpoint.SetIoDeadline(ATimeoutMs: Cardinal);
+begin
+  // Sem prazo por padrao (ver o comentario da declaracao).
 end;
 
 { TPipeEndpointStream }

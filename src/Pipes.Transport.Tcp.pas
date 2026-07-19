@@ -59,6 +59,7 @@ type
     FSockEvent: WSAEVENT;  // FD_READ/FD_WRITE/FD_CLOSE do socket
     FStopEvent: WSAEVENT;  // manual-reset, sinalizado por CloseAbort
     FClosed: Integer;      // atomico: 1 apos CloseAbort
+    FIoTimeoutMs: Cardinal; // 0 = espera sem prazo (ver SetIoDeadline)
     /// Espera o socket sinalizar algo ou o stop (EPipeClosed).
     procedure WaitReadyOrStop(const AOp: string);
   public
@@ -68,6 +69,7 @@ type
     function Read(var ABuffer; ACount: Integer): Integer; override;
     procedure WriteExactly(const ABuffer; ACount: Integer); override;
     procedure CloseAbort; override;
+    procedure SetIoDeadline(ATimeoutMs: Cardinal); override;
   end;
 
   TPipeTcpWinListener = class(TPipeListener)
@@ -193,6 +195,7 @@ const
   PIPE_WSA_INFINITE = Cardinal($FFFFFFFF);
   PIPE_WSA_WAIT_FAILED = Cardinal($FFFFFFFF);
   PIPE_WSA_WAIT_EVENT_0 = 0;
+  PIPE_WSA_WAIT_TIMEOUT = Cardinal(258); // = WAIT_TIMEOUT
   // PIPE_WSA_INVALID_EVENT e' (WSAEVENT)NULL; a unit WinSock2 do FPC 3.2.2 nao a
   // declara.
   PIPE_WSA_INVALID_EVENT = 0;
@@ -334,20 +337,32 @@ begin
     shutdown(FSocket, PIPE_SD_BOTH);  // desarma recv/send residual no kernel
 end;
 
+procedure TPipeTcpWinEndpoint.SetIoDeadline(ATimeoutMs: Cardinal);
+begin
+  FIoTimeoutMs := ATimeoutMs;
+end;
+
 procedure TPipeTcpWinEndpoint.WaitReadyOrStop(const AOp: string);
 var
   LEvents: array[0..1] of WSAEVENT;
   LNet: TPipeNetworkEvents;
   LRc: DWORD;
+  LWait: DWORD;
 begin
   if PipeAtomicGet(FClosed) <> 0 then
     raise EPipeClosed.Create(AOp + ' em endpoint fechado');
   LEvents[0] := FSockEvent;
   LEvents[1] := FStopEvent;
-  LRc := WSAWaitForMultipleEvents(2, @LEvents[0], False, PIPE_WSA_INFINITE,
-    False);
+  if FIoTimeoutMs = 0 then
+    LWait := PIPE_WSA_INFINITE
+  else
+    LWait := FIoTimeoutMs;
+  LRc := WSAWaitForMultipleEvents(2, @LEvents[0], False, LWait, False);
   if LRc = PIPE_WSA_WAIT_FAILED then
     RaiseWsaError(AOp + ' (wait)', WSAGetLastError);
+  if LRc = PIPE_WSA_WAIT_TIMEOUT then
+    raise EPipeTimeout.CreateFmt('%s: o par nao respondeu em %u ms',
+      [AOp, FIoTimeoutMs]);
   // Stop pode estar sinalizado junto com o socket; a checagem explicita evita
   // depender de qual indice o wait devolveu.
   if (LRc = PIPE_WSA_WAIT_EVENT_0 + 1) or (PipeAtomicGet(FClosed) <> 0) then
