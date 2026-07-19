@@ -16,6 +16,8 @@ uses
   Pipes.Transport in '..\..\src\Pipes.Transport.pas',
   Pipes.Transport.Windows in '..\..\src\Pipes.Transport.Windows.pas',
   Pipes.Transport.Tcp in '..\..\src\Pipes.Transport.Tcp.pas',
+  Pipes.Transport.Schannel in '..\..\src\Pipes.Transport.Schannel.pas',
+  Pipes.Transport.Tls in '..\..\src\Pipes.Transport.Tls.pas',
   Pipes.AddressTests in 'Pipes.AddressTests.pas';
 
 var

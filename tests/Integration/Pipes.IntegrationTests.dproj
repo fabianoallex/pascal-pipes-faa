@@ -170,6 +170,8 @@
         <DCCReference Include="..\..\src\Pipes.Transport.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Windows.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Tcp.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Transport.Schannel.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Transport.Tls.pas"/>
         <DCCReference Include="..\..\src\Pipes.Base.pas"/>
         <DCCReference Include="..\..\src\Pipes.Server.pas"/>
         <DCCReference Include="..\..\src\Pipes.Client.pas"/>

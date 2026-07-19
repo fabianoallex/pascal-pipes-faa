@@ -59,6 +59,9 @@ type
   /// Violacao do wire format: magic invalido, kind desconhecido ou payload
   /// acima do maximo configurado.
   EPipeProtocol = class(EPipeError);
+  /// Falha de TLS: handshake, validacao de certificado, ou biblioteca TLS
+  /// ausente/incompativel (comum aos backends Schannel e OpenSSL).
+  EPipeTls = class(EPipeError);
 
 const
   PIPE_INVALID_CONNECTION = TPipeConnectionId(0);
@@ -76,6 +79,28 @@ const
   PIPES_KEEPALIVE_INTERVAL_SECONDS = 5;
   PIPES_KEEPALIVE_PROBE_COUNT = 3;
 
+/// Descreve o backend TLS efetivamente em uso (biblioteca, versao e de onde foi
+/// carregada), para log e diagnostico — a mensagem de "handshake falhou" sozinha
+/// raramente diz se o problema e' a DLL errada. Vazio ate o primeiro uso de TLS.
+function PipeTlsBackendInfo: string;
+/// Chamada pelos backends TLS ao carregar. Nao e' para uso da aplicacao.
+procedure PipeSetTlsBackendDetail(const ADetail: string);
+
 implementation
+
+var
+  // Escrita uma unica vez, sob o lock de carga do backend TLS; leitura e'
+  // diagnostico. Nao ha corrida real, mas tambem nao ha garantia forte aqui.
+  GTlsBackendDetail: string = '';
+
+function PipeTlsBackendInfo: string;
+begin
+  Result := GTlsBackendDetail;
+end;
+
+procedure PipeSetTlsBackendDetail(const ADetail: string);
+begin
+  GTlsBackendDetail := ADetail;
+end;
 
 end.

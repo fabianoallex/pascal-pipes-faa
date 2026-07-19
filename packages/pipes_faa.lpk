@@ -50,6 +50,18 @@
         <UnitName Value="Pipes.Transport.Tcp"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Pipes.Transport.Schannel.pas"/>
+        <UnitName Value="Pipes.Transport.Schannel"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Transport.OpenSSL.pas"/>
+        <UnitName Value="Pipes.Transport.OpenSSL"/>
+      </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Transport.Tls.pas"/>
+        <UnitName Value="Pipes.Transport.Tls"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Pipes.Base.pas"/>
         <UnitName Value="Pipes.Base"/>
       </Item>
