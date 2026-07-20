@@ -242,6 +242,12 @@ de/para UTF-8 de forma portátil.
 - **AutoReconnect** — o cliente reconecta sozinho após queda do servidor
   (`ReconnectDelayMs`, `MaxReconnectAttempts`). Durante a janela de reconexão, `Send*`
   levanta `EPipeClosed` transitório — re-tente (contrato igual ao republish de um client MQ).
+  As tentativas são **sempre espaçadas** por `ReconnectDelayMs`, inclusive contra um par
+  que aceita a conexão e a derruba em seguida (o caso de um servidor mTLS recusando o
+  certificado); e `MaxReconnectAttempts` alcança esse caso também. O contador zera quando
+  uma sessão dura mais que `ReconnectDelayMs` — sessão curta demais conta como tentativa,
+  para que um cliente rejeitado não fique reconectando indefinidamente, e um cliente de
+  longa duração que reconecta legitimamente não acumule rumo ao teto.
 - **Modos de despacho** (`DispatchMode`) — onde os SEUS handlers executam:
   - `pdmPool` (padrão): pool de threads; paralelo entre conexões.
   - `pdmSerialized`: worker único; ordem FIFO global garantida.

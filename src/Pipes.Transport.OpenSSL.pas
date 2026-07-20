@@ -42,10 +42,17 @@
   (a thread de leitura) e escritores já serializados entre si; Read nunca é
   chamado concorrente com outro Read.
 
-  Escopo: cliente, autenticação de servidor. Validação de certificado via
-  trust store do sistema (SSL_CTX_set_default_verify_paths) + hostname
-  (SSL_set1_host), ou modo inseguro opt-in (self-signed em dev). mTLS e
-  validação por IP-SAN ficam fora desta primeira versão, como no SChannel. }
+  Escopo: os dois lados. Cliente valida o servidor pela cadeia (trust store do
+  sistema via SSL_CTX_set_default_verify_paths, ou a CA de CaFile) mais o
+  hostname (SSL_set1_host); servidor valida o cliente sob mTLS
+  (SSL_VERIFY_PEER + FAIL_IF_NO_PEER_CERT) e expõe a identidade dele
+  (SSL_get1_peer_certificate — ver a nota de compatibilidade 1.1/3.x adiante).
+  Há ainda o modo inseguro opt-in por SkipServerVerification (laboratório).
+
+  Endereço por IP funciona: SSL_set1_host aceita '127.0.0.1' e o certificado de
+  teste, que traz IP:127.0.0.1 no SAN, valida — medido, não presumido. (Uma
+  versão anterior deste cabeçalho dizia que IP-SAN estava fora de escopo; era
+  descrição do estado inicial da unit, não do comportamento atual.) }
 
 interface
 

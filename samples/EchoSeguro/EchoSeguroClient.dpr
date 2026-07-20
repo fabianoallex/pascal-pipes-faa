@@ -10,11 +10,16 @@ program EchoSeguroClient;
 
   Credenciais: ver EchoSeguroServer.dpr e o LEIA-ME de tests/pki.
 
-  SkipServerVerification := True abaixo e' SO PORQUE a CA de teste nao esta no
-  trust store da maquina que roda este demo. NUNCA faca isso em producao: em
-  producao a CA do servidor esta no trust store do SO, ou usa-se CaFile no
-  backend OpenSSL — sem validar o servidor, o cliente cifra o trafego mas nao
-  sabe com quem fala, e a sessao fica MITM-avel.
+  Validacao do servidor: LIGADA no backend OpenSSL, onde CaFile basta para
+  ancorar a CA de teste. No SChannel ela e' desligada, e SO por la': o cliente
+  Windows valida contra o trust store do SO e ignora CaFile, entao com uma PKI
+  de teste nao instalada na maquina nao ha como validar sem desligar.
+
+  Isso importa como exemplo: sem validar o servidor o cliente cifra o trafego
+  mas nao sabe com quem fala, e a sessao fica MITM-avel. Um sample que
+  desligasse a validacao nos DOIS backends ensinaria o habito errado onde ele
+  nem e' necessario. Em producao: instale a CA no trust store do Windows, ou
+  use o backend OpenSSL com CaFile.
 
   Compila nos dois mundos a partir do MESMO fonte:
     FPC (Windows): lazbuild EchoSeguroClient.lpi
@@ -148,13 +153,18 @@ begin
   {$IFDEF PIPES_SCHANNEL}
   FClient.TlsOptions.CertFile := LPki + 'cli.pfx';
   FClient.TlsOptions.CertPassword := 'pipestest';
+  // SO no SChannel: aqui o cliente valida contra o trust store do Windows e
+  // ignora CaFile, entao com a PKI de teste nao ha como validar sem desligar.
+  // NUNCA em producao — ver o comentario no topo do arquivo.
+  FClient.TlsOptions.SkipServerVerification := True;
   {$ELSE}
   FClient.TlsOptions.CertFile := LPki + 'cli_cert.pem';
   FClient.TlsOptions.KeyFile := LPki + 'cli_key.pem';
+  // No OpenSSL a validacao fica LIGADA: CaFile ancora a CA de teste e o
+  // certificado do servidor (CN=localhost, SAN localhost + 127.0.0.1) valida
+  // de verdade. E' o comportamento que um sample deve demonstrar.
+  FClient.TlsOptions.CaFile := LPki + 'ca_cert.pem';
   {$ENDIF}
-  // ATENCAO: SO para este demo com a PKI de teste, que nao esta no trust
-  // store da maquina. NUNCA em producao — ver o comentario no topo do arquivo.
-  FClient.TlsOptions.SkipServerVerification := True;
 
   FClient.OnMessage := OnMsg;
   FClient.OnConnected := OnConn;

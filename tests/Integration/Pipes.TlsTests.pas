@@ -132,6 +132,7 @@ type
     // --- reconexao contra recusa permanente ---
     [Test] procedure Mtls_AutoReconnectRecusado_NaoViraLacoQuente;
     [Test] procedure AutoReconnectDesligadoNoCallback_ParaDeTentar;
+    [Test] procedure Mtls_MaxReconnectAttempts_AlcancaParQueAceitaEDerruba;
     // --- configuracao ---
     [Test] procedure Tls_ListenSemCredenciais_Falha;
     [Test] procedure Tls_TrocaCertComServidorAtivo_Levanta;
@@ -773,6 +774,33 @@ begin
 
   AssertEquals('depois de AutoReconnect:=False no callback nao deveria ' +
     'haver novas conexoes', LAntes, LDepois);
+end;
+
+procedure TPipeTlsTests.Mtls_MaxReconnectAttempts_AlcancaParQueAceitaEDerruba;
+var
+  LErro: string;
+  LConns: Integer;
+begin
+  // O par mTLS no SChannel ACEITA o handshake e derruba ao reprovar a cadeia,
+  // entao cada ciclo do cliente e' uma conexao que chega a abrir. Enquanto o
+  // contador de tentativas viveu na thread de reconexao, esse caso reiniciava
+  // o contador a cada ciclo (thread nova por ciclo) e o teto nunca chegava.
+  FHarness.Listen(Pki('ca_cert.pem'));
+  FHarness.Client.AutoReconnect := True;
+  FHarness.Client.ReconnectDelayMs := 200;
+  FHarness.Client.MaxReconnectAttempts := 3;
+  FHarness.TryConnect('selfsigned', LErro);
+
+  // 3 tentativas a 200ms cabem em ~1s; 3s da folga larga para desistir.
+  Sleep(3000);
+  LConns := FHarness.CliConnCount;
+  Sleep(1500); // se ainda tentasse, apareceria aqui
+  AssertEquals('depois de esgotar MaxReconnectAttempts nao deveria haver ' +
+    'novas conexoes', LConns, FHarness.CliConnCount);
+  // Teto de 3: a conexao inicial mais as tentativas. Um teto que nunca dispara
+  // produziria dezenas.
+  AssertTrue('esperava poucas conexoes ate desistir, houve ' +
+    IntToStr(LConns), LConns <= 6);
 end;
 
 procedure TPipeTlsTests.Tls_ListenSemCredenciais_Falha;

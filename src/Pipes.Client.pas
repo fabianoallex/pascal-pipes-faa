@@ -32,10 +32,13 @@ unit Pipes.Client;
     seguida (mTLS no Schannel valida a cadeia depois do handshake) faz cada
     ciclo terminar com a thread saindo e ReaderFinished criando uma NOVA. Um
     contador por thread reiniciaria a cada ciclo e nunca espacaria nada.
-  - Consequencia disso para MaxReconnectAttempts: ele conta tentativas que
-    FALHARAM em abrir a sessao. Um par que aceita e derruba produz tentativas
-    bem-sucedidas, entao o teto nao se aplica — quem precisa desistir nesse
-    caso decide na aplicacao (ver o sample ChatSeguro). }
+  - MaxReconnectAttempts vive no mesmo lugar e pela mesma razao: conta TODA
+    tentativa de reabrir, e zera quando uma sessao dura mais que
+    ReconnectDelayMs. Assim o teto tambem alcanca o par que aceita e derruba
+    (cada ciclo dele e' uma tentativa, ainda que a conexao chegue a abrir),
+    sem penalizar o cliente de longa duracao que reconecta legitimamente ao
+    longo de dias. Atingido o teto, FGaveUp impede que ReaderFinished crie
+    outra thread e reinicie tudo. }
 
 interface
 
@@ -79,6 +82,15 @@ type
     // thread de reconexao, porque cada ciclo "conectou e caiu" cria uma thread
     // NOVA (ver ReaderFinished): um contador por thread nunca acumularia.
     FLastAttemptTick: UInt64; // 0 = nenhuma tentativa ainda
+    // Tentativas de reabrir a sessao desde a ultima sessao DURAVEL. Vive no
+    // cliente pela mesma razao de FLastAttemptTick: cada ciclo "conectou e
+    // caiu" cria uma thread nova, e um contador por thread reiniciaria sempre.
+    FReconnectAttempts: Integer;
+    // Instante em que a sessao atual foi instalada; 0 = nenhuma.
+    FSessionUpTick: UInt64;
+    // Atomico: 1 quando MaxReconnectAttempts foi atingido. Impede que
+    // ReaderFinished crie uma thread nova e ressuscite a reconexao.
+    FGaveUp: Integer;
     // Chamados pelas threads internas (mesma unit):
     procedure ReaderFinished(const AError: string);
     procedure HandleFrame(const AFrame: TPipeFrame);
@@ -212,11 +224,12 @@ end;
 
 procedure TPipeReconnectThread.Execute;
 var
-  LAttempts: Integer;
   LDePe: Boolean;
 begin
-  LAttempts := 0;
-  while PipeAtomicGet(FClient.FDeliberate) = 0 do
+  // O contador de tentativas e o teto vivem em TryReopenSession, no cliente:
+  // aqui eles reiniciariam a cada thread nova (ver ReaderFinished).
+  while (PipeAtomicGet(FClient.FDeliberate) = 0) and
+        (PipeAtomicGet(FClient.FGaveUp) = 0) do
   begin
     LDePe := False;
     if FClient.TryReopenSession then
@@ -238,14 +251,6 @@ begin
                     (PipeAtomicCompareExchange(FClient.FReconnecting, 1, 0) = 0));
       if LDePe then
         Exit; // reconectou e a sessao continua de pe
-    end;
-    Inc(LAttempts);
-    if (FClient.FMaxReconnectAttempts > 0) and
-       (LAttempts >= FClient.FMaxReconnectAttempts) then
-    begin
-      FClient.DispatchError(0, 'reconexao esgotada apos ' +
-        IntToStr(LAttempts) + ' tentativas');
-      Break;
     end;
   end;
   PipeAtomicSet(FClient.FReconnecting, 0); // desistiu (deliberado ou esgotado)
@@ -319,6 +324,9 @@ begin
   FStream := TPipeEndpointStream.Create(FEndpoint);
   FReconnectAbort.ResetEvent; // sessao nova: o abort anterior nao vale mais
   FLastAttemptTick := 0;      // Connect explicito nao espera espacamento
+  FReconnectAttempts := 0;    // e reabre o orcamento de tentativas
+  FSessionUpTick := PipeTickMs;
+  PipeAtomicSet(FGaveUp, 0);
   PipeAtomicSet(FDeliberate, 0);
   PipeAtomicSet(FDisconnectNotified, 0);
   FConnected := True;
@@ -399,6 +407,32 @@ begin
   // "AutoReconnect := False" util de dentro do proprio callback.
   if not FAutoReconnect then
     Exit;
+
+  // Uma sessao que durou MAIS que o intervalo entre tentativas foi uma sessao
+  // de verdade, e nao um "aceita e derruba": zera o contador. O criterio se
+  // ancora em ReconnectDelayMs em vez de uma constante magica — se o usuario
+  // considera 2s um espacamento razoavel entre tentativas, uma sessao que
+  // passou disso produziu trabalho util.
+  //
+  // Sem isso, um cliente de longa duracao que reconecta legitimamente varias
+  // vezes ao longo de dias acabaria esbarrando no teto.
+  if (FSessionUpTick <> 0) and
+     (Int64(PipeTickMs) - Int64(FSessionUpTick) >= Int64(FReconnectDelayMs)) then
+    FReconnectAttempts := 0;
+  FSessionUpTick := 0;
+
+  Inc(FReconnectAttempts);
+  if (FMaxReconnectAttempts > 0) and
+     (FReconnectAttempts > FMaxReconnectAttempts) then
+  begin
+    // FGaveUp e' o que impede ReaderFinished de criar outra thread e reiniciar
+    // tudo. Sem ele o teto so' valeria dentro de uma thread, que e' justamente
+    // o furo que fazia o par "aceita e derruba" nunca esbarrar no limite.
+    PipeAtomicSet(FGaveUp, 1);
+    DispatchError(0, 'reconexao esgotada apos ' +
+      IntToStr(FMaxReconnectAttempts) + ' tentativas');
+    Exit;
+  end;
   FLastAttemptTick := PipeTickMs;
   try
     // Reconexao usa as MESMAS credenciais: um cliente que reconecta sem elas
@@ -432,6 +466,7 @@ begin
   end;
   PipeAtomicSet(FDisconnectNotified, 0);
   FConnected := True;
+  FSessionUpTick := PipeTickMs; // marca para o criterio de sessao duravel
   FReader := TPipeClientReaderThread.Create(Self);
   DispatchConnEvent(FOnConnected, 0);
   // So DEPOIS de a sessao estar completa (FReader atribuido): e' este flag
@@ -456,7 +491,7 @@ begin
   if AError <> '' then
     DispatchError(0, AError);
   NotifyDisconnectedOnce;
-  if FAutoReconnect and
+  if FAutoReconnect and (PipeAtomicGet(FGaveUp) = 0) and
      (PipeAtomicCompareExchange(FReconnecting, 1, 0) = 0) then
     TPipeReconnectThread.Create(Self);
 end;
