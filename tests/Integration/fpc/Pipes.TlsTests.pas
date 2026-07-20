@@ -103,6 +103,11 @@ type
     function EsperaErroServidor(ATimeoutMs: Integer): Boolean;
     /// Round-trip completo (eco). False se nao voltou no prazo.
     function Eco(const ATexto: string; ATimeoutMs: Integer): Boolean;
+    /// Arma a espera por uma mensagem vinda do SERVIDOR (ex.: Broadcast), sem
+    /// que o cliente envie nada. Chamar ANTES de o servidor enviar.
+    procedure PreparaEco;
+    /// Espera a mensagem armada por PreparaEco.
+    function EsperaEco(const ATexto: string; ATimeoutMs: Integer): Boolean;
     /// True se o cliente completou Connect/handshake AVezes vezes no prazo
     /// (contador cumulativo, nao reseta). Usado pelo teste de AutoReconnect.
     function EsperaClienteConectou(AVezes: Integer; ATimeoutMs: Integer): Boolean;
@@ -110,12 +115,14 @@ type
     function EsperaClienteDesconectou(AVezes: Integer; ATimeoutMs: Integer): Boolean;
   end;
 
+
   TPipeTlsTests = class(TTestCase)
   private
     FAddr: string;
     FHarness: TTlsHarness;
     procedure DoListenSemCredenciais;
     procedure DoTrocaCertComServidorAtivo;
+    procedure DoSendParaConexaoEmHandshake;
   protected
     procedure SetUp; override;
     procedure TearDown; override;
@@ -137,7 +144,11 @@ type
     procedure Mtls_IdentidadeDoCliente_TrazCnDoCertificado;
     procedure Tls_SemMtls_NaoTemIdentidade;
     procedure Mtls_IdentidadeDisponivelNoOnClientDisconnected;
+    procedure Identidades_DespejamAsMaisAntigasAlemDoTeto;
     procedure ClientIds_NaoListaConexaoEmHandshake;
+    procedure SendBytes_ParaConexaoEmHandshake_Recusado;
+    procedure Broadcast_ComConexaoEmHandshake_EntregaAosEstabelecidos;
+    procedure MaxClients_ConexaoEmHandshakeOcupaVaga;
     // --- reconexao contra recusa permanente ---
     procedure Mtls_AutoReconnectRecusado_NaoViraLacoQuente;
     procedure AutoReconnectDesligadoNoCallback_ParaDeTentar;
@@ -384,6 +395,18 @@ end;
 function TTlsHarness.EsperaErroServidor(ATimeoutMs: Integer): Boolean;
 begin
   Result := FErroEvt.WaitFor(ATimeoutMs) = wrSignaled;
+end;
+
+procedure TTlsHarness.PreparaEco;
+begin
+  FEcho.ResetEvent;
+  FRecebido := '';
+end;
+
+function TTlsHarness.EsperaEco(const ATexto: string;
+  ATimeoutMs: Integer): Boolean;
+begin
+  Result := (FEcho.WaitFor(ATimeoutMs) = wrSignaled) and (FRecebido = ATexto);
 end;
 
 function TTlsHarness.Eco(const ATexto: string; ATimeoutMs: Integer): Boolean;
@@ -723,6 +746,38 @@ begin
     FHarness.IdentityNaSaida.CommonName);
 end;
 
+procedure TPipeTlsTests.Identidades_DespejamAsMaisAntigasAlemDoTeto;
+var
+  LCli: TPipeClient;
+  LQuem: TPipePeerIdentity;
+  I: Integer;
+begin
+  // As identidades sobrevivem a saida da conexao, entao PRECISAM de teto,
+  // senao um servidor de longa duracao acumularia uma entrada por cliente que
+  // ja passou por ali. O despejo (o mais antigo sai) so' executa acima de
+  // PIPES_RECENT_IDENTITIES — sem este teste seria caminho morto.
+  FHarness.Listen(Pki('ca_cert.pem'));
+  for I := 1 to PIPES_RECENT_IDENTITIES + 1 do
+  begin
+    LCli := TPipeClient.Create(FAddr, ptTls);
+    try
+      LCli.TlsOptions.SkipServerVerification := True;
+      AplicaCredencial(LCli.TlsOptions, 'cli');
+      LCli.Connect(5000);
+      LCli.Disconnect;
+    finally
+      LCli.Free;
+    end;
+  end;
+
+  // A primeira conexao (id 1) ja saiu da janela; a ultima continua la'.
+  AssertFalse('a identidade mais antiga deveria ter sido despejada',
+    FHarness.Server.TryClientIdentity(1, LQuem));
+  AssertTrue('a identidade mais recente deveria continuar consultavel',
+    FHarness.Server.TryClientIdentity(PIPES_RECENT_IDENTITIES + 1, LQuem));
+  AssertEquals('CN da mais recente', 'pdv-loja-001', LQuem.CommonName);
+end;
+
 procedure TPipeTlsTests.ClientIds_NaoListaConexaoEmHandshake;
 var
   LMudo: TPipeClient;
@@ -830,6 +885,107 @@ begin
   // produziria dezenas.
   AssertTrue('esperava poucas conexoes ate desistir, houve ' +
     IntToStr(LConns), LConns <= 6);
+end;
+
+procedure TPipeTlsTests.DoSendParaConexaoEmHandshake;
+begin
+  // Id 1: o primeiro FNextConnId. A conexao existe no servidor, mas nao esta
+  // estabelecida — e ids de conexoes nao estabelecidas nao sao publicos, entao
+  // este e' o caso de um id adivinhado ou guardado de antes.
+  FHarness.Server.SendText(1, 'nao deveria chegar');
+end;
+
+procedure TPipeTlsTests.SendBytes_ParaConexaoEmHandshake_Recusado;
+var
+  LMudo: TPipeClient;
+  LMsg: string;
+begin
+  // Enviar payload de aplicacao a um par que ainda nao se autenticou seria
+  // vazar dado para quem talvez seja recusado a seguir.
+  FHarness.Server.TlsOptions.HandshakeTimeoutMs := 30000;
+  FHarness.Listen(Pki('ca_cert.pem'));
+  LMudo := TPipeClient.Create(FAddr, ptTcp);
+  try
+    LMudo.Connect(5000);
+    Sleep(700); // deixa o accept registrar a conexao
+    LMsg := '';
+    try
+      DoSendParaConexaoEmHandshake;
+    except
+      on E: EPipeError do
+        LMsg := E.Message;
+    end;
+    // Afirmar a MENSAGEM, e nao so' "levantou": sem o filtro tambem levanta —
+    // mas la' quem levanta e' a escrita num stream TLS ainda nao negociado.
+    // Um teste que aceitasse qualquer EPipeError passaria com o filtro
+    // removido, que foi exatamente o que aconteceu na primeira versao dele.
+    AssertTrue('SendBytes deveria recusar por "nao esta conectado", veio: "' +
+      LMsg + '"', Pos('nao esta conectado', LMsg) > 0);
+  finally
+    LMudo.Free;
+  end;
+end;
+
+procedure TPipeTlsTests.Broadcast_ComConexaoEmHandshake_EntregaAosEstabelecidos;
+var
+  LMudo: TPipeClient;
+  LErro: string;
+begin
+  // Broadcast com uma conexao pendente na lista: quem esta estabelecido recebe
+  // normalmente, e a pendente nao atrapalha.
+  //
+  // HONESTIDADE SOBRE O ALCANCE: este teste nao consegue distinguir "o servidor
+  // filtrou a pendente" de "o servidor tentou e a escrita falhou calada", porque
+  // escrever num stream TLS nao negociado levanta e o Broadcast engole por
+  // contrato. O que ele prende e' que a presenca de uma conexao em handshake
+  // nao quebra a entrega aos demais — regressao plausivel ao mexer no filtro.
+  FHarness.Server.TlsOptions.HandshakeTimeoutMs := 30000;
+  FHarness.Listen(Pki('ca_cert.pem'));
+  AssertTrue('cliente legitimo foi recusado: ' + LErro,
+    FHarness.TryConnect('cli', LErro));
+  AssertTrue('servidor nao autenticou o cliente',
+    FHarness.ClienteAutenticado(5000));
+
+  LMudo := TPipeClient.Create(FAddr, ptTcp);
+  try
+    LMudo.Connect(5000);
+    Sleep(500);
+    AssertEquals('so o cliente estabelecido deveria contar',
+      1, FHarness.Server.ClientCount);
+    FHarness.PreparaEco;
+    FHarness.Server.BroadcastText('aviso');
+    AssertTrue('cliente estabelecido nao recebeu o broadcast',
+      FHarness.EsperaEco('aviso', 5000));
+  finally
+    LMudo.Free;
+  end;
+end;
+
+procedure TPipeTlsTests.MaxClients_ConexaoEmHandshakeOcupaVaga;
+var
+  LMudo: TPipeClient;
+  LErro: string;
+begin
+  // MaxClients e' limite de RECURSO, entao conta tambem quem esta negociando:
+  // senao um par que nunca conclui o handshake nao ocuparia vaga nenhuma e
+  // bastariam N conexoes mudas para o servidor parecer livre e ficar cheio.
+  FHarness.Server.MaxClients := 1;
+  FHarness.Server.TlsOptions.HandshakeTimeoutMs := 30000;
+  FHarness.Listen(Pki('ca_cert.pem'));
+
+  LMudo := TPipeClient.Create(FAddr, ptTcp);
+  try
+    LMudo.Connect(5000);
+    Sleep(700); // a vaga unica agora esta ocupada por uma conexao em handshake
+    AssertEquals('a conexao muda nao deveria aparecer como cliente',
+      0, FHarness.Server.ClientCount);
+    // O cliente legitimo nao deve entrar: a vaga esta tomada.
+    FHarness.TryConnect('cli', LErro);
+    AssertFalse('cliente legitimo entrou apesar de MaxClients atingido',
+      FHarness.ClienteAutenticado(2000));
+  finally
+    LMudo.Free;
+  end;
 end;
 
 procedure TPipeTlsTests.Tls_ListenSemCredenciais_Falha;
