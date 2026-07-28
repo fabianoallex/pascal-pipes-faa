@@ -413,6 +413,36 @@ marcados `deprecated` só depois que samples e testes migrarem.
   suportadas: várias `TThread` compartilham uma única instância de cliente e disparam RPCs
   em paralelo; cada uma confere que a resposta que voltou é exatamente a do pedido que ela
   fez (correlation id), expondo qualquer cruzamento de respostas entre chamadores como bug.
+- **GatewaySeguro** (`ServicoLocal` + `GatewaySeguro` + `ClienteRemoto`) — o único sample em que
+  `TPipeServer` e `TPipeClient` estão **vivos ao mesmo tempo** no mesmo processo, com
+  transportes diferentes em cada ponta:
+  `[ClienteRemoto] --ptTls+mTLS--> [GatewaySeguro] --ptLocal--> [ServicoLocal]`. Os outros
+  samples provam que o alcance é uma property; este prova que os alcances **se compõem**. O
+  caso de uso é o que as pessoas realmente têm: um serviço que só fala IPC local e nunca vai
+  aprender TLS, e a necessidade de expô-lo à rede com autenticação.
+  O gateway autentica por mTLS, sabe quem é o par (`TryClientIdentity` devolve o `CommonName`
+  **já validado contra a CA** — CN forjado não chega ali) e precisa **contar** ao serviço local
+  quem está chamando (frame `IDENT|`), porque `ptLocal` não tem TLS e portanto não tem
+  identidade nenhuma. Por que o serviço deveria acreditar? Porque `ptLocal` herda o controle de
+  acesso do sistema operacional — **a segurança do gateway não vem do gateway; vem do alcance
+  do transporte de trás**. Com o `ServicoLocal` em `ptTcp` ouvindo em `0.0.0.0`, o esquema
+  inteiro cai: qualquer um pula o gateway e se declara quem quiser.
+  Mostra também as **duas camadas de "conectado"** (o remoto pode autenticar com sucesso e
+  ainda assim receber `RECUSADO|<motivo>` porque o `ServicoLocal` está fora do ar — handshake
+  TLS concluído não é o mesmo que sessão útil, e por isso a recusa carrega motivo em vez de ser
+  um socket fechado calado) e o padrão que evita o pior deadlock deste desenho:
+  `TPipeClient.Disconnect` é síncrono (join da reader thread + `DrainInFlight`), então
+  **nenhum `Free`/`Disconnect` de par acontece dentro de callback** — o callback só marca e um
+  ceifador (`TThread` com fila e evento) destrói. O racional completo, com as invariantes de
+  lock e o que ficou fora desta versão (relay de `Request`), está no cabeçalho de
+  [`Gateway.Nucleo.pas`](samples/GatewaySeguro/Gateway.Nucleo.pas).
+  `ClienteRemoto <endereço> <identidade>` escolhe o certificado: `cli` e `caixa` entram — rode
+  os dois juntos e veja o `ServicoLocal` carimbar a identidade **certa** em cada resposta,
+  porque cruzamento de identidade seria o pior bug possível num gateway; `rogue`, `selfsigned`
+  e `nenhum` são recusados **e o `ServicoLocal` não registra absolutamente nada**, que é a prova
+  de que não vazou nada para trás. Precisa da PKI de [`tests/pki/`](tests/pki/LEIA-ME.md).
+  Roteiro de execução dos três processos (e checklist de regressão) em
+  [`samples/GatewaySeguro/LEIA-ME.md`](samples/GatewaySeguro/LEIA-ME.md).
 
 ## Testes
 
@@ -468,7 +498,8 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Wi
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (jogo em rede), PdvDualScreen (Operador + Cliente),
-                     FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente
+                     FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
+                     GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo)
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
 tests/pki/           PKI de TESTE versionada, sem valor de seguranca (ver LEIA-ME)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)

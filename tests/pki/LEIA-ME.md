@@ -22,6 +22,7 @@ e ninguém nota que a autenticação deixou de ser exercitada.
 | `ca_cert.pem` / `ca_key.pem` | CA de teste. É esta que o servidor configura em `CaFile` para ligar mTLS. |
 | `srv_cert.pem` / `srv_key.pem` / `srv.pfx` | Certificado do servidor, `CN=localhost`, com SAN `localhost` + `127.0.0.1`. |
 | `cli_cert.pem` / `cli_key.pem` / `cli.pfx` | Cliente **legítimo**, assinado pela CA acima. Deve conectar. |
+| `caixa_cert.pem` / `caixa_key.pem` / `caixa.pfx` | **Segundo** cliente legítimo, `CN=caixa-02`. Existe porque `cli`, `rogue`, `selfsigned` e `gemea` compartilham o mesmo `CN`, e o sample `GatewaySeguro` precisa de duas identidades **aceitas e distintas** ao mesmo tempo para provar que um gateway não cruza a identidade de um chamador com a de outro. |
 | `rogue_ca_*`, `rogue_cert.pem` / `rogue_key.pem` / `rogue.pfx` | Cliente **intruso**: certificado bem formado, de uma CA que o servidor não conhece. Deve ser recusado. |
 | `gemea_ca_*`, `gemea_cert.pem` / `gemea_key.pem` / `gemea.pfx` | Cliente de uma CA **gêmea**: mesmo `CN` e mesmo número de série da CA real (`ca_cert.pem`), chave privada diferente. Testa se `VerifyClientChain` compara a raiz por bytes (`pbCertEncoded`) ou só por issuer+serial — a doc da MS não define o critério de `CERT_FIND_EXISTING` e o Wine implementa a versão fraca. Deve ser recusado no Windows nativo; ver memória `ptls-estado-e-armadilhas`. |
 

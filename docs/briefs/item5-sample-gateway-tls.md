@@ -1,9 +1,23 @@
+> **Status: concluído.** Sample `samples/GatewaySeguro/` (`ServicoLocal` + `GatewaySeguro`
+> + `ClienteRemoto`, com `Gateway.Protocolo.pas` e `Gateway.Nucleo.pas`) existe, está
+> registrado nos dois grupos de build e descrito no `README.md`. Duas diferenças em
+> relação ao desenho abaixo, ambas deliberadas: o `IDENT|` é enviado **dentro do
+> `Conectar`**, antes de o par entrar no dicionário (registrar primeiro abriria uma
+> janela em que uma mensagem repassada chegaria ao serviço local antes da identidade); e
+> tanto o gateway quanto o `ServicoLocal` usam `pdmSerialized`, porque em `pdmPool` não há
+> ordem garantida nem entre `OnClientConnected` e o primeiro `OnMessage` da mesma conexão,
+> nem entre duas mensagens dela — o custo e a saída estão comentados no código. Para a
+> verificação 4 foi acrescentado um **segundo cliente legítimo** à PKI de teste
+> (`caixa_*`, `CN=caixa-02`): `cli`, `rogue`, `selfsigned` e `gemea` compartilham o mesmo
+> `CN` de propósito, então não havia duas identidades aceitas e distintas. Mantido como
+> registro do racional.
+
 # Brief: sample de gateway `ptTls` → `ptLocal`
 
 **Modelo sugerido:** opus (threading não trivial: duas instâncias da lib se chamando).
 **Origem:** sessão do sample `PontosECaixas` — levantamento do que os 11 samples
 ainda não demonstram.
-**Status:** não iniciado.
+**Status:** concluído.
 
 ## Por que este sample existe
 
