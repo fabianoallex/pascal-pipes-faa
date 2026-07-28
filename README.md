@@ -363,6 +363,32 @@ marcados `deprecated` só depois que samples e testes migrarem.
   certificado apresentado, incluindo os que **devem ser recusados** (`rogue`, `selfsigned`):
   é aí que se vê o mTLS trabalhando, e não no caminho feliz. Precisa da PKI de
   [`tests/pki/`](tests/pki/LEIA-ME.md), que o próprio form localiza.
+- **PontosECaixas** — o jogo "pontos e caixas" (dots and boxes) para dois jogadores, uma
+  janela cada (VCL no Delphi, LCL no Lazarus, mesmo fonte). Um lado clica **Hospedar**, o
+  outro digita o endereço e clica **Entrar**; o combo escolhe `ptLocal` (duas janelas na
+  mesma máquina) ou `ptTcp` (duas máquinas) — o código do jogo não muda, só o valor de
+  `Transport`. O que ele mostra e os outros não:
+  **servidor autoritativo** (o hospedeiro tem a única `TJogoPartida` que vale; o convidado
+  *pede* a jogada e espera o estado voltar, nunca aplica a própria — jogar fora da vez ou
+  numa aresta já usada é recusado no mesmo `TentarJogar` que valida o clique local);
+  **reconexão que devolve a vaga** (o convidado repete um token no `OnConnected`, que a lib
+  dispara também a cada reconexão automática — feche a janela dele no meio da partida e
+  reabra para ver o tabuleiro voltar inteiro); **duas camadas de recusa com papéis
+  diferentes** (`MaxClients` é teto de recurso, "a partida já tem dois jogadores" é regra de
+  negócio no `OI`, e por isso consegue mandar o motivo antes de desligar); e o tratamento da
+  **conexão zumbi** — quando o mesmo token chega numa conexão nova, a anterior costuma
+  continuar viva no servidor (TCP morto em silêncio, típico de VPN/NAT) e é derrubada com
+  `DisconnectClient` antes de a vaga ser reatribuída.
+  Mostra também o preço de sincronizar por **estado** em vez de por evento: o tabuleiro
+  completo não diz *o que mudou*, então quem recebe não saberia onde o adversário jogou —
+  a aresta simplesmente apareceria. O `ESTADO` carrega por isso a última aresta jogada, que
+  a UI realça por ~0,6 s (aresta que engrossa e clareia + anéis expandindo nos dois pontos).
+  Duas marcações no momento de entrar ligam o jogador controlado por IA (`Jogo.Ia.pas`,
+  heurística de cadeias com *double-cross*): **"computador joga por mim"**, válida nos dois
+  papéis — no convidado o bot vira um cliente autônomo, mandando `JOGADA` pela rede e
+  passando pela mesma validação de qualquer humano — e **"computador ocupa a vaga do
+  convidado"**, que dá a partida solo contra a máquina (aí um humano que tentar entrar é
+  recusado com o motivo). Marcando as duas, dá para assistir bot contra bot.
 - **PdvDualScreen** (`Operador` + `Cliente`) — PDV de tela dupla: o operador lança itens e
   pede a forma de pagamento; o cliente acompanha e responde. Mostra o padrão recomendado
   para uso em produção: a UI de cada lado não fala `TBytes`/`TPipeConnectionId` diretamente,
@@ -441,8 +467,8 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Wi
                      TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
-                     PdvDualScreen (Operador + Cliente), FilaImpressao, DespachoTarefas,
-                     ServicoInstavel, RpcConcorrente
+                     PontosECaixas (jogo em rede), PdvDualScreen (Operador + Cliente),
+                     FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
 tests/pki/           PKI de TESTE versionada, sem valor de seguranca (ver LEIA-ME)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)

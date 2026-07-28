@@ -27,6 +27,9 @@
         <Projects Include="samples\ChatVcl\ChatVcl.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="samples\PontosECaixas\PontosECaixas.dproj">
+            <Dependencies/>
+        </Projects>
         <Projects Include="samples\PdvDualScreen\Operador\PdvOperador.dproj">
             <Dependencies/>
         </Projects>
@@ -137,6 +140,15 @@
     <Target Name="ChatVcl:Make">
         <MSBuild Projects="samples\ChatVcl\ChatVcl.dproj" Targets="Make"/>
     </Target>
+    <Target Name="PontosECaixas">
+        <MSBuild Projects="samples\PontosECaixas\PontosECaixas.dproj"/>
+    </Target>
+    <Target Name="PontosECaixas:Clean">
+        <MSBuild Projects="samples\PontosECaixas\PontosECaixas.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="PontosECaixas:Make">
+        <MSBuild Projects="samples\PontosECaixas\PontosECaixas.dproj" Targets="Make"/>
+    </Target>
     <Target Name="PdvOperador">
         <MSBuild Projects="samples\PdvDualScreen\Operador\PdvOperador.dproj"/>
     </Target>
@@ -228,13 +240,13 @@
         <MSBuild Projects="samples\RpcConcorrente\RpcConcorrenteCliente.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
-        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente"/>
+        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean"/>
+        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PontosECaixas:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make"/>
+        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PontosECaixas:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>
