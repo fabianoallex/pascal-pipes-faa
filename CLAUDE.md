@@ -101,7 +101,7 @@ src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
 src/Pipes.Client.pas             src/Pipes.Server.pas
 tests/Unit (Threading/Framing/Address) + tests/Integration (Transport/EndToEnd/Stress/Tls)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
-samples/ (11 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+samples/ (12 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 

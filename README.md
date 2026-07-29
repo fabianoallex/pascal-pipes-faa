@@ -389,6 +389,31 @@ marcados `deprecated` só depois que samples e testes migrarem.
   passando pela mesma validação de qualquer humano — e **"computador ocupa a vaga do
   convidado"**, que dá a partida solo contra a máquina (aí um humano que tentar entrar é
   recusado com o motivo). Marcando as duas, dá para assistir bot contra bot.
+- **PingPong** — o pong clássico para dois jogadores, uma janela cada, mesmo esquema de
+  `Hospedar`/`Entrar` e mesmo combo `ptLocal`/`ptTcp` do PontosECaixas. **Para experimentar
+  sozinho não precisa de segunda janela: marque "Computador ocupa a vaga do convidado" e
+  clique Hospedar.** O que ele mostra e o PontosECaixas não mostra é o mundo que **anda
+  sozinho** — e as cinco consequências disso:
+  **o relógio do jogo não é o `TTimer`** (um acumulador mede o tempo real e dá quantos
+  passos de 16 ms couberem, senão a bola andaria mais rápido ou mais devagar conforme o
+  jitter do timer, e as duas telas divergiriam);
+  **entrada vai por borda, estado vem por nível** (o convidado só manda `ENTRADA` quando a
+  direção da raquete *muda*, o hospedeiro manda a fotografia inteira ~31x por segundo —
+  a primeira escolha só é segura porque o transporte é confiável e ordenado, e seria um bug
+  em UDP);
+  **o convidado prevê** (roda a mesma física localmente entre um snapshot e o próximo, com
+  `AEhAutoridade = False`: prever movimento é uma coisa, decidir ponto é outra — o espelho
+  que vê a bola sair do campo apenas para, e espera o `ESTADO` dizer o que houve);
+  **até a previsão tem prazo** (1,5 s sem snapshot e ela congela, com a tela dizendo isso,
+  em vez de animar uma partida que talvez não exista mais);
+  e **o bot não tem timer** — é chamado dentro do passo de simulação, junto com a física,
+  e a direção que ele devolve entra pela mesma porta do teclado (no convidado, vira
+  `ENTRADA` na rede). Os números de ponto flutuante vão no fio como inteiro em centésimos
+  de propósito: `FloatToStr` usa o separador decimal do *locale*, e um hospedeiro pt-BR
+  mandando `412,75` para um convidado en-US é um bug de rede que ninguém procura.
+  O nível do bot (`Pong.Ia.pas`) mexe só no **horizonte de reação** e na qualidade da
+  previsão, nunca na velocidade da raquete — ver no cabeçalho da unit por que essa é a
+  única alavanca que fecha ponto.
 - **PdvDualScreen** (`Operador` + `Cliente`) — PDV de tela dupla: o operador lança itens e
   pede a forma de pagamento; o cliente acompanha e responde. Mostra o padrão recomendado
   para uso em produção: a UI de cada lado não fala `TBytes`/`TPipeConnectionId` diretamente,
@@ -497,7 +522,8 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Wi
                      TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
-                     PontosECaixas (jogo em rede), PdvDualScreen (Operador + Cliente),
+                     PontosECaixas (jogo de turno), PingPong (jogo em tempo real),
+                     PdvDualScreen (Operador + Cliente),
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
                      GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo)
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
