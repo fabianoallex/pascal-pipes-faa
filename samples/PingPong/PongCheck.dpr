@@ -34,7 +34,14 @@ program PongCheck;
   seguinte. Fixo, uma falha e' reproduzivel. Os numeros impressos NAO batem
   entre Delphi e FPC (os geradores sao diferentes) — por isso as asseroes
   duras sao estruturais ("termina", "ninguem fica em zero", "o rally nao passa
-  de N"), e as medias de rebatida sao informativas. }
+  de N"), e as medias de rebatida sao informativas.
+
+  E' bom rodar nos DOIS compiladores e comparar a saida, e nao so' para ver se
+  passa: o que sai igual nos dois e' resultado, o que sai diferente e' sorteio.
+  Foi assim que se descobriu que a "inversao" do ganho do campo Entrada na
+  raquete (ver Pong.Partida.pas) era uma sequencia de saques do FPC, e nao um
+  achado — no Delphi ela nao acontece. O erro da BOLA, esse, se confirma nos
+  dois. }
 
 {$IFDEF FPC}
   {$MODE DELPHI}
