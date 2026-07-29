@@ -414,6 +414,16 @@ marcados `deprecated` só depois que samples e testes migrarem.
   O nível do bot (`Pong.Ia.pas`) mexe só no **horizonte de reação** e na qualidade da
   previsão, nunca na velocidade da raquete — ver no cabeçalho da unit por que essa é a
   única alavanca que fecha ponto.
+  Junto vai o **`PongCheck`**, um programa de console no mesmo diretório que verifica o
+  núcleo do jogo **sem abrir janela e sem esperar o relógio**: ele roda ~48 minutos de jogo
+  simulado em ~40 ms. Só é possível porque as três units de jogo não dependem nem da UI nem
+  da biblioteca (`uses SysUtils` e mais nada), o que é o argumento prático para a separação
+  que o sample prega. Ele confere o round-trip do `ESTADO` campo a campo, que o espelho
+  **não pontua sozinho** depois de 15 s sem snapshot, o erro da previsão em quatro
+  combinações de taxa, e que o bot fecha ponto nos três níveis — foi ele que pegou a
+  primeira versão do bot, em que dois "médios" empatavam por dez minutos. Semente de
+  `Random` fixa, para uma falha ser reproduzível. Não cobre `uPongMain.pas` nem a
+  biblioteca: é teste do núcleo puro, não de integração.
 - **PdvDualScreen** (`Operador` + `Cliente`) — PDV de tela dupla: o operador lança itens e
   pede a forma de pagamento; o cliente acompanha e responde. Mostra o padrão recomendado
   para uso em produção: a UI de cada lado não fala `TBytes`/`TPipeConnectionId` diretamente,

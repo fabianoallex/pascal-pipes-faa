@@ -100,11 +100,20 @@ type
     // de milissegundos — a diferenca e' entre uma raquete que desliza e uma que
     // pula de correcao em correcao.
     //
-    // Medido a 31 snapshots/s: COM o campo, a previsao da bola no espelho fica
-    // a 0,0 unidade da autoridade; SEM ele, chega a 12. O erro nao aparece na
-    // raquete, aparece na BOLA — uma raquete adivinhada um pouco fora rebate
-    // num angulo um pouco diferente, e a partir dai as duas telas contam
-    // historias diferentes ate' o proximo snapshot.
+    // O ganho medido pelo PongCheck e' mais interessante do que parece. Na
+    // taxa que o sample usa (31 snapshots/s) o campo nao muda nada: a correcao
+    // chega antes que o erro tenha tempo de nascer, e a bola fica a 0,0 unidade
+    // da autoridade com ou sem ele. Quando o intervalo estica para 6/s, ai' ele
+    // aparece — e na BOLA, nao na raquete: 61 unidades de erro com o campo
+    // contra 115 sem ele. O motivo e' que uma raquete adivinhada fora do lugar
+    // rebate num angulo errado, e dali em diante as duas telas contam historias
+    // diferentes.
+    //
+    // Na raquete o efeito chega a se INVERTER contra o bot (127 un de erro com
+    // o campo, 95 sem), e isso nao e' defeito: extrapolar o movimento de quem
+    // troca de direcao a cada poucos quadros erra mais do que assumir parado.
+    // Contra um humano — que segura a tecla por centenas de milissegundos — e'
+    // o contrario, e e' esse o caso que o sample precisa acertar.
     Entrada: array[0..1] of Integer;
     Placar: array[0..1] of Integer;
   end;
