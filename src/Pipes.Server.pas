@@ -1262,6 +1262,7 @@ var
   LConn: TPipeServerConnection;
   LCount: Integer;
 begin
+  Result := nil; // cala o warning 5093 do FPC (Result gerenciado sem init)
   FConnLock.Enter;
   try
     SetLength(Result, FConnections.Count); // teto; encolhe no fim

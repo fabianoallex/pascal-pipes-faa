@@ -1067,7 +1067,14 @@ begin
   SetLength(LBuf, LLen);
   if CertGetNameStringW(ACert, AType, 0, ATypePara, @LBuf[0], LLen) <= 1 then
     Exit;
+  {$IFDEF FPC}
+  // No FPC (MODE DELPHI, $H+) string e AnsiString: a atribuicao implicita
+  // converteria via codepage do sistema e um CN com acento perderia dados.
+  // UTF-8 explicito, como todo texto que circula pela lib.
+  Result := UTF8Encode(WideCharToString(PWideChar(@LBuf[0])));
+  {$ELSE}
   Result := WideCharToString(PWideChar(@LBuf[0]));
+  {$ENDIF}
 end;
 
 { TPipeSchannelServerStream }
