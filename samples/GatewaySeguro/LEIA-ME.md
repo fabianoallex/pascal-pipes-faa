@@ -1,5 +1,7 @@
 # GatewaySeguro — como rodar
 
+> 🇬🇧 This document is also available in [English](README.en.md).
+
 Roteiro de execução dos três executáveis deste sample. O **racional** (de onde vem a
 segurança do desenho, invariantes de lock, por que nenhum `Free` acontece dentro de
 callback) está no cabeçalho de [`Gateway.Nucleo.pas`](Gateway.Nucleo.pas) — não é repetido

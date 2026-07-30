@@ -1,5 +1,7 @@
 # PKI de TESTE — sem valor de segurança
 
+> 🇬🇧 This document is also available in [English](README.en.md).
+
 **As chaves privadas deste diretório estão versionadas no repositório e são
 públicas. Não protegem nada. Nunca use nenhum destes arquivos fora da suíte de
 testes, e nunca reaproveite a senha `pipestest`.**

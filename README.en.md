@@ -1,0 +1,718 @@
+# pascal-pipes-faa
+
+> 🇧🇷 Este documento também está disponível em [português](README.md) — a versão em
+> português é a canônica; em caso de divergência, ela prevalece.
+
+> Formerly `pascal-named-pipes-faa`. The name changed because the Windows Named Pipe became
+> just one of the supported transports — the old API still works (see
+> [Compatibility](#compatibility-with-the-previous-api)).
+
+Cross-platform **inter-process communication** library for **Delphi 12+ (Win64)** and
+**FPC 3.2.2 / Lazarus (Linux x86_64 and ARM64)**, with a single codebase and a high-level
+API that completely abstracts the native operating system calls.
+
+The same API covers three reaches, switched by a single property:
+
+| `Transport` | Reach | Under the hood |
+|---|---|---|
+| `ptLocal` (default) | same machine | Named Pipe (Windows) / Unix Domain Socket (Linux) |
+| `ptTcp` | network | TCP socket, keepalive on by default |
+| `ptTls` | untrusted network | the same TCP with TLS, plus optional certificate-based mTLS |
+
+```pascal
+// Server
+Server := TPipeServer.Create('my_app');
+Server.OnMessage := MyClass.HandleMessage;      // procedure ... of object
+Server.Listen;
+
+// Client
+Client := TPipeClient.Create('my_app');
+Client.Connect(5000);
+Client.SendText('hello!');
+Reply := Client.RequestText('ping', 3000);      // synchronous RPC with timeout
+```
+
+## How it works under the hood
+
+| | Windows | Linux |
+|---|---|---|
+| Transport | Real Named Pipes (`CreateNamedPipe`/`ConnectNamedPipe`), byte mode, **always overlapped** | **Unix Domain Sockets** (`AF_UNIX`/`SOCK_STREAM`) |
+| Native name | `\\.\pipe\my_app` | `/tmp/my_app.sock` |
+| Interrupting blocking I/O | `WaitForMultipleObjects` + `CancelIoEx` | `fpPoll` + self-pipe + `fpShutdown` |
+
+On Linux, "named pipe" is implemented as a **Unix Domain Socket** — the same approach .NET
+takes (`NamedPipeServerStream`/`NamedPipeClientStream` on Unix). UDS gives full semantic
+parity with the Windows Named Pipe: per-client connections, bidirectional, drop detection.
+FIFOs (`mkfifo`) stayed out of v1; the abstract transport layer leaves the door open.
+
+If `Address` is already a native path (`\\.\pipe\...` or `/abs/path.sock`), it is used
+as-is — handy for controlling the socket's directory (and permissions) on Linux.
+
+### Transport
+
+The `Transport` property (`TPipeTransport`) chooses where the frames travel. The default is
+`ptLocal`, so anyone doing only local IPC never needs to know this exists:
+
+```pascal
+TPipeServer.Create('my_app');                   // ptLocal (default)
+TPipeServer.Create('my_app', ptLocal);          // same, explicit
+TPipeServer.Create('0.0.0.0:5000', ptTcp);      // TCP
+TPipeClient.Create('192.168.0.10:5000', ptTcp);
+TPipeServer.Create('0.0.0.0:5000', ptTls);      // TCP + TLS (credentials in TlsOptions)
+```
+
+The enum names **reach**, not mechanism: `ptLocal` is "this OS's best local IPC" —
+Named Pipe on Windows, Unix Domain Socket on Linux. A `ptNamedPipe` would be the wrong name
+half of the time.
+
+`Address` and `Transport` are validated together at activation: `Create('\\.\pipe\X', ptTcp)`
+fails with an `EPipeError` explaining the conflict, instead of blowing up later with an
+obscure name-resolution error.
+
+Addresses accepted by `ptTcp`: `host:port`, IPv6 in brackets (`[::1]:5000`) and `*` as a
+shortcut for `0.0.0.0`. Resolution goes through `getaddrinfo`, so hostnames and IPv6 work.
+`TCP_NODELAY` is turned on (Nagle's delay would heavily penalize `Request`/`Reply`).
+
+> **Security:** unlike `ptLocal`, `ptTcp` does **not** inherit access control from the OS
+> (Windows ACLs, UDS file permissions). A listener on `0.0.0.0` accepts anyone who can
+> reach the port — authentication is the application's responsibility. That is the hole
+> `ptTls` closes.
+
+### TLS (`ptTls`)
+
+`ptTls` is the same TCP socket with TLS on top: same `Address` format, same threading
+guarantees. What changes is that the traffic is encrypted and the peer can be authenticated
+by certificate.
+
+```pascal
+Srv := TPipeServer.Create('0.0.0.0:5000', ptTls);
+Srv.TlsOptions.CertFile := 'srv.pfx';        // PFX on Windows/Schannel
+Srv.TlsOptions.CertPassword := 'secret';
+Srv.Listen;
+
+Cli := TPipeClient.Create('server.company:5000', ptTls);
+Cli.Connect(5000);
+```
+
+Credentials are read **once**, at `Listen`/`Connect`: changing them while the component is
+active raises `EPipeError` instead of silently accepting a configuration that has no
+effect. A wrong password or missing file shows up right at `Listen`, not when the first
+client connects.
+
+#### mTLS (authenticating the client)
+
+Filling `CaFile` **on the server** turns on mTLS: the client is now required to present a
+certificate that chains up to that CA. Whoever presents none — or one from another CA — is
+refused, and `OnClientConnected` never fires for them.
+
+```pascal
+Srv.TlsOptions.CaFile := 'ca.pem';   // turns on mTLS
+Cli.TlsOptions.CertFile := 'pdv-001.pfx';
+Cli.TlsOptions.CertPassword := 'secret';
+```
+
+This is the design intended for the store-POS-over-VPN case: the certificate, not the
+source IP, is what says who is who.
+
+#### What changes between backends
+
+The backend is chosen at **compile time** (see `src/pipes.inc`): Schannel (native SSPI) is
+the default on Windows; OpenSSL is opt-in via `-dPIPES_OPENSSL`, and is the only one on
+Linux. Three differences that matter for configuration:
+
+| | Schannel (Windows) | OpenSSL |
+|---|---|---|
+| Certificate format | `CertFile` = PFX (cert + key together), `CertPassword` | `CertFile` = PEM, `KeyFile` = key PEM |
+| `CaFile` on the **server** | CA of the client certificates (mTLS) | same |
+| `CaFile` on the **client** | **ignored** — Windows validates against the OS trust store | CA used to validate the server |
+
+The last row is the gotcha: a private PKI whose certificate is not in the Windows trust
+store makes the Schannel *client* reject the server even with `CaFile` filled in. Either
+install the CA on the machine, or use the OpenSSL backend.
+
+> **How the client sees an mTLS refusal — and why it differs per backend.** Schannel
+> completes the handshake and **only then** hands the client's certificate to the
+> application for validation (that is what `VerifyClientChain` does). Consequence: a
+> refused client sees `OnConnected` fire normally and the connection drop right after. In
+> OpenSSL the validation happens inside the handshake, so the refusal arrives as a
+> connection failure and `OnConnected` never fires.
+>
+> An application that needs to distinguish "I was accepted" from "I am about to be dropped"
+> on the client side **cannot rely on `OnConnected` alone under Schannel**. The practical
+> pattern is the one in the `ChatSeguro` sample: a session that dies almost together with
+> `OnConnected` is a credential refusal, not a network drop — and then reconnecting is
+> pointless, because the credential will not become acceptable on its own.
+
+#### Who is on the other side
+
+Under mTLS the server does not just validate the client's certificate — it remembers who
+they are:
+
+```pascal
+procedure TForm1.ClientConnected(Sender: TObject; AConnId: TPipeConnectionId);
+var
+  LWho: TPipePeerIdentity;
+begin
+  if Server.TryClientIdentity(AConnId, LWho) then
+    Memo.Lines.Add('connected: ' + LWho.CommonName);  // 'pdv-loja-001'
+end;
+```
+
+The `CommonName` is trustworthy **because the chain was validated first**: a certificate
+with a forged `CN` never gets to fire `OnClientConnected`; it is refused in the handshake.
+So this name can be used to identify — display, log, route. What must not be done is the
+reverse: deriving authorization from a name whose chain was never verified.
+
+`TryClientIdentity` returns `False` when there is no *verified* identity — no TLS, or TLS
+without mTLS. `False` never means "not here yet": there is nothing to wait for.
+
+The identity **survives the client leaving**, so `OnClientDisconnected` can also ask "who
+left?" — without that, a dashboard could only say "connection 7 left". The last
+`PIPES_RECENT_IDENTITIES` (256) authenticated connections are retained. The reason it is
+not released together with the connection is that the event and the cleanup go to different
+queues, with no guaranteed order between them: tying the identity's lifetime to the cleanup
+would be a race.
+
+> **Behavior change:** `ClientCount` and `ClientIds` now count only **established**
+> connections — those for which `OnClientConnected` has already fired. Before, a connection
+> accepted but still negotiating TLS already showed up there, which under mTLS meant
+> displaying as a "client" a peer that might be refused next. `Broadcast` follows the same
+> rule, for a reason stronger than counting: sending payload to someone who has not yet
+> authenticated would leak data. For `ptLocal` and `ptTcp` nothing changes in practice —
+> with no handshake, a connection is born established.
+>
+> `MaxClients` is deliberately different: since it is a **resource** limit, it also counts
+> connections still negotiating — otherwise a peer that never finishes the handshake would
+> not occupy a slot.
+
+#### Handshake deadline
+
+The handshake has its own deadline, `PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT` (15 s), adjustable
+via `TlsOptions.HandshakeTimeoutMs`. Without it, anyone opening the TCP connection and
+never sending the `ClientHello` would pin a server thread forever — a few dozen half-open
+connections would take the service down without sending a single useful byte. The deadline
+applies **only** during negotiation: after it, the connection may sit idle as long as it
+wants, and dead peers there are the keepalive's job.
+
+`HandshakeTimeoutMs = 0` means *the default*, not "no deadline" — turning it off requires
+an explicit `PIPE_TLS_HANDSHAKE_NO_TIMEOUT`.
+
+### Keepalive (`KeepAliveSeconds`)
+
+A TCP connection can die silently — a cable, a powered-off machine, or the idle timeout of
+a VPN/NAT tunnel. Neither side is told, and the reader would wait forever. In local IPC
+this does not exist: the peer process dying always closes the pipe.
+
+That is why `ptTcp` turns TCP keepalive on by default, with **20 s** of idle time
+(`PIPES_DEFAULT_KEEPALIVE_SECONDS`). `ptTls` inherits the same setting — it is the same
+socket underneath, and keepalive happens at the TCP layer without touching the TLS session.
+`ptLocal` ignores the property.
+
+```pascal
+Server.KeepAliveSeconds := 20;  // default
+Server.KeepAliveSeconds := 0;   // off
+```
+
+The value serves **two purposes**, and the second is usually the more important one:
+
+1. **Detecting** a dead connection — with the defaults, in ~35 s (20 s idle + 3 probes
+   every 5 s). Detection becomes `EPipeClosed`, which fires `OnClientDisconnected` on the
+   server and `OnDisconnected` + `AutoReconnect` on the client.
+2. **Keeping alive** the NAT/VPN mapping of an idle connection, preventing it from dying.
+   That is why the value must be **smaller than the tunnel's idle timeout**, not larger —
+   if your VPN drops idle sessions at 30 s, `KeepAliveSeconds` has to stay comfortably
+   below that.
+
+On the server this matters more than it seems: without keepalive it accumulates zombie
+connections indefinitely — `Broadcast` writing to clients that no longer exist and
+`ClientCount` lying.
+
+**Platform difference:** on POSIX the three parameters (idle, interval, probe count) are
+adjustable per socket, so detection is exactly as described. Windows uses
+`SIO_KEEPALIVE_VALS` (available since Windows 2000, unlike `setsockopt(TCP_KEEPIDLE)`,
+which requires Win10 1709+ — relevant for old hardware), and it does not expose the probe
+count: it is fixed by the OS (2 from Vista onward). Time-to-detect differs a bit; keeping
+the NAT/VPN mapping alive, which depends only on the idle time, is identical on both.
+
+Messages travel in a custom framing (`NPF1`: 20-byte little-endian header with magic, kind,
+correlation id and length), identical on both OSes — message boundaries belong to the
+library, never to the transport. Payloads are `TBytes`; the `*Text` methods convert to/from
+UTF-8 portably.
+
+## Features
+
+- **Multi-client server** — acceptor + one reader thread per connection; optional
+  `MaxClients`; per-connection `SendBytes/SendText`; `Broadcast/BroadcastText`;
+  `DisconnectClient`; `OnClientConnected`/`OnClientDisconnected` events.
+- **Synchronous Request-Reply** — `Request/RequestText(data, timeout)` on the client blocks
+  the *caller* (never the read thread) until the correlated reply; on the server, the
+  `OnRequest` handler returns the reply and the lib sends it with the right correlation id.
+  An exception in the handler becomes an error reply (`EPipeError` on the client, carrying
+  the server's message). Concurrent calls from multiple threads on the same client are
+  supported.
+- **Topic pub/sub** — the sender names a **subject**, not a recipient:
+  `Server.Publish('caixa.3.status', data)` reaches every client whose filter matches the
+  topic, and no one else. The client subscribes with hierarchical wildcards
+  (`Subscribe('caixa.*.status')`, `Subscribe('caixa.#')`) and receives in `OnTopicMessage`.
+  Subscriptions are **restored automatically** on every reconnection. Optionally the server
+  **retains the last value** of a topic (`Publish(..., ARetain := True)`), delivered
+  immediately to whoever subscribes later. See [Pub/sub](#pubsub-topics).
+- **AutoReconnect** — the client reconnects on its own after the server goes down
+  (`ReconnectDelayMs`, `MaxReconnectAttempts`). During the reconnection window, `Send*`
+  raises a transient `EPipeClosed` — retry (same contract as republishing on an MQ client).
+  Attempts are **always spaced** by `ReconnectDelayMs`, including against a peer that
+  accepts the connection and drops it right away (the case of an mTLS server refusing the
+  certificate); and `MaxReconnectAttempts` covers that case too. The counter resets when a
+  session lasts longer than `ReconnectDelayMs` — a too-short session counts as an attempt,
+  so a rejected client does not reconnect forever, and a long-lived client that
+  legitimately reconnects does not accumulate toward the ceiling.
+- **Dispatch modes** (`DispatchMode`) — where YOUR handlers run:
+  - `pdmPool` (default): thread pool; parallel across connections.
+  - `pdmSerialized`: single worker; global FIFO order guaranteed.
+  - `pdmMainThread`: straight on the UI thread via `TThread.Queue` — for VCL/LCL apps,
+    without manual `Synchronize` and without post-destroy event risk (internal guard
+    object).
+- **Protection** — `MaxMessageSize` (default 16 MB) rejects frames above the limit on both
+  ends; invalid magic/kind takes down only the offending connection (`EPipeProtocol` in
+  `OnError`).
+- **TLS and mTLS** (`ptTls`) — encrypted traffic over TCP, with optional certificate-based
+  client authentication: filling `CaFile` on the server makes anyone not presenting a
+  certificate from that CA get refused before `OnClientConnected`. Native backend per
+  platform (Schannel on Windows, OpenSSL on Linux) and a dedicated handshake deadline, so a
+  peer that opens the connection and stays silent does not consume a thread indefinitely.
+
+## Pub/sub (topics)
+
+`SendBytes` needs a `ConnId`; `Broadcast` goes to everyone. Between the two, the most
+common case in a system with several endpoints is missing: **sending by subject**, without
+the sender knowing who is interested. That is what pub/sub solves.
+
+```pascal
+// --- server ---
+Server.Publish('caixa.3.status', data);                // only subscribers receive it
+Server.PublishText('loja.tabela.versao', 'v42', True); // True = retain the last value
+
+// --- client ---
+Client.OnTopicMessage := Self.Received;  // (...; const ATopic; const AData; ARetained)
+Client.Subscribe('caixa.*.status');      // one segment in place of '*'
+Client.Subscribe('loja.#');              // everything below 'loja'
+Client.PublishText('caixa.3.status', 'busy');
+```
+
+**Names and wildcards.** A topic is hierarchical, dot-separated, case-sensitive, with no
+empty segments. Publishers use literal names; subscribers may use wildcards, always
+occupying a whole segment:
+
+| Filter | Matches | Does not match |
+|---|---|---|
+| `caixa.3.status` | `caixa.3.status` | `caixa.4.status` |
+| `caixa.*.status` | `caixa.3.status` | `caixa.3.a.status` |
+| `caixa.#` | `caixa.3`, `caixa.3.a.b`, `caixa` | `loja.3` |
+
+`#` may only be the last segment (`a.#.b` is refused: its two possible readings would give
+different results). `caixa*` is also refused — a wildcard glued to text would promise a
+partial match the lib does not do. `Subscribe` raises `EPipeError` immediately for an
+invalid filter; so does a `Publish` with an invalid name.
+
+**Who may relay.** A **client** publication does not reach the other clients by default: it
+arrives at the server in `OnPublish`, which decides. Turning on
+`RelayClientPublish := True` makes the lib relay on its own (including back to the author,
+if they subscribe to the topic) — convenient for a chat, and dangerous in a system where a
+client should not be able to inject content into another's subject. The default (off)
+keeps the server authoritative, as in the game samples:
+
+```pascal
+procedure TBackoffice.OnClientPublication(Sender: TObject; AConnId: TPipeConnectionId;
+  const ATopic: string; const AData: TBytes);
+begin
+  if not PipeTopicMatches('caixa.*.status', ATopic) then Exit;  // wrong place: ignore
+  Server.Publish(ATopic, AData, True);                          // republish, retaining
+end;
+```
+
+**Retention (`ARetain`) is a last-value cache, not a queue.** The server stores **one**
+message per topic and delivers it to whoever subscribes later — it is the answer to "the
+client that just came online needs the current state" without it having to ask. Publishing
+an empty body with `ARetain := True` deletes the retained value. The ceiling is
+`MaxRetained` (256 by default; beyond it the oldest retained topic is evicted). A message
+that must survive the process, or be delivered with guarantees, calls for a real queue —
+that is what [pascal-amqp-faa](https://github.com/fabianoallex/pascal-amqp-faa) is for.
+
+The last parameter of `OnTopicMessage`, **`ARetained`**, answers the question the consumer
+needs to ask: *did this just happen, or is it the value that was already in force?* `True`
+only on subscription catch-up; a live publication arrives **always** `False`, even when the
+publisher asked for retention (MQTT semantics, and for the same reason: the receiver wants
+to know whether the message is news or history, not what the sender asked of the server).
+Use it to avoid ringing the bell or counting a sale twice on reconnection. On the server
+side, `OnPublish`'s `ARetained` has the other meaning — the only one possible there: the
+client **asked** to retain.
+
+**Reconnection.** Subscriptions are the client's desired state, not the session's:
+`Subscribe` works while disconnected, and everything is resent to the server on each new
+session **before** `OnConnected` fires — your handler does not need to resubscribe
+anything. What is not recovered is the window between the drop and the resubscription: a
+publication that passed through there is lost (that is where retain helps).
+
+**Order and limits.** Delivery from a single publisher preserves order; across different
+publishers there is no global order (use `pdmSerialized` if you need FIFO in your
+handlers). `OnPublish`, `OnSubscribe` and `OnUnsubscribe` are **notifications** — routing
+has already happened by the time they run, and there is no vetoing from inside them; to
+deny a subscription, call `DisconnectClient`. `MaxSubscriptionsPerClient` (64 by default)
+limits how many filters a client may register; the refusal shows up in `OnError` **on both
+sides**, and the connection stays up.
+
+**Wire compatibility.** The pub/sub frame kinds are new in the `NPF1` protocol. A peer
+built with an earlier version of the lib that receives one of them drops with
+`EPipeProtocol` ("the peer probably speaks a newer protocol version") instead of
+misreading bytes — update both sides.
+
+## Threading guarantees
+
+- The read thread **never** runs user code — it only decodes and dispatches.
+- `Stop`/`Disconnect`/destructors are **synchronous, idempotent and deadlock-free**: they
+  signal everything, wait for the threads to join, and drain in-flight callbacks before
+  releasing any object (verified by test: `Stop` under a 4-client flood finishes in < 2 s).
+- Abrupt peer death (killed process, closed handle) fires `OnClientDisconnected` /
+  `OnDisconnected` without leaking handles/fds (verified by a handle-counting test).
+- Callbacks are always `procedure ... of object`; exceptions inside them are swallowed by
+  the pool (logging via `OnError` is your responsibility).
+- Semantic detail: a client that connects and dies **before the server accepts** the
+  connection is invisible (no events) — the instance/backlog is recycled.
+
+## Installation
+
+**Delphi:** add `src\` to the search path (or open `Pipes.groupproj`).
+
+**Lazarus:** open/compile `packages\pipes_faa.lpk` once and add `pipes_faa` to your
+project's requirements (or use `lazbuild --add-package-link packages\pipes_faa.lpk`).
+
+**Dependencies:** none for `ptLocal` and `ptTcp`, and none at compile time in any case. For
+`ptTls` it depends on the backend:
+
+- **Schannel** (default on Windows): nothing to install — it is SSPI, part of the OS.
+- **OpenSSL** (`-dPIPES_OPENSSL`; the only one on Linux): needs `libssl`/`libcrypto` **on
+  the machine that runs**. They are loaded dynamically at the first TLS connection, so
+  their absence does not prevent compiling or starting the program — it shows up as
+  `EPipeTls` ("OpenSSL not found") at the first connection. The 3.x and 1.1 series are
+  accepted. On Linux the distributions already ship them; on Windows you must provide the
+  DLLs (`libcrypto-3-x64.dll` + `libssl-3-x64.dll`, or the 1.1 equivalents).
+
+## API (summary)
+
+```pascal
+TPipeBase (abstract)
+  Address, Transport, KeepAliveSeconds, Active, DispatchMode, MaxMessageSize
+  TlsOptions: TPipeTlsConfig             // only used by ptTls; read at Listen/Connect
+    CertFile, CertPassword, KeyFile, CaFile, SkipServerVerification, HandshakeTimeoutMs
+  OnMessage: TPipeMessageEvent;  OnError: TPipeErrorEvent
+
+TPipeServer
+  Listen; Stop;                          // Listen non-blocking; Stop synchronous
+  SendBytes/SendText(ConnId, ...)        // EPipeError if ConnId does not exist
+  Broadcast/BroadcastText(...)           // snapshot; per-connection failure is swallowed
+  Publish/PublishText(Topic, ..., Retain = False)  // only topic subscribers
+  SubscriberCount(Topic)                 // how many would receive a publication
+  ClientSubscriptions(ConnId)            // filters that client subscribed to
+  ClearRetained                          // retained values do not die on Stop
+  RelayClientPublish                     // False: clients cannot inject into others
+  MaxSubscriptionsPerClient; MaxRetained
+  OnPublish: TPipeTopicEvent             // notification: the fanout already happened
+                                         // ARetained here = the client ASKED to retain
+  OnSubscribe/OnUnsubscribe: TPipeSubscriptionEvent  // same; deny with DisconnectClient
+  DisconnectClient(ConnId)               // asynchronous and idempotent
+  ClientCount; ClientIds                 // only ESTABLISHED connections
+  TryClientIdentity(ConnId, out Ident)   // who it is, from the validated mTLS certificate
+  MaxClients                             // resource limit: counts handshaking connections
+  OnClientConnected/OnClientDisconnected: TPipeConnectionEvent
+  OnRequest: TPipeRequestEvent           // (const ARequest: TBytes; out AReply: TBytes)
+
+TPipeClient
+  Connect(TimeoutMs); Disconnect;        // Connect retries until the deadline
+  SendBytes/SendText(...)                // fire-and-forget
+  Request/RequestText(..., TimeoutMs)    // synchronous RPC; EPipeTimeout at the deadline
+  Subscribe/Unsubscribe(Filter)          // works while disconnected; redone on reconnect
+  Subscriptions                          // subscribed filters (desired state)
+  Publish/PublishText(Topic, ...)        // EPipeClosed without a session
+  OnTopicMessage: TPipeTopicEvent        // (...; ATopic; AData; ARetained)
+                                         // ARetained: True only on subscription catch-up
+  Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
+  OnConnected/OnDisconnected: TPipeConnectionEvent
+
+Pipes.Topics (pure unit, also useful outside the lib)
+  PipeTopicMatches(Filter, Topic); PipeIsValidTopic; PipeIsValidTopicFilter
+
+Exceptions: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls
+```
+
+### Compatibility with the previous API
+
+The old names remain valid and compile unchanged — `TNamedPipeBase`, `TNamedPipeServer`
+and `TNamedPipeClient` are aliases of the types above, and the `PipeName` property reads
+and writes the same field as `Address`:
+
+```pascal
+Server := TNamedPipeServer.Create('my_app');   // same as TPipeServer
+Server.PipeName := 'other';                    // same as Server.Address
+```
+
+The old name tied the API to the Windows Named Pipe, which is now just one of the possible
+transports — on Linux the backend is already a Unix Domain Socket. The aliases will be
+marked `deprecated` only after samples and tests migrate.
+
+## Samples (`samples/`)
+
+- **EchoServer / EchoClient** — console, same source on both compilers. Run the server,
+  then the client: plain text uses `SendText` (asynchronous echo via `OnMessage`); lines
+  starting with `?` use `RequestText` (RPC).
+- **EchoSeguro** (`EchoSeguroServer` + `EchoSeguroClient`) — the same echo, but over
+  `ptTls` with mTLS: the server demands a client certificate (`CaFile`), the client
+  presents its own, traffic encrypted end to end. Uses the test PKI versioned in
+  `tests/pki`; a client without a certificate (or a plain `TPipeClient`) is refused before
+  `OnClientConnected` fires — proof that the mTLS is not decorative.
+- **ChatVcl** — chat with a UI (VCL on Delphi, LCL on Lazarus, same source): one instance
+  is the server-hub (relays via `Broadcast`), the others are clients. Showcase of
+  `pdmMainThread` (handlers touch the UI directly) and `AutoReconnect`.
+- **ChatSeguro** — the same chat over `ptTls` with mTLS, and the difference is not just the
+  encryption: **who is in the room comes from the certificate, not from a typed nickname.**
+  The hub labels each message with the `CommonName` that `TryClientIdentity` returns, and
+  the participant list comes from `ClientIds` — which only shows established connections.
+  The identity combo switches the presented certificate, including the ones that **must be
+  refused** (`rogue`, `selfsigned`): that is where you see mTLS working, not on the happy
+  path. Needs the PKI from [`tests/pki/`](tests/pki/README.en.md), which the form locates
+  by itself.
+- **PontosECaixas** — the dots-and-boxes game for two players, one window each (VCL on
+  Delphi, LCL on Lazarus, same source). One side clicks **Host**, the other types the
+  address and clicks **Join**; the combo picks `ptLocal` (two windows on the same machine)
+  or `ptTcp` (two machines) — the game code does not change, only the `Transport` value.
+  What it shows that the others do not:
+  **authoritative server** (the host holds the only `TJogoPartida` that counts; the guest
+  *requests* the move and waits for the state to come back, never applying its own —
+  playing out of turn or on a used edge is refused by the same `TentarJogar` that validates
+  the local click); **reconnection that returns the seat** (the guest repeats a token in
+  `OnConnected`, which the lib also fires on every automatic reconnection — close its
+  window mid-game and reopen to see the board come back whole); **two refusal layers with
+  different roles** (`MaxClients` is a resource ceiling, "the game already has two players"
+  is business logic in the `OI`, which is why it manages to send the reason before hanging
+  up); and the handling of the **zombie connection** — when the same token arrives on a new
+  connection, the previous one usually remains alive on the server (TCP dead in silence,
+  typical of VPN/NAT) and is taken down with `DisconnectClient` before the seat is
+  reassigned.
+  It also shows the price of synchronizing by **state** instead of by event: the full board
+  does not say *what changed*, so the receiver would not know where the opponent played —
+  the edge would simply appear. That is why the `ESTADO` carries the last edge played,
+  which the UI highlights for ~0.6 s (edge thickening and brightening + rings expanding on
+  both dots). Two checkboxes at join time enable the AI-controlled player (`Jogo.Ia.pas`,
+  chain heuristic with *double-cross*): **"computer plays for me"**, valid in both roles —
+  on the guest the bot becomes an autonomous client, sending `JOGADA` over the network and
+  passing the same validation as any human — and **"computer takes the guest's seat"**,
+  which gives a solo game against the machine (then a human who tries to join is refused
+  with the reason). Check both and you can watch bot against bot.
+- **PingPong** — the classic pong for two players, one window each, same `Host`/`Join`
+  scheme and same `ptLocal`/`ptTcp` combo as PontosECaixas. **To try it alone you do not
+  need a second window: check "Computer takes the guest's seat" and click Host.** What it
+  shows that PontosECaixas does not is a world that **moves on its own** — and the five
+  consequences of that:
+  **the game clock is not the `TTimer`** (an accumulator measures real time and takes as
+  many 16 ms steps as fit, otherwise the ball would move faster or slower with timer
+  jitter, and the two screens would diverge);
+  **input goes by edge, state comes by level** (the guest only sends `ENTRADA` when the
+  paddle direction *changes*; the host sends the whole snapshot ~31x per second — the first
+  choice is only safe because the transport is reliable and ordered, and would be a bug
+  over UDP);
+  **the guest predicts** (it runs the same physics locally between one snapshot and the
+  next, with `AEhAutoridade = False`: predicting movement is one thing, deciding a point is
+  another — the mirror that sees the ball leave the field just stops and waits for the
+  `ESTADO` to say what happened);
+  **even prediction has a deadline** (1.5 s without a snapshot and it freezes, with the
+  screen saying so, instead of animating a game that may no longer exist);
+  and **the bot has no timer** — it is called inside the simulation step, together with the
+  physics, and the direction it returns enters through the same door as the keyboard (on
+  the guest, it becomes `ENTRADA` on the network). Floating-point numbers go on the wire as
+  integers in hundredths on purpose: `FloatToStr` uses the *locale's* decimal separator,
+  and a pt-BR host sending `412,75` to an en-US guest is a network bug nobody looks for.
+  The bot level (`Pong.Ia.pas`) changes only the **reaction horizon** and the prediction
+  quality, never the paddle speed — see the unit header for why that is the only lever that
+  closes a point.
+  Alongside it comes **`PongCheck`**, a console program in the same directory that verifies
+  the game core **without opening a window and without waiting for the clock**: it runs ~48
+  minutes of simulated play in ~40 ms. That is only possible because the three game units
+  depend neither on the UI nor on the library (`uses SysUtils` and nothing else), which is
+  the practical argument for the separation the sample preaches. It checks the `ESTADO`
+  round-trip field by field, that the mirror does **not score on its own** after 15 s
+  without a snapshot, the prediction error under four rate combinations, and that the bot
+  closes points at all three levels — it caught the first version of the bot, where two
+  "mediums" would draw for ten minutes. Fixed `Random` seed, so a failure is reproducible.
+  It does not cover `uPongMain.pas` or the library: it is a test of the pure core, not
+  integration.
+- **PdvDualScreen** (`Operador` + `Cliente`) — dual-screen POS: the operator enters items
+  and requests the payment method; the customer follows along and answers. Shows the
+  pattern recommended for production use: neither side's UI speaks
+  `TBytes`/`TPipeConnectionId` directly, only the domain types (`TPdvItem`,
+  `TPdvFormaPagamento`) through a facade (`Pdv.OperadorChannel`/`Pdv.ClienteChannel`) that
+  encapsulates `TPipeServer`/`TPipeClient` and the message protocol (`Pdv.Protocolo.pas`).
+- **FilaImpressao** (`FilaServidor` + `FilaCliente`) — shows `pdmSerialized` vs `pdmPool`
+  in practice: a handler with (deliberately) lock-free shared state processes jobs arriving
+  in sequence; `FilaServidor pipe serialized` (default) never detects reentrancy and
+  finishes in arrival order, `FilaServidor pipe pool` detects real concurrency and
+  out-of-order completion with the same load.
+- **DespachoTarefas** (`DespachoServidor` + `DespachoWorker`) — shows per-connection
+  addressing instead of `Broadcast`: the operator types `job <text>` and the server
+  dispatches to ONE worker at a time (round-robin over `ClientIds`); also exercises
+  `MaxClients`, `DisconnectClient` (`kick` command) and `list`.
+- **ServicoInstavel** (`ServicoInstavel` + `ClienteResiliente`) — a server that simulates
+  slowness and random business failures in `OnRequest`; the client shows a retry pattern
+  with exponential backoff that treats `EPipeTimeout`/`EPipeClosed` (transient, retry) and
+  `EPipeError` (business error, do not retry) differently.
+- **RpcConcorrente** (`RpcConcorrenteServidor` + `RpcConcorrenteCliente`) — proves the
+  guarantee that `Request`/`RequestText` calls from several threads on the SAME
+  `TPipeClient` are supported: several `TThread`s share a single client instance and fire
+  RPCs in parallel; each one checks that the reply that came back is exactly the one for
+  the request it made (correlation id), exposing any reply crossover between callers as a
+  bug.
+- **GatewaySeguro** (`ServicoLocal` + `GatewaySeguro` + `ClienteRemoto`) — the only sample
+  where `TPipeServer` and `TPipeClient` are **alive at the same time** in the same process,
+  with different transports on each end:
+  `[ClienteRemoto] --ptTls+mTLS--> [GatewaySeguro] --ptLocal--> [ServicoLocal]`. The other
+  samples prove that reach is a property; this one proves that reaches **compose**. The use
+  case is what people actually have: a service that only speaks local IPC and will never
+  learn TLS, and the need to expose it to the network with authentication.
+  The gateway authenticates via mTLS, knows who the peer is (`TryClientIdentity` returns
+  the `CommonName` **already validated against the CA** — a forged CN never gets there) and
+  needs to **tell** the local service who is calling (`IDENT|` frame), because `ptLocal`
+  has no TLS and therefore no identity at all. Why should the service believe it? Because
+  `ptLocal` inherits the operating system's access control — **the gateway's security does
+  not come from the gateway; it comes from the reach of the transport behind it**. With
+  `ServicoLocal` on `ptTcp` listening on `0.0.0.0`, the whole scheme collapses: anyone
+  skips the gateway and declares themselves whoever they want.
+  It also shows the **two layers of "connected"** (the remote peer can authenticate
+  successfully and still receive `RECUSADO|<reason>` because `ServicoLocal` is down — a
+  completed TLS handshake is not the same as a useful session, which is why the refusal
+  carries a reason instead of being a silently closed socket) and the pattern that avoids
+  the worst deadlock in this design: `TPipeClient.Disconnect` is synchronous (reader-thread
+  join + `DrainInFlight`), so **no peer `Free`/`Disconnect` happens inside a callback** —
+  the callback only marks, and a reaper (`TThread` with a queue and an event) destroys. The
+  full rationale, with the lock invariants and what was left out of this version (`Request`
+  relay), is in the header of
+  [`Gateway.Nucleo.pas`](samples/GatewaySeguro/Gateway.Nucleo.pas).
+  `ClienteRemoto <address> <identity>` picks the certificate: `cli` and `caixa` get in —
+  run both together and watch `ServicoLocal` stamp the **right** identity on each reply,
+  because identity crossover would be the worst possible bug in a gateway; `rogue`,
+  `selfsigned` and `nenhum` are refused **and `ServicoLocal` logs absolutely nothing**,
+  which is the proof that nothing leaked through. Needs the PKI from
+  [`tests/pki/`](tests/pki/README.en.md). Run script for the three processes (and
+  regression checklist) in
+  [`samples/GatewaySeguro/README.en.md`](samples/GatewaySeguro/README.en.md).
+- **PainelLoja** — the **pub/sub** sample: one executable, three roles chosen by the first
+  parameter, one window each.
+
+  ```
+  PainelLoja retaguarda        PainelLoja caixa 3        PainelLoja painel
+  ```
+
+  None of the three calls `SendBytes` with any `ConnId`: the backoffice publishes on
+  `loja.tabela.versao`, each register publishes `caixa.<n>.status`, the panel subscribes to
+  `caixa.#` and sees them all — **including registers that did not exist yet** when it
+  subscribed. Adding a register does not change one line of the backoffice.
+  What it shows that the others do not: **relay off** (the default) with the backoffice
+  deciding in `OnPublish` whether to republish, and using `PipeTopicMatches` to check
+  whether the client published in the right place — the same authoritative design as the
+  game samples, now over topics; and **retain** doing real work: **open the panel last**
+  and it draws the store's current state immediately, without waiting for anyone's next
+  tick. Close and reopen: it rebuilds the state, not the conversation — retain stores the
+  last value of each topic, not history. The register, with `AutoReconnect`, shows both
+  sides of the coin: publishing without a session **raises** (it logs and the next tick
+  retries), while **subscriptions** come back on their own, with nothing in `OnConnected`.
+- **MonitorTopicos** — pub/sub with a **UI** (VCL on Delphi, LCL on Lazarus, same source)
+  and, in practice, a **tool**: it serves to debug the pub/sub of any app built with the
+  lib. One window `Host`, the others `Join`, same `ptLocal`/`ptTcp` combo as the game
+  samples. Three things about the feature are only visible here:
+  **subscriptions manipulated live** (subscribe and unsubscribe with the app running;
+  better, build the list *disconnected* — `Subscribe` is desired state — connect afterward
+  and it already holds);
+  **the effect of `RelayClientPublish` in one click** (two client windows subscribing to
+  the same topic: check the box on the host and what one publishes reaches the other,
+  uncheck and delivery stops instantly — it is the feature's central decision, and the
+  property has no `EnsureInactive` precisely to allow this experiment);
+  and **the refusal path**, which no other sample exercises (lower `MaxSubscriptions` and
+  watch the subscription get refused with the message appearing on **both** sides,
+  connection up; type `caixa*` and watch `EPipeError` immediately, before it becomes a
+  frame).
+  The received list stamps **`ret`** on what came from the retained cache, which makes
+  visible the difference between *drawing the state that already existed* and *following
+  what happens*. Hosting, the subscriptions panel shows **who subscribed to what**
+  (`ClientSubscriptions` per connection) and the `SubscriberCount` count for the topic in
+  the Publish field — the router's view; as a client, it shows your own, editable. 2-minute
+  walkthrough in the header of
+  [`MonitorTopicos.dpr`](samples/MonitorTopicos/MonitorTopicos.dpr).
+
+## Tests
+
+- Delphi: open `Pipes.groupproj` and run `Pipes.UnitTests` and `Pipes.IntegrationTests`
+  (DUnitX).
+- FPC/Lazarus (Windows): `lazbuild tests\Unit\fpc\PipesUnitTestsFpc.lpi` and
+  `lazbuild tests\Integration\fpc\PipesIntegrationTestsFpc.lpi`; run the exes with
+  `--all --format=plain` (no parameters opens the test GUI).
+- Linux (Docker): the Debian Bookworm image ships the exact FPC 3.2.2:
+
+  ```bash
+  docker run --rm -v "$PWD:/work" debian:bookworm bash -c '
+    apt-get update -qq && apt-get install -y -qq fpc >/dev/null
+    cd /work/tests/Integration/fpc
+    fpc -MDelphi -Sh -B -Fu../../../src -Fi../../../src -FU/tmp -o/tmp/t \
+      PipesIntegrationTestsFpc.lpr
+    /tmp/t --all --format=plain'
+  ```
+
+  (`-Fi` is required since the tests started including `pipes.inc`, to see which backends
+  the build has.)
+
+- OpenSSL **1.1** (the other supported branch): swap the image for `debian:bullseye`, which
+  ships `libssl 1.1.1` and does **not** have 3.x. It is not redundant with the previous one
+  — it is the only way to exercise the symbol fallback of the peer-certificate getter,
+  which 3.x renamed (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). With both
+  versions installed the loader would pick 3.x and the old branch would never run; in an
+  image where only 1.1 exists, it is mandatory.
+
+The integration suite includes shutdown stress (Stop under flood < 2 s), a handle/fd leak
+detector under repeated abrupt drops, and RPC correlation under concurrency.
+
+### TLS tests
+
+The `TPipeTlsTests` fixture only exists if the build has a TLS backend — on Linux,
+therefore, only with `-dPIPES_OPENSSL`. Five of the eight tests are **refusal** tests
+(client without a certificate, from another CA, self-signed, silent during the handshake):
+that is the half proving that authentication exists, not just that the happy path works.
+
+The credentials come from [`tests/pki/`](tests/pki/README.en.md) — a test PKI versioned in
+the repository on purpose, **with no security value**. A secret scanner will flag it; the
+flag is right about the fact and wrong about the risk. The alternative of generating it in
+`Setup` with `openssl` was discarded because, wherever there was no `openssl`, the TLS
+tests would silently vanish — and a security test that vanishes silently is worse than a
+missing test. A missing PKI **fails**, it does not skip.
+
+## Structure
+
+```
+src/                 library (Pipes.Types, Pipes.Framing, Pipes.Transport[.Windows|.Posix],
+                     Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
+                     pub/sub: Pipes.Topics (names, wildcards and envelope; pure unit)
+                     network: Pipes.Transport.Tcp
+                     TLS: Pipes.Transport.Tls (facade) + .Schannel / .OpenSSL (backends)
+packages/            pipes_faa.lpk (Lazarus package)
+samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
+                     PontosECaixas (turn-based game), PingPong (real-time game),
+                     PainelLoja (topic pub/sub, three roles in one exe),
+                     MonitorTopicos (pub/sub explorer with a VCL/LCL UI),
+                     PdvDualScreen (Operador + Cliente),
+                     FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
+                     GatewaySeguro (ptTls -> ptLocal, server + client in one process)
+tests/               Unit + Integration (DUnitX and FPCUnit, mirrored)
+tests/pki/           versioned TEST PKI, no security value (see its README)
+docs/ARQUITETURA.md  full architecture (wire format, thread lifecycle, rationale)
+                     English version: docs/ARCHITECTURE.en.md
+Pipes.groupproj      Delphi project group       Pipes.lpg  Lazarus group
+```
+
+## License
+
+[MIT](LICENSE) — © 2026 Fabiano Arndt

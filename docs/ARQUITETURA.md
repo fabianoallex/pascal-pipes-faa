@@ -1,5 +1,7 @@
 # Arquitetura — pascal-pipes-faa (racional histórico)
 
+> 🇬🇧 This document is also available in [English](ARCHITECTURE.en.md).
+
 Relatório da proposta arquitetural aprovada em 2026-07-16, mantido como registro do
 racional de design (por que UDS e não FIFO, por que framing próprio, por que Schannel
 valida a cadeia manualmente etc.). Chamava-se "Named Pipes (v1)" porque o Named Pipe era

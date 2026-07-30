@@ -1,5 +1,7 @@
 # pascal-pipes-faa
 
+> 🇬🇧 This document is also available in [English](README.en.md).
+
 > Antes `pascal-named-pipes-faa`. O nome mudou porque o Named Pipe do Windows passou a ser
 > apenas um dos transportes suportados — a API antiga segue funcionando (ver
 > [Compatibilidade](#compatibilidade-com-a-api-anterior)).
