@@ -556,6 +556,12 @@ begin
   else
     Log('hospedando em "' + FServer.Address + '" - aguardando convidado.');
   AtualizarUi;
+  // O botao clicado fica com o foco; se ficar ENABLED (e' o caso de
+  // "Nova partida", que continua habilitado depois de si mesmo), o Windows
+  // passa a tratar as setas como navegacao entre botoes em vez de entregar
+  // a mensagem ao formulario, e o KeyPreview nunca chega a ver a tecla.
+  // Devolver o foco ao formulario evita isso.
+  ActiveControl := nil;
 end;
 
 procedure TfrmPong.AvaliarPresenca;
@@ -726,6 +732,7 @@ begin
   Log('nova partida.');
   EnviarEstado;
   AtualizarUi;
+  ActiveControl := nil; // ver comentario em btnHospedarClick
 end;
 
 { --- papel de convidado (cliente, espelho da autoridade) --- }
@@ -765,6 +772,7 @@ begin
 
   LigarRelogio;
   AtualizarUi;
+  ActiveControl := nil; // ver comentario em btnHospedarClick
 end;
 
 procedure TfrmPong.CliConnected(Sender: TObject; AConnId: TPipeConnectionId);
