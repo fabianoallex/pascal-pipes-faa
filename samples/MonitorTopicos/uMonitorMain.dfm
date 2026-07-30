@@ -1,0 +1,266 @@
+object frmMonitor: TfrmMonitor
+  Left = 180
+  Top = 100
+  Caption = 'Monitor de Topicos (pascal-pipes-faa)'
+  ClientHeight = 560
+  ClientWidth = 760
+  Color = clBtnFace
+  Font.Charset = DEFAULT_CHARSET
+  Font.Color = clWindowText
+  Font.Height = -12
+  Font.Name = 'Segoe UI'
+  Font.Style = []
+  Position = poScreenCenter
+  OnDestroy = FormDestroy
+  TextHeight = 15
+  object lblEndereco: TLabel
+    Left = 8
+    Top = 12
+    Width = 58
+    Height = 15
+    Caption = 'Endereco:'
+  end
+  object edEndereco: TEdit
+    Left = 72
+    Top = 8
+    Width = 150
+    Height = 23
+    TabOrder = 0
+    Text = 'pipes_faa_monitor'
+  end
+  object cbTransporte: TComboBox
+    Left = 230
+    Top = 8
+    Width = 90
+    Height = 23
+    ItemIndex = 0
+    Items.Strings = (
+      'ptLocal'
+      'ptTcp'
+    )
+    Style = csDropDownList
+    TabOrder = 1
+    Text = 'ptLocal'
+    OnChange = cbTransporteChange
+  end
+  object btnHospedar: TButton
+    Left = 328
+    Top = 7
+    Width = 100
+    Height = 25
+    Caption = 'Hospedar'
+    TabOrder = 2
+    OnClick = btnHospedarClick
+  end
+  object btnEntrar: TButton
+    Left = 434
+    Top = 7
+    Width = 100
+    Height = 25
+    Caption = 'Entrar'
+    TabOrder = 3
+    OnClick = btnEntrarClick
+  end
+  object btnDesligar: TButton
+    Left = 540
+    Top = 7
+    Width = 100
+    Height = 25
+    Caption = 'Desligar'
+    Enabled = False
+    TabOrder = 4
+    OnClick = btnDesligarClick
+  end
+  object lblEstado: TLabel
+    Left = 652
+    Top = 12
+    Width = 100
+    Height = 15
+    Caption = 'parado'
+  end
+  object gbServidor: TGroupBox
+    Left = 8
+    Top = 40
+    Width = 744
+    Height = 64
+    Caption = ' Servidor (so quando hospeda) '
+    Enabled = False
+    TabOrder = 5
+    object chkRelay: TCheckBox
+      Left = 12
+      Top = 24
+      Width = 180
+      Height = 19
+      Caption = 'RelayClientPublish'
+      TabOrder = 0
+      OnClick = chkRelayClick
+    end
+    object lblMax: TLabel
+      Left = 206
+      Top = 26
+      Width = 112
+      Height = 15
+      Caption = 'MaxSubscriptions:'
+    end
+    object edMax: TEdit
+      Left = 324
+      Top = 22
+      Width = 50
+      Height = 23
+      TabOrder = 1
+      Text = '64'
+    end
+    object btnAplicarMax: TButton
+      Left = 382
+      Top = 21
+      Width = 70
+      Height = 25
+      Caption = 'Aplicar'
+      TabOrder = 2
+      OnClick = btnAplicarMaxClick
+    end
+    object lblSrvInfo: TLabel
+      Left = 466
+      Top = 26
+      Width = 266
+      Height = 15
+      Caption = ''
+    end
+  end
+  object gbAssinaturas: TGroupBox
+    Left = 8
+    Top = 112
+    Width = 250
+    Height = 250
+    Caption = ' Assinaturas '
+    TabOrder = 6
+    object lbSubs: TListBox
+      Left = 10
+      Top = 22
+      Width = 228
+      Height = 140
+      TabOrder = 0
+    end
+    object edFiltro: TEdit
+      Left = 10
+      Top = 170
+      Width = 228
+      Height = 23
+      TabOrder = 1
+      Text = 'caixa.#'
+    end
+    object btnAssinar: TButton
+      Left = 10
+      Top = 200
+      Width = 110
+      Height = 25
+      Caption = 'Assinar'
+      TabOrder = 2
+      OnClick = btnAssinarClick
+    end
+    object btnCancelar: TButton
+      Left = 128
+      Top = 200
+      Width = 110
+      Height = 25
+      Caption = 'Cancelar'
+      TabOrder = 3
+      OnClick = btnCancelarClick
+    end
+  end
+  object gbRecebidas: TGroupBox
+    Left = 266
+    Top = 112
+    Width = 486
+    Height = 250
+    Caption = ' Recebidas (ret = valor retido, nao aconteceu agora) '
+    TabOrder = 7
+    object lbRecebidas: TListBox
+      Left = 10
+      Top = 22
+      Width = 464
+      Height = 172
+      TabOrder = 0
+    end
+    object btnLimpar: TButton
+      Left = 10
+      Top = 200
+      Width = 110
+      Height = 25
+      Caption = 'Limpar'
+      TabOrder = 1
+      OnClick = btnLimparClick
+    end
+  end
+  object gbPublicar: TGroupBox
+    Left = 8
+    Top = 370
+    Width = 744
+    Height = 64
+    Caption = ' Publicar '
+    TabOrder = 8
+    object lblTopico: TLabel
+      Left = 12
+      Top = 26
+      Width = 45
+      Height = 15
+      Caption = 'Topico:'
+    end
+    object edTopico: TEdit
+      Left = 62
+      Top = 22
+      Width = 200
+      Height = 23
+      TabOrder = 0
+      Text = 'caixa.3.status'
+    end
+    object lblTexto: TLabel
+      Left = 272
+      Top = 26
+      Width = 38
+      Height = 15
+      Caption = 'Texto:'
+    end
+    object edTexto: TEdit
+      Left = 314
+      Top = 22
+      Width = 230
+      Height = 23
+      TabOrder = 1
+      Text = 'aberto'
+    end
+    object chkReter: TCheckBox
+      Left = 554
+      Top = 24
+      Width = 60
+      Height = 19
+      Caption = 'reter'
+      TabOrder = 2
+    end
+    object btnPublicar: TButton
+      Left = 620
+      Top = 21
+      Width = 110
+      Height = 25
+      Caption = 'Publicar'
+      Enabled = False
+      TabOrder = 3
+      OnClick = btnPublicarClick
+    end
+  end
+  object memoLog: TMemo
+    Left = 8
+    Top = 442
+    Width = 744
+    Height = 110
+    Anchors = [akLeft, akTop, akRight, akBottom]
+    ReadOnly = True
+    ScrollBars = ssVertical
+    TabOrder = 9
+  end
+  object tmrRefresh: TTimer
+    Enabled = False
+    Interval = 1000
+    OnTimer = tmrRefreshTimer
+  end
+end

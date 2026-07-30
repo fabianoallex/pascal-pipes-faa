@@ -37,6 +37,7 @@ type
     FTopicLog: TStringList;       // 'idx|topico|texto' recebido por cliente
     FPublishLog: TStringList;     // 'topico|texto' visto em OnPublish
     FTopicCount: array[0..2] of Integer; // atomicos
+    FRetainedCount: array[0..2] of Integer; // entregas com ARetained = True
     FCliErrCount: array[0..2] of Integer;
     FSrvErrCount: Integer;
     FPublishCount: Integer;
@@ -49,11 +50,11 @@ type
     FLastConnId: TPipeConnectionId;
     // Handlers ('of object'):
     procedure OnCliTopic(Sender: TObject; AConnId: TPipeConnectionId;
-      const ATopic: string; const AData: TBytes);
+      const ATopic: string; const AData: TBytes; ARetained: Boolean);
     procedure OnCliError(Sender: TObject; AConnId: TPipeConnectionId;
       const AError: string);
     procedure OnSrvPublish(Sender: TObject; AConnId: TPipeConnectionId;
-      const ATopic: string; const AData: TBytes);
+      const ATopic: string; const AData: TBytes; ARetained: Boolean);
     procedure OnSrvSubscribe(Sender: TObject; AConnId: TPipeConnectionId;
       const AFilter: string);
     procedure OnSrvUnsubscribe(Sender: TObject; AConnId: TPipeConnectionId;
@@ -94,6 +95,7 @@ type
     procedure AssinaturaMorreComAConexao;
     procedure AssinaturaMorreNaQuedaAbrupta;
     procedure Retido_ChegaAQuemAssinaDepois;
+    procedure Retido_AoVivoNaoVemMarcado;
     procedure Retido_CorpoVazioApaga;
     procedure Retido_TetoDescartaOMaisAntigo;
     procedure TetoDeAssinaturas_RecusaAvisandoOsDoisLados;
@@ -131,6 +133,7 @@ begin
   begin
     FClients[I] := nil;
     FTopicCount[I] := 0;
+    FRetainedCount[I] := 0;
     FCliErrCount[I] := 0;
   end;
   FSrvErrCount := 0;
@@ -208,7 +211,8 @@ end;
 { --- handlers --- }
 
 procedure TPipePubSubTests.OnCliTopic(Sender: TObject;
-  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+  ARetained: Boolean);
 var
   LIdx: Integer;
 begin
@@ -220,7 +224,11 @@ begin
     FLock.Leave;
   end;
   if LIdx >= 0 then
-    PipeAtomicInc(FTopicCount[LIdx]);
+  begin
+    if ARetained then
+      PipeAtomicInc(FRetainedCount[LIdx]);
+    PipeAtomicInc(FTopicCount[LIdx]); // por ultimo: quem espera por ele ve o resto pronto
+  end;
 end;
 
 procedure TPipePubSubTests.OnCliError(Sender: TObject;
@@ -234,7 +242,8 @@ begin
 end;
 
 procedure TPipePubSubTests.OnSrvPublish(Sender: TObject;
-  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+  ARetained: Boolean);
 begin
   FLock.Enter;
   try
@@ -498,6 +507,30 @@ begin
   AssertEquals('so o retido que casa com o filtro devia chegar',
     1, PipeAtomicGet(FTopicCount[0]));
   AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
+  AssertEquals('catch-up tinha de chegar marcado como retido',
+    1, PipeAtomicGet(FRetainedCount[0]));
+end;
+
+procedure TPipePubSubTests.Retido_AoVivoNaoVemMarcado;
+begin
+  // O outro lado da moeda, e a parte facil de errar: publicar COM retain para
+  // quem JA esta assinando entrega uma mensagem ao vivo, e ao vivo nunca e'
+  // historico. Se o bit passasse adiante, o app trataria a venda de agora como
+  // catch-up e nao a contaria.
+  OpenServer;
+  AddClient(0);
+  FClients[0].Subscribe('caixa.#');
+  AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  FServer.PublishText('caixa.3.status', 'aberto', True); // retain + assinante
+  AssertTrue(WaitCount(FTopicCount[0], 1, 3000));
+  AssertEquals('publicacao ao vivo nao pode vir marcada como retida',
+    0, PipeAtomicGet(FRetainedCount[0]));
+  // ... e o valor ficou guardado do mesmo jeito, para o proximo assinante.
+  AddClient(1);
+  FClients[1].Subscribe('caixa.#');
+  AssertTrue(WaitCount(FTopicCount[1], 1, 3000));
+  AssertEquals('o segundo cliente devia receber o retido, marcado',
+    1, PipeAtomicGet(FRetainedCount[1]));
 end;
 
 procedure TPipePubSubTests.Retido_CorpoVazioApaga;

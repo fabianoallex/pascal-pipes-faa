@@ -187,8 +187,12 @@ type
     procedure StoreRetained(const ATopic: string; const AData: TBytes);
     /// Envia a publicacao a todas as conexoes estabelecidas com filtro que
     /// casa. Mesma mecanica de Broadcast (snapshot sob lock, envio fora).
-    procedure FanOut(const ATopic: string; const AData: TBytes;
-      ARetain: Boolean);
+    ///
+    /// Sai SEMPRE com PIPE_FLAG_RETAIN desligado, mesmo quando o publicador
+    /// pediu para reter: no fio, esse bit responde "isto e' historico?" a quem
+    /// recebe, e uma publicacao ao vivo nunca e' historico. Quem o liga e'
+    /// SendRetained, o unico caminho que entrega valor guardado.
+    procedure FanOut(const ATopic: string; const AData: TBytes);
   protected
     function GetActive: Boolean; override;
   public
@@ -281,7 +285,9 @@ type
     property MaxRetained: Integer read FMaxRetained write FMaxRetained;
     /// Um cliente publicou. NOTIFICACAO: quando RelayClientPublish esta ligado,
     /// o fanout ja aconteceu antes deste evento ser enfileirado — nao ha como
-    /// vetar daqui (o porque esta no cabecalho da unit).
+    /// vetar daqui (o porque esta no cabecalho da unit). O ARetained do handler
+    /// e' o PEDIDO de retencao do cliente, nao "veio do cache" (ver
+    /// TPipeTopicEvent em Pipes.Types).
     property OnPublish: TPipeTopicEvent read FOnPublish write FOnPublish;
     /// Um cliente assinou/cancelou um filtro, DEPOIS de aplicado. Para negar
     /// uma assinatura, chame DisconnectClient aqui.
@@ -863,9 +869,11 @@ begin
   begin
     if AFrame.IsRetain then
       StoreRetained(LTopic, LBody);
-    FanOut(LTopic, LBody, AFrame.IsRetain);
+    FanOut(LTopic, LBody);
   end;
-  DispatchTopicEvent(FOnPublish, AConn.FId, LTopic, LBody);
+  // ARetained aqui e' o PEDIDO do cliente (ver TPipeTopicEvent), nao "veio do
+  // cache": deste lado a mensagem acabou de chegar do fio, por definicao.
+  DispatchTopicEvent(FOnPublish, AConn.FId, LTopic, LBody, AFrame.IsRetain);
 end;
 
 procedure TPipeServer.StoreRetained(const ATopic: string; const AData: TBytes);
@@ -938,16 +946,16 @@ begin
   end;
   for I := 0 to High(LTopics) do
     try
-      // Com PIPE_FLAG_RETAIN ligado: e' um valor guardado, nao um acontecimento
-      // de agora. O cliente nao expoe essa distincao hoje, mas ela esta no fio.
+      // PIPE_FLAG_RETAIN ligado: valor guardado, nao acontecimento de agora.
+      // Chega ao app como ARetained = True em OnTopicMessage, e e' o UNICO
+      // caminho que liga esse bit (ver FanOut).
       AConn.SendFrame(PipePublishFrame(LTopics[I], LDatas[I], True));
     except
       Break; // conexao caindo: o reader dela notifica
     end;
 end;
 
-procedure TPipeServer.FanOut(const ATopic: string; const AData: TBytes;
-  ARetain: Boolean);
+procedure TPipeServer.FanOut(const ATopic: string; const AData: TBytes);
 var
   LConns: TArray<TPipeServerConnection>;
   LConn: TPipeServerConnection;
@@ -972,7 +980,7 @@ begin
   end;
   if Length(LConns) = 0 then
     Exit;
-  LFrame := PipePublishFrame(ATopic, AData, ARetain); // encodado uma vez
+  LFrame := PipePublishFrame(ATopic, AData, False); // encodado uma vez
   for LConn in LConns do
   begin
     try
@@ -998,7 +1006,7 @@ begin
     raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [ATopic]);
   if ARetain then
     StoreRetained(ATopic, AData);
-  FanOut(ATopic, AData, ARetain);
+  FanOut(ATopic, AData);
 end;
 
 procedure TPipeServer.PublishText(const ATopic, AText: string;

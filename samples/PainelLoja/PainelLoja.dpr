@@ -114,7 +114,7 @@ type
     FRelogio: TRelogio;
     FVersao: Integer;
     procedure OnPublicacaoDeCliente(Sender: TObject; AConnId: TPipeConnectionId;
-      const ATopic: string; const AData: TBytes);
+      const ATopic: string; const AData: TBytes; ARetained: Boolean);
     procedure OnAssinou(Sender: TObject; AConnId: TPipeConnectionId;
       const AFilter: string);
     procedure OnCancelou(Sender: TObject; AConnId: TPipeConnectionId;
@@ -135,7 +135,7 @@ type
     FRelogio: TRelogio;
     FNumero: string;
     procedure OnTopico(Sender: TObject; AConnId: TPipeConnectionId;
-      const ATopic: string; const AData: TBytes);
+      const ATopic: string; const AData: TBytes; ARetained: Boolean);
     procedure OnConectou(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnDesconectou(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnErro(Sender: TObject; AConnId: TPipeConnectionId;
@@ -150,7 +150,7 @@ type
   private
     FClient: TPipeClient;
     procedure OnTopico(Sender: TObject; AConnId: TPipeConnectionId;
-      const ATopic: string; const AData: TBytes);
+      const ATopic: string; const AData: TBytes; ARetained: Boolean);
     procedure OnConectou(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnDesconectou(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnErro(Sender: TObject; AConnId: TPipeConnectionId;
@@ -229,7 +229,8 @@ end;
 { TRetaguarda }
 
 procedure TRetaguarda.OnPublicacaoDeCliente(Sender: TObject;
-  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+  ARetained: Boolean);
 begin
   // RelayClientPublish esta DESLIGADO (padrao), entao nada saiu daqui para os
   // outros clientes ainda: a decisao e' desta funcao.
@@ -331,11 +332,22 @@ end;
 { TCaixa }
 
 procedure TCaixa.OnTopico(Sender: TObject; AConnId: TPipeConnectionId;
-  const ATopic: string; const AData: TBytes);
+  const ATopic: string; const AData: TBytes; ARetained: Boolean);
+var
+  LOrigem: string;
 begin
   // Chega aqui SO' o que casa com algum filtro assinado. O caixa nao filtra
   // nada por conta: quem roteia e' o servidor.
-  Log(Format('recebeu [%s] %s', [ATopic, PipeUtf8Decode(AData)]));
+  //
+  // ARetained separa "a tabela mudou agora" de "esta e a versao que vigorava
+  // quando eu liguei". O primeiro caso mereceria reimprimir etiqueta; o
+  // segundo, so' saber. Confundir os dois e' o bug classico de quem recebe
+  // catch-up e trata como evento.
+  if ARetained then
+    LOrigem := ' (retido: valor que ja vigorava)'
+  else
+    LOrigem := '';
+  Log(Format('recebeu [%s] %s%s', [ATopic, PipeUtf8Decode(AData), LOrigem]));
 end;
 
 procedure TCaixa.OnConectou(Sender: TObject; AConnId: TPipeConnectionId);
@@ -414,9 +426,17 @@ end;
 { TPainel }
 
 procedure TPainel.OnTopico(Sender: TObject; AConnId: TPipeConnectionId;
-  const ATopic: string; const AData: TBytes);
+  const ATopic: string; const AData: TBytes; ARetained: Boolean);
+var
+  LMarca: string;
 begin
-  Log(Format('%-24s %s', [ATopic, PipeUtf8Decode(AData)]));
+  // A marca de retido e' o que torna visivel a diferenca entre o painel
+  // desenhando o estado que JA existia e o painel acompanhando o que acontece.
+  if ARetained then
+    LMarca := 'ret '
+  else
+    LMarca := '    ';
+  Log(Format('%s%-24s %s', [LMarca, ATopic, PipeUtf8Decode(AData)]));
 end;
 
 procedure TPainel.OnConectou(Sender: TObject; AConnId: TPipeConnectionId);

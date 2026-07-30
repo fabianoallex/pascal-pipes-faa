@@ -111,17 +111,25 @@ type
   TPipeRequestEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
     const ARequest: TBytes; out AReply: TBytes) of object;
   { Mensagem dirigida a um TOPICO (pub/sub). Serve aos dois lados, com
-    leituras diferentes de AConnId:
+    leituras diferentes de AConnId e de ARetained:
     - TPipeClient.OnTopicMessage: chegou uma publicacao que casa com um filtro
-      assinado; AConnId e' 0 (o cliente tem uma conexao so').
+      assinado; AConnId e' 0 (o cliente tem uma conexao so'). ARetained = True
+      significa "isto NAO e' um acontecimento de agora": e' o valor que o
+      servidor tinha guardado do topico, entregue porque a assinatura acabou de
+      ser feita. Uma publicacao ao vivo chega SEMPRE com False, mesmo que o
+      publicador tenha pedido para reter — quem recebe quer saber se a mensagem
+      e' noticia ou historico, e nao o que o remetente pediu ao servidor.
     - TPipeServer.OnPublish: o cliente AConnId publicou; e' notificacao, o
       fanout para os assinantes ja aconteceu (ou nao, conforme
-      RelayClientPublish) antes deste evento ser enfileirado.
+      RelayClientPublish) antes deste evento ser enfileirado. Aqui ARetained
+      tem o outro sentido, o unico possivel deste lado: o cliente PEDIU para
+      reter (pedido que so' e' atendido se RelayClientPublish estiver ligado).
 
     E' um evento SEPARADO de OnMessage de proposito: quem usa os dois nao deve
     receber o envelope cru sem saber o topico. }
   TPipeTopicEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
-    const ATopic: string; const AData: TBytes) of object;
+    const ATopic: string; const AData: TBytes;
+    ARetained: Boolean) of object;
   /// Assinatura/cancelamento de um cliente no servidor (notificacao, depois de
   /// aplicada). Ver TPipeServer.OnSubscribe.
   TPipeSubscriptionEvent = procedure(Sender: TObject;

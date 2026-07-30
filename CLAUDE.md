@@ -110,6 +110,9 @@ Pub/sub: servidor `Publish/PublishText` (com `ARetain`), `SubscriberCount`,
 `MaxSubscriptionsPerClient`, `MaxRetained`, `OnPublish`/`OnSubscribe`/`OnUnsubscribe`;
 cliente `Subscribe`/`Unsubscribe` (funcionam desconectado), `Subscriptions`, `Publish`,
 `OnTopicMessage`. Filtros: `.` separa, `*` = um segmento, `#` = o resto (só no fim).
+`TPipeTopicEvent` termina em `ARetained: Boolean`, e o sentido dele MUDA por lado: no
+cliente, "veio do cache de retidos" (ao vivo é sempre False, mesmo com retain pedido — ver
+`docs/ARQUITETURA.md` §9.7); no servidor, "o cliente pediu para reter".
 
 ## Estrutura de units
 
@@ -124,7 +127,7 @@ src/Pipes.Client.pas             src/Pipes.Server.pas
 tests/Unit (Threading/Framing/Topics/Address)
   + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
-samples/ (13 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+samples/ (14 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 
@@ -151,7 +154,7 @@ agente para o próximo milestone que surgir, não como trabalho pendente.
 | M7 | Testes de integração (stress de Stop, queda abrupta) dual-OS | sonnet | concluído |
 | M8 | Samples (echo console, chat VCL/LCL) + README | haiku | concluído |
 | T0-T5 | `ptTcp`/`ptTls`, mTLS, samples seguros — ver tabela em `docs/ARQUITETURA.md` §7 | opus/sonnet | concluído |
-| P0-P4 | Pub/sub por tópico (`Pipes.Topics`, fanout, retain, replay na reconexão, sample `PainelLoja`) — ver `docs/ARQUITETURA.md` §9 | opus | concluído |
+| P0-P5 | Pub/sub por tópico (`Pipes.Topics`, fanout, retain, replay na reconexão, samples `PainelLoja` e `MonitorTopicos`) — ver `docs/ARQUITETURA.md` §9 | opus | concluído |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 

@@ -140,7 +140,8 @@ type
     /// Eventos de pub/sub (OnTopicMessage no cliente, OnPublish no servidor).
     /// O handler vem por parametro porque o campo vive no descendente.
     procedure DispatchTopicEvent(AEvent: TPipeTopicEvent;
-      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+      ARetained: Boolean);
     procedure DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
       AConnId: TPipeConnectionId; const AFilter: string);
   public
@@ -203,6 +204,7 @@ type
     FData: TBytes;
     FMsg: string;
     FTopic: string;
+    FRetained: Boolean;
   public
     constructor Create(AOwner: TPipeBase; AKind: TPipeQueuedKind;
       AConnId: TPipeConnectionId);
@@ -253,9 +255,11 @@ type
     FConnId: TPipeConnectionId;
     FTopic: string;
     FData: TBytes;
+    FRetained: Boolean;
   public
     constructor Create(AOwner: TPipeBase; ACallback: TPipeTopicEvent;
-      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+      ARetained: Boolean);
     procedure Execute; override;
   end;
 
@@ -323,7 +327,7 @@ begin
           qeMessage:      FMsgCb(FOwner, FConnId, FData);
           qeConn:         FConnCb(FOwner, FConnId);
           qeError:        FErrCb(FOwner, FConnId, FMsg);
-          qeTopic:        FTopicCb(FOwner, FConnId, FTopic, FData);
+          qeTopic:        FTopicCb(FOwner, FConnId, FTopic, FData, FRetained);
           qeSubscription: FSubCb(FOwner, FConnId, FTopic);
         end;
       except
@@ -402,7 +406,7 @@ end;
 
 constructor TPipeTopicWork.Create(AOwner: TPipeBase;
   ACallback: TPipeTopicEvent; AConnId: TPipeConnectionId; const ATopic: string;
-  const AData: TBytes);
+  const AData: TBytes; ARetained: Boolean);
 begin
   inherited Create;
   FOwner := AOwner;
@@ -410,12 +414,13 @@ begin
   FConnId := AConnId;
   FTopic := ATopic;
   FData := AData;
+  FRetained := ARetained;
 end;
 
 procedure TPipeTopicWork.Execute;
 begin
   try
-    FCallback(FOwner, FConnId, FTopic, FData);
+    FCallback(FOwner, FConnId, FTopic, FData, FRetained);
   finally
     FOwner.DecInFlight;
   end;
@@ -653,7 +658,8 @@ begin
 end;
 
 procedure TPipeBase.DispatchTopicEvent(AEvent: TPipeTopicEvent;
-  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+  ARetained: Boolean);
 var
   LQueued: TPipeQueuedEvent;
 begin
@@ -665,11 +671,13 @@ begin
     LQueued.FTopicCb := AEvent;
     LQueued.FTopic := ATopic;
     LQueued.FData := AData;
+    LQueued.FRetained := ARetained;
     TThread.Queue(nil, LQueued.Run);
     Exit;
   end;
   IncInFlight;
-  EventPool.Queue(TPipeTopicWork.Create(Self, AEvent, AConnId, ATopic, AData));
+  EventPool.Queue(TPipeTopicWork.Create(Self, AEvent, AConnId, ATopic, AData,
+    ARetained));
 end;
 
 procedure TPipeBase.DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
