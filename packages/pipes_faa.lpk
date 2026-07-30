@@ -13,7 +13,7 @@
         <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
       </SearchPaths>
     </CompilerOptions>
-    <Description Value="Named Pipes (IPC local) multiplataforma para Delphi 12+ (Win64) e FPC/Lazarus (Linux x86_64/ARM64). No Windows usa Named Pipes reais (overlapped); no Linux, Unix Domain Sockets — mesma abordagem do .NET. Servidor multi-cliente, Broadcast, Request-Reply sincrono com timeout, AutoReconnect e despacho de eventos em pool, serializado ou na main thread."/>
+    <Description Value="Comunicacao entre processos multiplataforma para Delphi 12+ (Win64) e FPC/Lazarus (Linux x86_64/ARM64): a mesma API em tres alcances, trocando uma property. ptLocal usa o melhor IPC do SO (Named Pipe overlapped no Windows, Unix Domain Socket no Linux — mesma abordagem do .NET); ptTcp leva a rede com keepalive; ptTls cifra e, com mTLS, autentica o par por certificado. Servidor multi-cliente, Broadcast, Request-Reply sincrono com timeout, pub/sub por topico com curingas e retencao de ultimo valor, AutoReconnect que restaura as assinaturas, e despacho de eventos em pool, serializado ou na main thread."/>
     <License Value="MIT"/>
     <Version Minor="1"/>
     <Files>
