@@ -34,6 +34,15 @@ implementar qualquer milestone novo.
   a `Pipes.Transport.Schannel.pas` (Windows, SSPI nativo) ou `Pipes.Transport.OpenSSL.pas`
   (POSIX e Windows opt-in), com mTLS suportado nos dois backends. Milestones T0-T5 em
   `docs/ARQUITETURA.md`.
+- **Pub/sub (`Pipes.Topics.pas`, milestones P0-P4):** roteamento por tópico sobre a conexão
+  viva — NÃO é broker (sem durabilidade, ack, QoS ou fila; isso é o `pascal-amqp-faa`).
+  Kinds 4-6 do NPF1, tópico no INÍCIO DO PAYLOAD (nunca nos bytes Reserved, senão `Length`
+  deixa de cobrir o frame e peer antigo sai de sincronia). Racional completo em
+  `docs/ARQUITETURA.md` §9. Duas decisões que não se rediscutem sem ler §9.2 e §9.3:
+  **toda decisão de roteamento é código puro na reader thread** (callbacks de pub/sub são
+  notificações, nunca vetos — veto no pool reordenaria publicações do mesmo cliente), e
+  **a lista de filtros vive na conexão sob `FConnLock`**, não em tabela global
+  `tópico → conexões` (é o que faz a assinatura morrer com a conexão, sem vazamento).
 
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 
@@ -72,6 +81,12 @@ implementar qualquer milestone novo.
    `TerminateThread`. Destructor idempotente chama Stop/Disconnect.
 6. `pdmMainThread` usa `TThread.Queue` (nunca `Synchronize` a partir do reader) com
    objeto-guarda refcounted invalidado no destroy.
+7. Pub/sub: frames de controle (subscribe/unsubscribe) e publicações de cliente são
+   tratados NA reader thread — inclusive as escritas de volta (recusa, valores retidos).
+   Isso é permitido porque não roda código de usuário; o casamento de tópico
+   (`PipeTopicMatches`) roda sob `FConnLock` e por isso não pode alocar nem fazer IO.
+   O cliente reenvia as assinaturas em `TryReopenSession` ANTES de `OnConnected`; nunca
+   segure `FSubLock` do cliente enquanto pega `FWriteLock`.
 
 ## API pública (resumo)
 
@@ -90,18 +105,26 @@ MaxReconnectAttempts, OnConnected/OnDisconnected). Assinaturas completas e exemp
 `TPipeTransportKind`: `ptLocal` (padrão, Named Pipe/UDS), `ptTcp`, `ptTls` (mTLS opcional
 via `TlsOptions`).
 
+Pub/sub: servidor `Publish/PublishText` (com `ARetain`), `SubscriberCount`,
+`ClientSubscriptions`, `ClearRetained`, `RelayClientPublish` (default **False**),
+`MaxSubscriptionsPerClient`, `MaxRetained`, `OnPublish`/`OnSubscribe`/`OnUnsubscribe`;
+cliente `Subscribe`/`Unsubscribe` (funcionam desconectado), `Subscriptions`, `Publish`,
+`OnTopicMessage`. Filtros: `.` separa, `*` = um segmento, `#` = o resto (só no fim).
+
 ## Estrutura de units
 
 ```
 src/pipes.inc                    src/Pipes.Threading.pas       src/Pipes.Types.pas
 src/Pipes.Base.pas                src/Pipes.Framing.pas         src/Pipes.Transport.pas
+src/Pipes.Topics.pas             (pub/sub: nomes, curingas, envelope — unit PURA)
 src/Pipes.Transport.Windows.pas  src/Pipes.Transport.Posix.pas
 src/Pipes.Transport.Tcp.pas      src/Pipes.Transport.Tls.pas
 src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
 src/Pipes.Client.pas             src/Pipes.Server.pas
-tests/Unit (Threading/Framing/Address) + tests/Integration (Transport/EndToEnd/Stress/Tls)
+tests/Unit (Threading/Framing/Topics/Address)
+  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
-samples/ (12 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+samples/ (13 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 
@@ -111,10 +134,10 @@ raiz: `Pipes.groupproj` (Projects + Targets + CallTarget de Build/Clean/Make) e
 
 ## Milestones e agente recomendado (economia de tokens)
 
-Todos os milestones abaixo — M0-M8 (escopo original, `ptLocal`) e T0-T5 (`ptTcp`/`ptTls`,
-detalhados em `docs/ARQUITETURA.md`) — estão **concluídos**. A tabela fica como referência
-de sequenciamento e alocação de agente para o próximo milestone que surgir, não como
-trabalho pendente.
+Todos os milestones abaixo — M0-M8 (escopo original, `ptLocal`), T0-T5 (`ptTcp`/`ptTls`) e
+P0-P4 (pub/sub por tópico), os dois últimos grupos detalhados em `docs/ARQUITETURA.md` §7 e
+§9 — estão **concluídos**. A tabela fica como referência de sequenciamento e alocação de
+agente para o próximo milestone que surgir, não como trabalho pendente.
 
 | # | Milestone | Agente | Status |
 |---|-----------|--------|--------|
@@ -128,12 +151,16 @@ trabalho pendente.
 | M7 | Testes de integração (stress de Stop, queda abrupta) dual-OS | sonnet | concluído |
 | M8 | Samples (echo console, chat VCL/LCL) + README | haiku | concluído |
 | T0-T5 | `ptTcp`/`ptTls`, mTLS, samples seguros — ver tabela em `docs/ARQUITETURA.md` §7 | opus/sonnet | concluído |
+| P0-P4 | Pub/sub por tópico (`Pipes.Topics`, fanout, retain, replay na reconexão, sample `PainelLoja`) — ver `docs/ARQUITETURA.md` §9 | opus | concluído |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 
 ## Verificação por milestone
 
-Compilar em ambos (dcc64 e fpc) + suíte de testes verde nos dois. M7 exige: Stop durante
+Compilar em ambos (dcc64 e fpc) + suíte de testes verde nos dois. P0-P4 exigem, além do
+fanout correto: assinatura que NÃO sobrevive à queda abrupta da conexão (teste com endpoint
+cru que desaparece sem despedida), `Stop` sob publicação intensa em < 2s, e reassinatura
+automática após reconexão **sem o app reassinar nada**. M7 exige: Stop durante
 tráfego intenso conclui em < 2s (detector de deadlock) e queda abrupta de cliente dispara
 OnClientDisconnected sem vazar handle/fd. T4/T5 exigem além disso: certificado de CA
 desconhecida e certificado auto-assinado sob mTLS têm veredito correto e distinto (ver

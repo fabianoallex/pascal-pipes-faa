@@ -245,6 +245,13 @@ de/para UTF-8 de forma portátil.
   `OnRequest` devolve o reply e a lib o envia com o correlation id certo. Exceção no
   handler vira reply de erro (`EPipeError` no cliente, com a mensagem do servidor).
   Chamadas concorrentes de várias threads no mesmo cliente são suportadas.
+- **Pub/sub por tópico** — quem envia nomeia um **assunto**, não um destinatário:
+  `Server.Publish('caixa.3.status', dados)` chega a todos os clientes cujo filtro alcança o
+  tópico, e a mais ninguém. O cliente assina com curingas hierárquicos
+  (`Subscribe('caixa.*.status')`, `Subscribe('caixa.#')`) e recebe em `OnTopicMessage`.
+  As assinaturas são **restauradas automaticamente** em cada reconexão. Opcionalmente o
+  servidor **retém o último valor** de um tópico (`Publish(..., ARetain := True)`), entregue
+  na hora a quem assinar depois. Ver [Pub/sub](#pubsub-tópicos).
 - **AutoReconnect** — o cliente reconecta sozinho após queda do servidor
   (`ReconnectDelayMs`, `MaxReconnectAttempts`). Durante a janela de reconexão, `Send*`
   levanta `EPipeClosed` transitório — re-tente (contrato igual ao republish de um client MQ).
@@ -266,6 +273,82 @@ de/para UTF-8 de forma portátil.
   daquela CA ser recusado antes de `OnClientConnected`. Backend nativo por plataforma
   (Schannel no Windows, OpenSSL no Linux) e prazo próprio de handshake, para que um par que
   abra a conexão e não fale não consuma uma thread indefinidamente.
+
+## Pub/sub (tópicos)
+
+`SendBytes` precisa de um `ConnId`; `Broadcast` vai para todo mundo. Entre os dois falta o
+caso mais comum de um sistema com várias pontas: **mandar por assunto**, sem que o remetente
+saiba quem está interessado. É o que o pub/sub resolve.
+
+```pascal
+// --- servidor ---
+Server.Publish('caixa.3.status', dados);              // só quem assinou o assunto recebe
+Server.PublishText('loja.tabela.versao', 'v42', True); // True = retém o último valor
+
+// --- cliente ---
+Client.OnTopicMessage := Self.Recebeu;   // (Sender; ConnId; const ATopic; const AData)
+Client.Subscribe('caixa.*.status');      // um segmento no lugar do '*'
+Client.Subscribe('loja.#');              // tudo abaixo de 'loja'
+Client.PublishText('caixa.3.status', 'ocupado');
+```
+
+**Nomes e curingas.** Tópico é hierárquico, separado por ponto, sensível a caixa e sem
+segmento vazio. Quem publica usa nome literal; quem assina pode usar curingas, sempre
+ocupando um segmento inteiro:
+
+| Filtro | Alcança | Não alcança |
+|---|---|---|
+| `caixa.3.status` | `caixa.3.status` | `caixa.4.status` |
+| `caixa.*.status` | `caixa.3.status` | `caixa.3.a.status` |
+| `caixa.#` | `caixa.3`, `caixa.3.a.b`, `caixa` | `loja.3` |
+
+`#` só pode ser o último segmento (`a.#.b` é recusado: as duas leituras possíveis dariam
+resultados diferentes). `caixa*` também é recusado — curinga colado em texto prometeria um
+casamento parcial que a lib não faz. `Subscribe` levanta `EPipeError` na hora para filtro
+inválido; um `Publish` com nome inválido também.
+
+**Quem pode retransmitir.** Uma publicação de **cliente** não vai para os outros clientes
+por padrão: ela chega ao servidor em `OnPublish`, que decide. Ligar
+`RelayClientPublish := True` faz a lib retransmitir sozinha (incluindo de volta ao próprio
+autor, se ele assinar o tópico) — cômodo para um chat, e perigoso num sistema onde um
+cliente não deveria poder injetar conteúdo no assunto de outro. O padrão desligado deixa o
+servidor autoritativo, como nos samples de jogo:
+
+```pascal
+procedure TRetaguarda.OnPublicacaoDeCliente(Sender: TObject; AConnId: TPipeConnectionId;
+  const ATopic: string; const AData: TBytes);
+begin
+  if not PipeTopicMatches('caixa.*.status', ATopic) then Exit;  // fora do lugar: ignora
+  Server.Publish(ATopic, AData, True);                          // republica retendo
+end;
+```
+
+**Retenção (`ARetain`) é cache de último valor, não fila.** O servidor guarda **uma**
+mensagem por tópico e a entrega a quem assinar depois — é a resposta para "o cliente que
+acabou de ligar precisa do estado atual" sem que ele tenha de pedir. Publicar com corpo
+vazio e `ARetain := True` apaga o valor retido. O teto é `MaxRetained` (256 por padrão;
+além dele o tópico retido mais antigo sai). Mensagem que precise sobreviver ao processo, ou
+ser entregue com garantia, pede uma fila de verdade — para isso existe o
+[pascal-amqp-faa](https://github.com/fabianoallex/pascal-amqp-faa).
+
+**Reconexão.** As assinaturas são estado desejado do cliente, não da sessão: `Subscribe`
+funciona desconectado, e tudo é reenviado ao servidor a cada nova sessão **antes** de
+`OnConnected` disparar — o seu handler não precisa reassinar nada. O que não se recupera é
+a janela entre a queda e a reassinatura: publicação que passou ali está perdida (é aí que o
+retain ajuda).
+
+**Ordem e limites.** A entrega de um mesmo publicador preserva a ordem; entre publicadores
+diferentes, não há ordem global (use `pdmSerialized` se precisar de FIFO nos seus handlers).
+`OnPublish`, `OnSubscribe` e `OnUnsubscribe` são **notificações** — o roteamento já
+aconteceu quando eles rodam, e não há como vetar de dentro deles; para negar uma assinatura,
+chame `DisconnectClient`. `MaxSubscriptionsPerClient` (64 por padrão) limita quantos filtros
+um cliente pode registrar; a recusa aparece em `OnError` **nos dois lados**, e a conexão
+continua de pé.
+
+**Compatibilidade de wire.** Os tipos de frame do pub/sub são novos no protocolo `NPF1`. Um
+peer compilado com uma versão anterior da lib que receba um deles cai com `EPipeProtocol`
+("o peer provavelmente fala uma versão mais nova do protocolo") em vez de interpretar bytes
+errados — atualize os dois lados.
 
 ## Garantias de threading
 
@@ -311,6 +394,14 @@ TPipeServer
   Listen; Stop;                          // Listen não-blocante; Stop síncrono
   SendBytes/SendText(ConnId, ...)        // EPipeError se ConnId não existe
   Broadcast/BroadcastText(...)           // snapshot; falha por conexão é engolida
+  Publish/PublishText(Topico, ..., Retain = False)  // só quem assinou o tópico
+  SubscriberCount(Topico)                // quantos receberiam uma publicação
+  ClientSubscriptions(ConnId)            // filtros que aquele cliente assinou
+  ClearRetained                          // valores retidos não morrem no Stop
+  RelayClientPublish                     // False: cliente não injeta nos outros
+  MaxSubscriptionsPerClient; MaxRetained
+  OnPublish: TPipeTopicEvent             // notificação: o fanout já ocorreu
+  OnSubscribe/OnUnsubscribe: TPipeSubscriptionEvent  // idem; negue com DisconnectClient
   DisconnectClient(ConnId)               // assíncrono e idempotente
   ClientCount; ClientIds                 // só conexões ESTABELECIDAS
   TryClientIdentity(ConnId, out Ident)   // quem é, pelo certificado mTLS validado
@@ -322,8 +413,15 @@ TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect re-tenta até o prazo
   SendBytes/SendText(...)                // fire-and-forget
   Request/RequestText(..., TimeoutMs)    // RPC síncrono; EPipeTimeout no prazo
+  Subscribe/Unsubscribe(Filtro)          // funciona desconectado; refeito na reconexão
+  Subscriptions                          // filtros assinados (estado desejado)
+  Publish/PublishText(Topico, ...)       // EPipeClosed sem sessão
+  OnTopicMessage: TPipeTopicEvent        // (Sender; ConnId; const ATopic; const AData)
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
   OnConnected/OnDisconnected: TPipeConnectionEvent
+
+Pipes.Topics (unit pura, útil também fora da lib)
+  PipeTopicMatches(Filtro, Topico); PipeIsValidTopic; PipeIsValidTopicFilter
 
 Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls
 ```
@@ -478,6 +576,26 @@ marcados `deprecated` só depois que samples e testes migrarem.
   de que não vazou nada para trás. Precisa da PKI de [`tests/pki/`](tests/pki/LEIA-ME.md).
   Roteiro de execução dos três processos (e checklist de regressão) em
   [`samples/GatewaySeguro/LEIA-ME.md`](samples/GatewaySeguro/LEIA-ME.md).
+- **PainelLoja** — o sample de **pub/sub**: um executável, três papéis escolhidos pelo
+  primeiro parâmetro, uma janela para cada.
+
+  ```
+  PainelLoja retaguarda        PainelLoja caixa 3        PainelLoja painel
+  ```
+
+  Nenhum dos três chama `SendBytes` com `ConnId` nenhum: a retaguarda publica em
+  `loja.tabela.versao`, cada caixa publica `caixa.<n>.status`, o painel assina `caixa.#` e
+  vê todos — **incluindo caixas que ainda não existiam** quando ele assinou. Adicionar um
+  caixa não muda uma linha da retaguarda.
+  O que ele mostra e os outros não: **relay desligado** (o padrão) com a retaguarda
+  decidindo em `OnPublish` se republica, e usando `PipeTopicMatches` para conferir se o
+  cliente publicou no lugar certo — o mesmo desenho autoritativo dos samples de jogo, agora
+  sobre tópicos; e o **retain** trabalhando de verdade: **abra o painel por último** e ele
+  desenha o estado atual da loja imediatamente, sem esperar o próximo tick de ninguém.
+  Feche e reabra: ele reconstrói o estado, não a conversa — o retain guarda o último valor
+  de cada tópico, não histórico. O caixa, com `AutoReconnect`, mostra os dois lados da
+  moeda: publicar sem sessão **levanta** (ele registra e o próximo tick tenta de novo),
+  enquanto as **assinaturas** voltam sozinhas, sem nada no `OnConnected`.
 
 ## Testes
 
@@ -528,11 +646,13 @@ ausente. A ausência da PKI **falha**, não pula.
 ```
 src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Windows|.Posix],
                      Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
+                     pub/sub: Pipes.Topics (nomes, curingas e envelope; unit pura)
                      rede: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (jogo de turno), PingPong (jogo em tempo real),
+                     PainelLoja (pub/sub por topico, tres papeis num exe),
                      PdvDualScreen (Operador + Cliente),
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
                      GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo)

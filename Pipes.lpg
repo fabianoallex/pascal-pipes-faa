@@ -57,6 +57,11 @@
           <Mode Name="Default"/>
         </BuildModes>
       </Target>
+      <Target FileName="samples\PainelLoja\PainelLoja.lpi">
+        <BuildModes>
+          <Mode Name="Default"/>
+        </BuildModes>
+      </Target>
       <Target FileName="samples\PdvDualScreen\Operador\PdvOperador.lpi">
         <BuildModes>
           <Mode Name="Default"/>

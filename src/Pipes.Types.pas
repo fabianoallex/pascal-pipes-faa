@@ -110,6 +110,22 @@ type
   /// (enviado pelo proprio worker ao fim do handler, com o mesmo corrId).
   TPipeRequestEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
     const ARequest: TBytes; out AReply: TBytes) of object;
+  { Mensagem dirigida a um TOPICO (pub/sub). Serve aos dois lados, com
+    leituras diferentes de AConnId:
+    - TPipeClient.OnTopicMessage: chegou uma publicacao que casa com um filtro
+      assinado; AConnId e' 0 (o cliente tem uma conexao so').
+    - TPipeServer.OnPublish: o cliente AConnId publicou; e' notificacao, o
+      fanout para os assinantes ja aconteceu (ou nao, conforme
+      RelayClientPublish) antes deste evento ser enfileirado.
+
+    E' um evento SEPARADO de OnMessage de proposito: quem usa os dois nao deve
+    receber o envelope cru sem saber o topico. }
+  TPipeTopicEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
+    const ATopic: string; const AData: TBytes) of object;
+  /// Assinatura/cancelamento de um cliente no servidor (notificacao, depois de
+  /// aplicada). Ver TPipeServer.OnSubscribe.
+  TPipeSubscriptionEvent = procedure(Sender: TObject;
+    AConnId: TPipeConnectionId; const AFilter: string) of object;
   TPipeConnectionEvent = procedure(Sender: TObject;
     AConnId: TPipeConnectionId) of object;
   TPipeErrorEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
@@ -149,6 +165,17 @@ const
   /// Com os padroes: par morto detectado em ~20 + 3*5 = 35s.
   PIPES_KEEPALIVE_INTERVAL_SECONDS = 5;
   PIPES_KEEPALIVE_PROBE_COUNT = 3;
+  /// Teto de filtros de assinatura por cliente (TPipeServer.
+  /// MaxSubscriptionsPerClient; 0 = sem teto). Existe porque a lista de
+  /// assinaturas e' memoria do SERVIDOR ditada pelo CLIENTE: sem teto, um par
+  /// hostil assina um milhao de filtros e o custo do fanout vai com ele.
+  /// 64 e' folgado para o uso real (um punhado de filtros por processo).
+  PIPES_DEFAULT_MAX_SUBSCRIPTIONS = 64;
+  /// Quantos topicos o servidor mantem com valor retido (o ultimo publicado com
+  /// PIPE_FLAG_RETAIN, entregue a quem assinar depois). Alem disso, o topico
+  /// retido mais antigo e' descartado — e' cache de ultimo valor, nao fila:
+  /// quem precisa de mensagem que sobrevive ao processo esta na lib errada.
+  PIPES_DEFAULT_MAX_RETAINED = 256;
   /// Prazo padrao do handshake TLS (TPipeTlsOptions.HandshakeTimeoutMs = 0).
   /// 15s cobre com folga um handshake sobre VPN ruim — o alvo nao e' a rede
   /// lenta, e' o par que nunca fala.
