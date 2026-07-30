@@ -36,6 +36,9 @@
         <Projects Include="samples\PingPong\PongCheck.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="samples\PainelLoja\PainelLoja.dproj">
+            <Dependencies/>
+        </Projects>
         <Projects Include="samples\PdvDualScreen\Operador\PdvOperador.dproj">
             <Dependencies/>
         </Projects>
@@ -182,6 +185,15 @@
     <Target Name="PongCheck:Make">
         <MSBuild Projects="samples\PingPong\PongCheck.dproj" Targets="Make"/>
     </Target>
+    <Target Name="PainelLoja">
+        <MSBuild Projects="samples\PainelLoja\PainelLoja.dproj"/>
+    </Target>
+    <Target Name="PainelLoja:Clean">
+        <MSBuild Projects="samples\PainelLoja\PainelLoja.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="PainelLoja:Make">
+        <MSBuild Projects="samples\PainelLoja\PainelLoja.dproj" Targets="Make"/>
+    </Target>
     <Target Name="PdvOperador">
         <MSBuild Projects="samples\PdvDualScreen\Operador\PdvOperador.dproj"/>
     </Target>
@@ -300,13 +312,13 @@
         <MSBuild Projects="samples\GatewaySeguro\ClienteRemoto.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
-        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PingPong;PongCheck;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente;ServicoLocal;GatewaySeguro;ClienteRemoto"/>
+        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PingPong;PongCheck;PainelLoja;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente;ServicoLocal;GatewaySeguro;ClienteRemoto"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PontosECaixas:Clean;PingPong:Clean;PongCheck:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean;ServicoLocal:Clean;GatewaySeguro:Clean;ClienteRemoto:Clean"/>
+        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PontosECaixas:Clean;PingPong:Clean;PongCheck:Clean;PainelLoja:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean;ServicoLocal:Clean;GatewaySeguro:Clean;ClienteRemoto:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PontosECaixas:Make;PingPong:Make;PongCheck:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make;ServicoLocal:Make;GatewaySeguro:Make;ClienteRemoto:Make"/>
+        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PontosECaixas:Make;PingPong:Make;PongCheck:Make;PainelLoja:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make;ServicoLocal:Make;GatewaySeguro:Make;ClienteRemoto:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

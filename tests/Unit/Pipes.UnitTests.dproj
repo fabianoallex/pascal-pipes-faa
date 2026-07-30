@@ -167,8 +167,10 @@
         <DCCReference Include="..\..\src\Pipes.Threading.pas"/>
         <DCCReference Include="..\..\src\Pipes.Types.pas"/>
         <DCCReference Include="..\..\src\Pipes.Framing.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Topics.pas"/>
         <DCCReference Include="Pipes.ThreadingTests.pas"/>
         <DCCReference Include="Pipes.FramingTests.pas"/>
+        <DCCReference Include="Pipes.TopicsTests.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Windows.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Tcp.pas"/>

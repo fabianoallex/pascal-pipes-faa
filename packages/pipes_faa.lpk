@@ -34,6 +34,10 @@
         <UnitName Value="Pipes.Framing"/>
       </Item>
       <Item>
+        <Filename Value="..\src\Pipes.Topics.pas"/>
+        <UnitName Value="Pipes.Topics"/>
+      </Item>
+      <Item>
         <Filename Value="..\src\Pipes.Transport.pas"/>
         <UnitName Value="Pipes.Transport"/>
       </Item>

@@ -171,12 +171,20 @@ type
 Header (20 bytes, little-endian):
   Magic    : 4 bytes  'NPF1'   (sincronia + versão de protocolo)
   Kind     : 1 byte   0=msg  1=request  2=reply  3=ping (reservado)
-  Flags    : 1 byte   reservado (0)
+                      4=subscribe  5=unsubscribe  6=publish   (pub/sub, §9)
+  Flags    : 1 byte   bit 0 = reply de erro; bit 1 = publicação a reter
   Reserved : 2 bytes  (0)
   CorrId   : 8 bytes  correlation id (request/reply; 0 em msg)
   Length   : 4 bytes  tamanho do payload (validado contra MaxMessageSize)
 Payload    : Length bytes (TBytes cru; texto = UTF-8)
 ```
+
+Nos kinds 4-6 o payload começa com o envelope de tópico: `u16 TopicLen` + tópico UTF-8 +
+corpo. O tópico **não** ocupa os 2 bytes `Reserved`, que seriam mais baratos, porque então
+`Length` deixaria de cobrir o resto do frame: um peer de versão anterior leria a quantidade
+errada de bytes e passaria a acusar "magic inválido" em frames perfeitos. Com o tópico
+dentro do payload, esse peer falha no próprio kind desconhecido, com o stream ainda em
+sincronia — foi o que permitiu adicionar pub/sub sem trocar o magic.
 
 **Request-Reply** (mesmo padrão do RPC de `AMQP.Connection`):
 
@@ -295,6 +303,7 @@ Todos os handles com `FILE_FLAG_OVERLAPPED`; nenhuma chamada síncrona blocante.
 | `src/Pipes.Threading.pas` | cópia renomeada de `AMQP.Threading.pas` |
 | `src/Pipes.Types.pas` | `TPipeConnectionId`, eventos, exceções, `TPipeDispatchMode`, `TPipeTransportKind`, `TPipePeerIdentity`, constantes de keepalive |
 | `src/Pipes.Framing.pas` | encode/decode do frame, helpers UTF-8 |
+| `src/Pipes.Topics.pas` | pub/sub: validação de nome/filtro, casamento hierárquico, envelope de tópico. **Unit pura** (sem estado, sem locks, sem IO) — §9 |
 | `src/Pipes.Transport.pas` | `TPipeEndpoint`/`TPipeListener` abstratos (Read/Write/Accept interrompíveis + CloseAbort) |
 | `src/Pipes.Transport.Windows.pas` | Named Pipe overlapped (`{$IFDEF PIPES_WINDOWS}`) |
 | `src/Pipes.Transport.Posix.pas` | UDS + fpPoll + self-pipe (`{$IFDEF PIPES_POSIX}`) |
@@ -305,10 +314,10 @@ Todos os handles com `FILE_FLAG_OVERLAPPED`; nenhuma chamada síncrona blocante.
 | `src/Pipes.Base.pas` | `TPipeBase` (Address/Transport/TlsOptions/KeepAliveSeconds/DispatchMode), `TPipeTlsConfig`, `TPipeGuard` |
 | `src/Pipes.Server.pas` | `TPipeServer` + acceptor + conexões + identidade de par mTLS |
 | `src/Pipes.Client.pas` | `TPipeClient` + reconexão + `MaxReconnectAttempts` |
-| `tests/Unit/` (`Pipes.ThreadingTests`, `Pipes.FramingTests`, `Pipes.AddressTests`) | unitários; DUnit (Delphi) + fpcunit (FPC, em `fpc/`), layout espelhado do pascal-amqp-faa |
-| `tests/Integration/` (`Pipes.TransportTests`, `Pipes.EndToEndTests`, `Pipes.StressTests`, `Pipes.TlsTests`) | integração dual-OS, inclui mTLS; mesmo espelhamento DUnit/fpcunit |
+| `tests/Unit/` (`Pipes.ThreadingTests`, `Pipes.FramingTests`, `Pipes.TopicsTests`, `Pipes.AddressTests`) | unitários; DUnit (Delphi) + fpcunit (FPC, em `fpc/`), layout espelhado do pascal-amqp-faa |
+| `tests/Integration/` (`Pipes.TransportTests`, `Pipes.EndToEndTests`, `Pipes.PubSubTests`, `Pipes.StressTests`, `Pipes.TlsTests`) | integração dual-OS, inclui mTLS; mesmo espelhamento DUnit/fpcunit |
 | `tests/pki/` | PKI de **teste** versionada (sem valor de segurança; ver `LEIA-ME.md`) |
-| `samples/` | 10 amostras (echo, chat, PDV, fila de impressão, RPC concorrente etc.) — ver `../README.md`, seção de samples |
+| `samples/` | amostras (echo, chat, PDV, fila de impressão, RPC concorrente, pub/sub etc.) — ver `../README.md`, seção de samples |
 
 ## 7. Milestones
 
@@ -378,3 +387,98 @@ handle/fd.
 | Work item com dados em campos + dec no finally | `TAMQPDeliveryWork` |
 | Thread efêmera de reconexão | `TAMQPReconnectThread` |
 | Pool dedicado de 1 worker (ordem FIFO) | `TAMQPChannel.FDispatchPool` |
+
+## 9. Pub/sub por tópico (milestones P0-P4)
+
+Veio depois do T5, quando ficou claro que entre `SendBytes(ConnId, ...)` e `Broadcast` falta
+o caso mais comum de um sistema com várias pontas: **endereçar por assunto**, sem que o
+remetente saiba quem está interessado. A API está no `README.md`; aqui fica o *por quê*.
+
+### 9.1 O que isto NÃO é
+
+Não é um broker. Não há durabilidade, ack, QoS, redelivery, fila nomeada ou dead-letter — e
+não deve haver: esse é o trabalho do `pascal-amqp-faa`, e duplicá-lo aqui daria uma segunda
+implementação pior da mesma coisa. O que existe é **roteamento por assunto sobre uma conexão
+viva**. A única concessão a estado é o *retain*, que é cache de último valor (um por tópico),
+justamente porque a alternativa — cada cliente perguntar o estado atual ao conectar — é o
+handshake ad-hoc que todo mundo escreve errado.
+
+### 9.2 A regra de ouro: decisão de roteamento é código puro na reader thread
+
+Toda decisão sobre *quem recebe o quê* roda na thread de leitura, com código sem locks de
+usuário e sem IO (`Pipes.Topics` é uma unit pura de propósito). Os callbacks do usuário
+(`OnPublish`, `OnSubscribe`, `OnUnsubscribe`) são **notificações** despachadas ao pool
+*depois* de a decisão estar tomada.
+
+O desenho alternativo — `OnPublish` com um `var AAllowRelay` para o usuário vetar — foi
+rejeitado, e a razão é de ordem, não de estilo: o handler roda no pool, então duas
+publicações do **mesmo** cliente poderiam ser retransmitidas fora de ordem em `pdmPool`. O
+transporte é ordenado e a aplicação tem o direito de contar com isso. Por isso
+`RelayClientPublish` é um Boolean lido na hora. Quem quer decidir caso a caso deixa o relay
+desligado e chama `Publish` de dentro do handler, assumindo a ordem que escolher (FIFO
+garantida em `pdmSerialized`).
+
+O mesmo argumento vale para assinaturas, com um sintoma pior: aplicar `Subscribe` no pool
+deixaria um `Unsubscribe` passar na frente do `Subscribe` que ele cancela, e o estado final
+ficaria errado — de forma intermitente e irreproduzível. Daí `OnSubscribe` ser notificação;
+para **negar** uma assinatura, o servidor chama `DisconnectClient` (um cliente que pede
+tópico alheio não merece meia-medida).
+
+### 9.3 Assinatura na conexão, não em tabela global
+
+A lista de filtros é campo de `TPipeServerConnection`, protegida pelo **`FConnLock` já
+existente**, e não por uma tabela `tópico → conexões` com lock próprio. Três consequências,
+todas boas:
+
+1. Nenhum nível novo na ordem de locks (`FConnLock → write lock` continua sendo tudo).
+2. O fanout tira o snapshot dos destinatários no mesmo passo em que já percorre
+   `FConnections` — é o `Broadcast` com um teste de casamento.
+3. **A assinatura morre com a conexão, no destructor dela.** Não existe registro global de
+   onde desinscrever no teardown, e portanto não existe a classe de vazamento silencioso que
+   uma tabela global teria (o teste `AssinaturaMorreNaQuedaAbrupta` guarda isso com um
+   endpoint cru que desaparece sem despedida).
+
+O custo é O(N conexões) por publicação em vez de O(assinantes). Na escala real da biblioteca
+(dezenas a centenas de conexões, casamento sem alocar) isso é irrelevante, e trocá-lo por um
+terceiro nível de lock seria pagar complexidade de concorrência para comprar microssegundos.
+
+### 9.4 Curingas: por que recusar em vez de interpretar
+
+`#` só vale como último segmento e `*`/`#` só valem como segmento inteiro. `a.#.b` e
+`caixa*` são **recusados**, não reinterpretados: no primeiro caso as duas leituras possíveis
+de `#` dariam resultados diferentes para o mesmo filtro; no segundo, `caixa*` prometeria
+casamento parcial dentro do segmento, que este matcher não faz — e um filtro que casa nada
+em silêncio é o pior desfecho para quem está depurando. Comparação é byte a byte
+(sensível a caixa): não há *upcase* portátil para UTF-8, e um casamento dependente de locale
+seria pior que um sensível a caixa.
+
+### 9.5 Recusa assíncrona: reply de erro com corrId 0
+
+`Subscribe` é fire-and-forget (não há ack a esperar). Uma assinatura recusada pelo servidor
+— filtro inválido vindo de um peer artesanal, ou teto `MaxSubscriptionsPerClient` — seria
+**silêncio puro** no cliente: ele ficaria esperando mensagens que nunca viriam, sem saber por
+quê. Por isso o servidor devolve um reply de erro com `corrId 0`, que nenhum `Request` usa (a
+sequência do cliente começa em 1), e o cliente o traduz em `OnError`. A recusa aparece nos
+dois lados, e a conexão continua de pé.
+
+### 9.6 Reconexão: o buraco que existe e o que o fecha
+
+As assinaturas são **estado desejado do cliente**, não da sessão: vivem em `FSubs` e são
+reenviadas em cada sessão nova, dentro do `TryReopenSession`, **antes** de `OnConnected`
+disparar. Sem isso a reconexão automática devolveria uma conexão viva e muda — o servidor
+perdeu a lista de filtros junto com a conexão anterior (§9.3) e não há quem o lembre. O
+sintoma (mensagens que param de chegar depois de uma reconexão que o app nem viu) não se
+parece nada com a causa; é o `Resubscribe_AposReconexaoAutomatica` que guarda isso.
+
+O que **não** se recupera é a janela entre a queda e a reassinatura: publicação que passou
+ali está perdida. Isso é propriedade, não bug — e é a razão de o *retain* existir.
+
+### 9.7 Milestones
+
+| # | Milestone | Conteúdo | Status |
+|---|-----------|----------|--------|
+| P0 | `Pipes.Topics.pas` | nomes, curingas, envelope; testes unitários sem IO | concluído |
+| P1 | Servidor | kinds 4-6, assinatura por conexão, fanout, retain, tetos | concluído |
+| P2 | Cliente | `Subscribe`/`Unsubscribe`/`Publish`, replay na reconexão | concluído |
+| P3 | Integração | fanout, ciclo de vida, retain, recusas, `Stop` sob carga | concluído |
+| P4 | Sample + docs | `samples/PainelLoja` (três papéis num exe) | concluído |

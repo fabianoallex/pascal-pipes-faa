@@ -11,12 +11,20 @@ unit Pipes.Framing;
   Frame (header de 20 bytes, little-endian, + payload):
     offset 0  Magic    4 bytes  'NPF1' (sincronia + versao do protocolo)
     offset 4  Kind     1 byte   0=msg  1=request  2=reply  3=ping (reservado)
+                                4=subscribe  5=unsubscribe  6=publish
     offset 5  Flags    1 byte   bit 0 (PIPE_FLAG_ERROR): reply de erro — o
                                 payload e' a mensagem de erro em UTF-8
+                                bit 1 (PIPE_FLAG_RETAIN): publicacao a reter
     offset 6  Reserved 2 bytes  (0)
     offset 8  CorrId   8 bytes  correlation id (request/reply; 0 em msg)
     offset 16 Length   4 bytes  tamanho do payload
     offset 20 Payload  Length bytes (TBytes cru; texto = UTF-8)
+
+  Os kinds 4-6 (pub/sub) entraram depois, SEM mudar o magic: quem os recebe
+  numa versao anterior da lib para no proprio 'kind desconhecido' abaixo, com o
+  stream ainda em sincronia, e a conexao cai com EPipeProtocol em vez de
+  interpretar bytes errados. O nome do topico nao esta aqui e sim dentro do
+  payload, por essa mesma razao — ver o cabecalho de Pipes.Topics.
 
   Concorrencia: as funcoes desta unit nao tem estado compartilhado. Quem
   serializa escritas concorrentes no MESMO stream e' a camada de cima (write
@@ -35,9 +43,16 @@ const
   PIPE_FRAME_HEADER_SIZE = 20;
   /// Flags bit 0: reply de erro (payload = mensagem de erro em UTF-8).
   PIPE_FLAG_ERROR = $01;
+  /// Flags bit 1: em pfkPublish, o servidor deve RETER esta mensagem como
+  /// ultimo valor do topico e entrega-la a quem assinar depois. Corpo vazio
+  /// com este bit apaga o valor retido. Ignorado nos outros kinds.
+  PIPE_FLAG_RETAIN = $02;
 
 type
-  TPipeFrameKind = (pfkMessage = 0, pfkRequest = 1, pfkReply = 2, pfkPing = 3);
+  { pfkSubscribe/pfkUnsubscribe/pfkPublish carregam o nome do topico no INICIO
+    do payload (envelope de Pipes.Topics), nunca no header. }
+  TPipeFrameKind = (pfkMessage = 0, pfkRequest = 1, pfkReply = 2, pfkPing = 3,
+    pfkSubscribe = 4, pfkUnsubscribe = 5, pfkPublish = 6);
 
   TPipeFrame = record
     Kind: TPipeFrameKind;
@@ -47,6 +62,7 @@ type
     /// Payload interpretado como texto UTF-8.
     function PayloadAsText: string;
     function IsError: Boolean;
+    function IsRetain: Boolean;
     class function Msg(const APayload: TBytes): TPipeFrame; static;
     class function Request(ACorrId: UInt64; const APayload: TBytes): TPipeFrame; static;
     class function Reply(ACorrId: UInt64; const APayload: TBytes): TPipeFrame; static;
@@ -173,6 +189,11 @@ begin
   Result := (Flags and PIPE_FLAG_ERROR) <> 0;
 end;
 
+function TPipeFrame.IsRetain: Boolean;
+begin
+  Result := (Flags and PIPE_FLAG_RETAIN) <> 0;
+end;
+
 class function TPipeFrame.Msg(const APayload: TBytes): TPipeFrame;
 begin
   Result.Kind := pfkMessage;
@@ -257,7 +278,12 @@ begin
     raise EPipeProtocol.Create('magic invalido (stream fora de sincronia ou protocolo estranho)');
   LKind := LHeader[4];
   if LKind > Ord(High(TPipeFrameKind)) then
-    raise EPipeProtocol.CreateFmt('kind de frame desconhecido (%d)', [LKind]);
+    // Magic certo e kind alto normalmente significa peer falando uma versao
+    // MAIS NOVA do protocolo (foi assim que os kinds 4-6 do pub/sub entraram),
+    // e nao lixo na linha: vale dizer isso na mensagem, porque o diagnostico
+    // e' outro — atualizar um dos lados, em vez de procurar corrupcao de stream.
+    raise EPipeProtocol.CreateFmt('kind de frame desconhecido (%d): o peer ' +
+      'provavelmente fala uma versao mais nova do protocolo', [LKind]);
   LLen := GetU32LE(LHeader, 16);
   if LLen > AMaxPayload then
     raise EPipeProtocol.CreateFmt('payload de %u bytes excede o maximo configurado (%u)',

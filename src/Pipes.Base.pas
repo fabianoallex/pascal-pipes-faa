@@ -137,6 +137,12 @@ type
     procedure DispatchConnEvent(AEvent: TPipeConnectionEvent;
       AConnId: TPipeConnectionId);
     procedure DispatchError(AConnId: TPipeConnectionId; const AMsg: string);
+    /// Eventos de pub/sub (OnTopicMessage no cliente, OnPublish no servidor).
+    /// O handler vem por parametro porque o campo vive no descendente.
+    procedure DispatchTopicEvent(AEvent: TPipeTopicEvent;
+      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+    procedure DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
+      AConnId: TPipeConnectionId; const AFilter: string);
   public
     constructor Create(const AAddress: string;
       ATransport: TPipeTransport = ptLocal);
@@ -178,7 +184,7 @@ type
 implementation
 
 type
-  TPipeQueuedKind = (qeMessage, qeConn, qeError);
+  TPipeQueuedKind = (qeMessage, qeConn, qeError, qeTopic, qeSubscription);
 
   { Evento enfileirado na MAIN THREAD (pdmMainThread) via TThread.Queue.
     Nao conta em FInFlight (drain a partir da main thread = auto-espera);
@@ -191,9 +197,12 @@ type
     FMsgCb: TPipeMessageEvent;
     FConnCb: TPipeConnectionEvent;
     FErrCb: TPipeErrorEvent;
+    FTopicCb: TPipeTopicEvent;
+    FSubCb: TPipeSubscriptionEvent;
     FConnId: TPipeConnectionId;
     FData: TBytes;
     FMsg: string;
+    FTopic: string;
   public
     constructor Create(AOwner: TPipeBase; AKind: TPipeQueuedKind;
       AConnId: TPipeConnectionId);
@@ -234,6 +243,31 @@ type
   public
     constructor Create(AOwner: TPipeBase; ACallback: TPipeErrorEvent;
       AConnId: TPipeConnectionId; const AMsg: string);
+    procedure Execute; override;
+  end;
+
+  TPipeTopicWork = class(TPipeWorkItem)
+  private
+    FOwner: TPipeBase;
+    FCallback: TPipeTopicEvent;
+    FConnId: TPipeConnectionId;
+    FTopic: string;
+    FData: TBytes;
+  public
+    constructor Create(AOwner: TPipeBase; ACallback: TPipeTopicEvent;
+      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+    procedure Execute; override;
+  end;
+
+  TPipeSubscriptionWork = class(TPipeWorkItem)
+  private
+    FOwner: TPipeBase;
+    FCallback: TPipeSubscriptionEvent;
+    FConnId: TPipeConnectionId;
+    FFilter: string;
+  public
+    constructor Create(AOwner: TPipeBase; ACallback: TPipeSubscriptionEvent;
+      AConnId: TPipeConnectionId; const AFilter: string);
     procedure Execute; override;
   end;
 
@@ -286,9 +320,11 @@ begin
     if FGuard.IsValid then
       try
         case FKind of
-          qeMessage: FMsgCb(FOwner, FConnId, FData);
-          qeConn:    FConnCb(FOwner, FConnId);
-          qeError:   FErrCb(FOwner, FConnId, FMsg);
+          qeMessage:      FMsgCb(FOwner, FConnId, FData);
+          qeConn:         FConnCb(FOwner, FConnId);
+          qeError:        FErrCb(FOwner, FConnId, FMsg);
+          qeTopic:        FTopicCb(FOwner, FConnId, FTopic, FData);
+          qeSubscription: FSubCb(FOwner, FConnId, FTopic);
         end;
       except
         // mesmo contrato do pool: excecao de callback nao derruba o chamador
@@ -357,6 +393,51 @@ procedure TPipeErrorWork.Execute;
 begin
   try
     FCallback(FOwner, FConnId, FMsg);
+  finally
+    FOwner.DecInFlight;
+  end;
+end;
+
+{ TPipeTopicWork }
+
+constructor TPipeTopicWork.Create(AOwner: TPipeBase;
+  ACallback: TPipeTopicEvent; AConnId: TPipeConnectionId; const ATopic: string;
+  const AData: TBytes);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FCallback := ACallback;
+  FConnId := AConnId;
+  FTopic := ATopic;
+  FData := AData;
+end;
+
+procedure TPipeTopicWork.Execute;
+begin
+  try
+    FCallback(FOwner, FConnId, FTopic, FData);
+  finally
+    FOwner.DecInFlight;
+  end;
+end;
+
+{ TPipeSubscriptionWork }
+
+constructor TPipeSubscriptionWork.Create(AOwner: TPipeBase;
+  ACallback: TPipeSubscriptionEvent; AConnId: TPipeConnectionId;
+  const AFilter: string);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FCallback := ACallback;
+  FConnId := AConnId;
+  FFilter := AFilter;
+end;
+
+procedure TPipeSubscriptionWork.Execute;
+begin
+  try
+    FCallback(FOwner, FConnId, FFilter);
   finally
     FOwner.DecInFlight;
   end;
@@ -569,6 +650,45 @@ begin
   end;
   IncInFlight;
   EventPool.Queue(TPipeErrorWork.Create(Self, LCallback, AConnId, AMsg));
+end;
+
+procedure TPipeBase.DispatchTopicEvent(AEvent: TPipeTopicEvent;
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes);
+var
+  LQueued: TPipeQueuedEvent;
+begin
+  if not Assigned(AEvent) then
+    Exit;
+  if FDispatchMode = pdmMainThread then
+  begin
+    LQueued := TPipeQueuedEvent.Create(Self, qeTopic, AConnId);
+    LQueued.FTopicCb := AEvent;
+    LQueued.FTopic := ATopic;
+    LQueued.FData := AData;
+    TThread.Queue(nil, LQueued.Run);
+    Exit;
+  end;
+  IncInFlight;
+  EventPool.Queue(TPipeTopicWork.Create(Self, AEvent, AConnId, ATopic, AData));
+end;
+
+procedure TPipeBase.DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
+  AConnId: TPipeConnectionId; const AFilter: string);
+var
+  LQueued: TPipeQueuedEvent;
+begin
+  if not Assigned(AEvent) then
+    Exit;
+  if FDispatchMode = pdmMainThread then
+  begin
+    LQueued := TPipeQueuedEvent.Create(Self, qeSubscription, AConnId);
+    LQueued.FSubCb := AEvent;
+    LQueued.FTopic := AFilter;
+    TThread.Queue(nil, LQueued.Run);
+    Exit;
+  end;
+  IncInFlight;
+  EventPool.Queue(TPipeSubscriptionWork.Create(Self, AEvent, AConnId, AFilter));
 end;
 
 end.

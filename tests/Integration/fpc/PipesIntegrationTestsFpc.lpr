@@ -19,6 +19,7 @@ uses
   Classes, consoletestrunner, testregistry,
   Pipes.TransportTests,
   Pipes.EndToEndTests,
+  Pipes.PubSubTests,
   Pipes.StressTests,
   Pipes.TlsTests;
 

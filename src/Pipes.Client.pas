@@ -32,6 +32,20 @@ unit Pipes.Client;
     seguida (mTLS no Schannel valida a cadeia depois do handshake) faz cada
     ciclo terminar com a thread saindo e ReaderFinished criando uma NOVA. Um
     contador por thread reiniciaria a cada ciclo e nunca espacaria nada.
+  - Pub/sub: FSubs guarda os filtros assinados como ESTADO DESEJADO do
+    cliente, nao como estado da sessao. Subscribe/Unsubscribe funcionam
+    desconectado e nao levantam por causa disso; o que existe em FSubs e'
+    reenviado ao servidor em CADA sessao nova (Connect e cada reconexao), no
+    ReplaySubscriptions, ANTES de OnConnected — assim um handler de OnConnected
+    ja encontra as assinaturas restauradas em vez de precisar refaze-las.
+    Sem isso, uma reconexao automatica devolveria uma conexao viva e muda: o
+    servidor perdeu a lista de filtros junto com a conexao anterior (ela mora
+    na conexao, ver Pipes.Server) e nao ha quem o lembre.
+    O que NAO da para recuperar e' o intervalo entre a queda e o resubscribe:
+    publicacao que passou ali esta perdida, e nao ha fila que a traga. Quem
+    precisa do estado corrente publica com retain no servidor.
+    Ordem de locks: FSubLock e' o mais interno da dupla — snapshot dos filtros
+    sob ele, envio DEPOIS de solta-lo, nunca FWriteLock por dentro dele.
   - MaxReconnectAttempts vive no mesmo lugar e pela mesma razao: conta TODA
     tentativa de reabrir, e zera quando uma sessao dura mais que
     ReconnectDelayMs. Assim o teto tambem alcanca o par que aceita e derruba
@@ -50,6 +64,7 @@ uses
   Pipes.Types,
   Pipes.Threading,
   Pipes.Framing,
+  Pipes.Topics,
   Pipes.Transport,
   Pipes.Base;
 
@@ -91,9 +106,19 @@ type
     // Atomico: 1 quando MaxReconnectAttempts foi atingido. Impede que
     // ReaderFinished crie uma thread nova e ressuscite a reconexao.
     FGaveUp: Integer;
+    // --- pub/sub ---
+    FSubLock: TCriticalSection;
+    FSubs: TList<string>;      // filtros assinados (estado desejado)
+    FOnTopicMessage: TPipeTopicEvent;
     // Chamados pelas threads internas (mesma unit):
     procedure ReaderFinished(const AError: string);
     procedure HandleFrame(const AFrame: TPipeFrame);
+    /// Reenvia todos os filtros de FSubs ao servidor. Chamada na instalacao de
+    /// CADA sessao (Connect e reconexao), antes de OnConnected.
+    procedure ReplaySubscriptions;
+    /// Envia um frame de controle de assinatura se houver sessao; silencioso se
+    /// nao houver (o replay da proxima sessao cobre).
+    procedure SendControlFrame(const AFrame: TPipeFrame);
     procedure NotifyDisconnectedOnce;
     procedure ResolveRpc(const AFrame: TPipeFrame);
     procedure FailPendingRpc;
@@ -121,6 +146,38 @@ type
     /// EPipeClosed se a conexao caiu no meio.
     function Request(const AData: TBytes; ATimeoutMs: Cardinal = 30000): TBytes;
     function RequestText(const AText: string; ATimeoutMs: Cardinal = 30000): string;
+    // --- pub/sub ---------------------------------------------------------
+    /// Passa a receber, em OnTopicMessage, as publicacoes que AFilter alcanca.
+    /// O filtro e' hierarquico e aceita curingas: 'caixa.3.status',
+    /// 'caixa.*.status' (um segmento), 'caixa.#' (o resto). EPipeError se o
+    /// filtro for invalido — erro de programacao, aparece na hora.
+    ///
+    /// Funciona DESCONECTADO: registra a intencao e a aplica quando houver
+    /// sessao. E' reaplicada a cada reconexao automatica, sem o app precisar
+    /// refazer nada no OnConnected. Assinar duas vezes o mesmo filtro nao muda
+    /// nada (nem duplica entrega).
+    ///
+    /// Nao ha confirmacao a esperar: se o servidor recusar (filtro invalido ou
+    /// teto de assinaturas), a recusa chega em OnError, nao aqui.
+    procedure Subscribe(const AFilter: string);
+    /// Deixa de receber o que AFilter alcanca. Silencioso se nao estava
+    /// assinado; tambem funciona desconectado.
+    procedure Unsubscribe(const AFilter: string);
+    /// Filtros atualmente assinados (o estado desejado, nao o confirmado).
+    function Subscriptions: TArray<string>;
+    /// Publica em ATopic. Nome literal, sem curinga; EPipeError se invalido,
+    /// EPipeClosed se nao ha sessao (diferente de Subscribe: publicar e' um
+    /// acontecimento com hora, nao uma intencao que se guarda para depois).
+    ///
+    /// Quem recebe depende do servidor: com RelayClientPublish ligado, os
+    /// outros assinantes daquele topico; desligado (o padrao), so' o proprio
+    /// servidor, em OnPublish.
+    procedure Publish(const ATopic: string; const AData: TBytes);
+    procedure PublishText(const ATopic, AText: string);
+    /// Chegou uma publicacao que casa com algum filtro assinado. AConnId e' 0
+    /// (o cliente tem uma conexao so').
+    property OnTopicMessage: TPipeTopicEvent
+      read FOnTopicMessage write FOnTopicMessage;
     property Connected: Boolean read GetActive;
     property AutoReconnect: Boolean read FAutoReconnect write FAutoReconnect;
     property ReconnectDelayMs: Cardinal read FReconnectDelayMs write FReconnectDelayMs;
@@ -265,6 +322,8 @@ begin
   FWriteLock := TCriticalSection.Create;
   FRpcLock := TCriticalSection.Create;
   FRpcSlots := TDictionary<UInt64, TObject>.Create;
+  FSubLock := TCriticalSection.Create;
+  FSubs := TList<string>.Create;
   FReconnectAbort := TEvent.Create(nil, True, False, ''); // manual-reset
   FReconnectDelayMs := 2000;
 end;
@@ -278,6 +337,8 @@ begin
   FRpcSlots.Free; // vazio: cada Request remove e libera o proprio slot
   FRpcLock.Free;
   FWriteLock.Free;
+  FSubs.Free;
+  FSubLock.Free;
   FReconnectAbort.Free;
   inherited;
 end;
@@ -331,6 +392,9 @@ begin
   PipeAtomicSet(FDisconnectNotified, 0);
   FConnected := True;
   FReader := TPipeClientReaderThread.Create(Self);
+  // Antes de OnConnected: quem assinou algo antes do Connect encontra as
+  // assinaturas ja enviadas quando o proprio handler rodar.
+  ReplaySubscriptions;
   DispatchConnEvent(FOnConnected, 0);
 end;
 
@@ -468,6 +532,11 @@ begin
   FConnected := True;
   FSessionUpTick := PipeTickMs; // marca para o criterio de sessao duravel
   FReader := TPipeClientReaderThread.Create(Self);
+  // A conexao anterior levou consigo a lista de filtros do lado do servidor:
+  // sem este replay a sessao nova voltaria viva e muda, e o sintoma (mensagens
+  // que param de chegar depois de uma reconexao que o app nem viu) seria
+  // atribuido a qualquer coisa menos a isto.
+  ReplaySubscriptions;
   DispatchConnEvent(FOnConnected, 0);
   // So DEPOIS de a sessao estar completa (FReader atribuido): e' este flag
   // que libera o WaitReconnectDone do Disconnect — zera-lo antes deixaria o
@@ -497,15 +566,151 @@ begin
 end;
 
 procedure TPipeClient.HandleFrame(const AFrame: TPipeFrame);
+var
+  LTopic: string;
+  LBody: TBytes;
 begin
   case AFrame.Kind of
     pfkMessage:
       DispatchMessage(0, AFrame.Payload);
     pfkReply:
-      ResolveRpc(AFrame); // sob FRpcLock, sem codigo de usuario: pode rodar aqui
-    pfkPing, pfkRequest:
-      ; // ping: reservado; request: servidor -> cliente fora da v1
+      // corrId 0 nunca pertence a um Request (a sequencia comeca em 1): e' uma
+      // recusa assincrona do servidor — assinatura invalida, teto de
+      // assinaturas — e o unico lugar sensato para ela e' OnError.
+      if (AFrame.CorrId = 0) and AFrame.IsError then
+        DispatchError(0, AFrame.PayloadAsText)
+      else
+        ResolveRpc(AFrame); // sob FRpcLock, sem codigo de usuario: roda aqui
+    pfkPublish:
+      begin
+        // Decodificar e' codigo puro; o handler do usuario vai para o pool como
+        // qualquer outro evento.
+        PipeDecodeTopicPayload(AFrame.Payload, LTopic, LBody);
+        DispatchTopicEvent(FOnTopicMessage, 0, LTopic, LBody);
+      end;
+    pfkPing, pfkRequest, pfkSubscribe, pfkUnsubscribe:
+      ; // ping: reservado; os demais nao existem no sentido servidor -> cliente
   end;
+end;
+
+{ Busca explicita, em vez de TList<string>.IndexOf: o comparador default de
+  string nao tem a mesma sensibilidade a caixa nos dois compiladores, e topico e'
+  comparado byte a byte (ver Pipes.Topics). Gemea da de Pipes.Server. }
+function IndexOfFilter(AList: TList<string>; const AFilter: string): Integer;
+var
+  I: Integer;
+begin
+  Result := -1;
+  for I := 0 to AList.Count - 1 do
+    if AList[I] = AFilter then
+      Exit(I);
+end;
+
+procedure TPipeClient.SendControlFrame(const AFrame: TPipeFrame);
+begin
+  FWriteLock.Enter;
+  try
+    if (not FConnected) or (FStream = nil) then
+      Exit; // sem sessao: o replay da proxima cobre
+    try
+      PipeWriteFrame(FStream, AFrame, MaxMessageSize);
+    except
+      // Escrita falhou = sessao morrendo. Nao levanta: o reader esta a ponto de
+      // notificar a queda, e o filtro (que ja esta em FSubs) volta no replay da
+      // proxima sessao. Levantar aqui obrigaria todo Subscribe a um try/except
+      // que nao teria nada de util a fazer.
+    end;
+  finally
+    FWriteLock.Leave; // no finally: o Exit acima tambem passa por aqui
+  end;
+end;
+
+procedure TPipeClient.ReplaySubscriptions;
+var
+  LFilters: TArray<string>;
+  I: Integer;
+begin
+  // Snapshot sob FSubLock e envio DEPOIS de solta-lo: FSubLock nunca contem
+  // FWriteLock por dentro (ver o cabecalho da unit).
+  FSubLock.Enter;
+  try
+    SetLength(LFilters, FSubs.Count);
+    for I := 0 to FSubs.Count - 1 do
+      LFilters[I] := FSubs[I];
+  finally
+    FSubLock.Leave;
+  end;
+  for I := 0 to High(LFilters) do
+    SendControlFrame(PipeSubscribeFrame(LFilters[I]));
+end;
+
+procedure TPipeClient.Subscribe(const AFilter: string);
+var
+  LNovo: Boolean;
+begin
+  if not PipeIsValidTopicFilter(AFilter) then
+    raise EPipeError.CreateFmt('filtro de assinatura invalido: %s', [AFilter]);
+  FSubLock.Enter;
+  try
+    LNovo := IndexOfFilter(FSubs, AFilter) < 0;
+    if LNovo then
+      FSubs.Add(AFilter);
+  finally
+    FSubLock.Leave;
+  end;
+  if LNovo then
+    SendControlFrame(PipeSubscribeFrame(AFilter));
+end;
+
+procedure TPipeClient.Unsubscribe(const AFilter: string);
+var
+  LIdx: Integer;
+begin
+  FSubLock.Enter;
+  try
+    LIdx := IndexOfFilter(FSubs, AFilter);
+    if LIdx >= 0 then
+      FSubs.Delete(LIdx);
+  finally
+    FSubLock.Leave;
+  end;
+  if LIdx >= 0 then
+    SendControlFrame(PipeUnsubscribeFrame(AFilter));
+end;
+
+function TPipeClient.Subscriptions: TArray<string>;
+var
+  I: Integer;
+begin
+  Result := nil; // silencia o aviso do FPC sobre Result gerenciado nao iniciado
+  FSubLock.Enter;
+  try
+    SetLength(Result, FSubs.Count);
+    for I := 0 to FSubs.Count - 1 do
+      Result[I] := FSubs[I];
+  finally
+    FSubLock.Leave;
+  end;
+end;
+
+procedure TPipeClient.Publish(const ATopic: string; const AData: TBytes);
+begin
+  if not PipeIsValidTopic(ATopic) then
+    raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [ATopic]);
+  FWriteLock.Enter;
+  try
+    if (not FConnected) or (FStream = nil) then
+      raise EPipeClosed.Create('cliente nao esta conectado');
+    PipeWriteFrame(FStream, PipePublishFrame(ATopic, AData, False),
+      MaxMessageSize);
+  finally
+    FWriteLock.Leave;
+  end;
+end;
+
+procedure TPipeClient.PublishText(const ATopic, AText: string);
+begin
+  Publish(ATopic, PipeUtf8Encode(AText));
 end;
 
 procedure TPipeClient.ResolveRpc(const AFrame: TPipeFrame);

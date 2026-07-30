@@ -19,8 +19,10 @@ uses
   Pipes.Base in '..\..\src\Pipes.Base.pas',
   Pipes.Server in '..\..\src\Pipes.Server.pas',
   Pipes.Client in '..\..\src\Pipes.Client.pas',
+  Pipes.Topics in '..\..\src\Pipes.Topics.pas',
   Pipes.TransportTests in 'Pipes.TransportTests.pas',
   Pipes.EndToEndTests in 'Pipes.EndToEndTests.pas',
+  Pipes.PubSubTests in 'Pipes.PubSubTests.pas',
   Pipes.StressTests in 'Pipes.StressTests.pas',
   Pipes.TlsTests in 'Pipes.TlsTests.pas';
 
