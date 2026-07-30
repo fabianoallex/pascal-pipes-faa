@@ -176,6 +176,12 @@ type
     procedure PublishText(const ATopic, AText: string);
     /// Chegou uma publicacao que casa com algum filtro assinado. AConnId e' 0
     /// (o cliente tem uma conexao so').
+    ///
+    /// ARetained = True significa "isto nao aconteceu agora": e' o valor que o
+    /// servidor guardava do topico, entregue porque a assinatura acabou de ser
+    /// feita. Publicacao ao vivo chega sempre False — inclusive quando o
+    /// publicador pediu retencao. Use para nao tratar catch-up como evento
+    /// (nao toque a campainha, nao conte como venda, so' pinte o estado).
     property OnTopicMessage: TPipeTopicEvent
       read FOnTopicMessage write FOnTopicMessage;
     property Connected: Boolean read GetActive;
@@ -586,7 +592,9 @@ begin
         // Decodificar e' codigo puro; o handler do usuario vai para o pool como
         // qualquer outro evento.
         PipeDecodeTopicPayload(AFrame.Payload, LTopic, LBody);
-        DispatchTopicEvent(FOnTopicMessage, 0, LTopic, LBody);
+        // IsRetain aqui responde "isto e' historico?": so' o catch-up de
+        // assinatura liga esse bit (ver TPipeServer.FanOut).
+        DispatchTopicEvent(FOnTopicMessage, 0, LTopic, LBody, AFrame.IsRetain);
       end;
     pfkPing, pfkRequest, pfkSubscribe, pfkUnsubscribe:
       ; // ping: reservado; os demais nao existem no sentido servidor -> cliente

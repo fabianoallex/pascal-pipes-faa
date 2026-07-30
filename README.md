@@ -286,7 +286,7 @@ Server.Publish('caixa.3.status', dados);              // só quem assinou o assu
 Server.PublishText('loja.tabela.versao', 'v42', True); // True = retém o último valor
 
 // --- cliente ---
-Client.OnTopicMessage := Self.Recebeu;   // (Sender; ConnId; const ATopic; const AData)
+Client.OnTopicMessage := Self.Recebeu;   // (...; const ATopic; const AData; ARetained)
 Client.Subscribe('caixa.*.status');      // um segmento no lugar do '*'
 Client.Subscribe('loja.#');              // tudo abaixo de 'loja'
 Client.PublishText('caixa.3.status', 'ocupado');
@@ -330,6 +330,15 @@ vazio e `ARetain := True` apaga o valor retido. O teto é `MaxRetained` (256 por
 além dele o tópico retido mais antigo sai). Mensagem que precise sobreviver ao processo, ou
 ser entregue com garantia, pede uma fila de verdade — para isso existe o
 [pascal-amqp-faa](https://github.com/fabianoallex/pascal-amqp-faa).
+
+O último parâmetro de `OnTopicMessage`, **`ARetained`**, responde a pergunta que o
+consumidor precisa fazer: *isto acabou de acontecer, ou é o valor que já vigorava?*
+`True` só em catch-up de assinatura; uma publicação ao vivo chega **sempre** `False`,
+mesmo quando o publicador pediu retenção (semântica do MQTT, e pela mesma razão: quem
+recebe quer saber se a mensagem é notícia ou histórico, não o que o remetente pediu ao
+servidor). Use para não tocar campainha nem contar venda duas vezes ao reconectar. Do lado
+do servidor, o `ARetained` de `OnPublish` tem o outro sentido — o único possível ali: o
+cliente **pediu** para reter.
 
 **Reconexão.** As assinaturas são estado desejado do cliente, não da sessão: `Subscribe`
 funciona desconectado, e tudo é reenviado ao servidor a cada nova sessão **antes** de
@@ -401,6 +410,7 @@ TPipeServer
   RelayClientPublish                     // False: cliente não injeta nos outros
   MaxSubscriptionsPerClient; MaxRetained
   OnPublish: TPipeTopicEvent             // notificação: o fanout já ocorreu
+                                         // ARetained aqui = o cliente PEDIU para reter
   OnSubscribe/OnUnsubscribe: TPipeSubscriptionEvent  // idem; negue com DisconnectClient
   DisconnectClient(ConnId)               // assíncrono e idempotente
   ClientCount; ClientIds                 // só conexões ESTABELECIDAS
@@ -416,7 +426,8 @@ TPipeClient
   Subscribe/Unsubscribe(Filtro)          // funciona desconectado; refeito na reconexão
   Subscriptions                          // filtros assinados (estado desejado)
   Publish/PublishText(Topico, ...)       // EPipeClosed sem sessão
-  OnTopicMessage: TPipeTopicEvent        // (Sender; ConnId; const ATopic; const AData)
+  OnTopicMessage: TPipeTopicEvent        // (...; ATopic; AData; ARetained)
+                                         // ARetained: True só em catch-up de assinatura
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
   OnConnected/OnDisconnected: TPipeConnectionEvent
 
@@ -596,6 +607,26 @@ marcados `deprecated` só depois que samples e testes migrarem.
   de cada tópico, não histórico. O caixa, com `AutoReconnect`, mostra os dois lados da
   moeda: publicar sem sessão **levanta** (ele registra e o próximo tick tenta de novo),
   enquanto as **assinaturas** voltam sozinhas, sem nada no `OnConnected`.
+- **MonitorTopicos** — o pub/sub com **UI** (VCL no Delphi, LCL no Lazarus, mesmo fonte) e,
+  na prática, uma **ferramenta**: serve para depurar o pub/sub de qualquer app feito com a
+  lib. Uma janela `Hospedar`, as outras `Entrar`, mesmo combo `ptLocal`/`ptTcp` dos samples
+  de jogo. Três coisas do recurso só ficam visíveis aqui:
+  **assinatura manipulada ao vivo** (assine e cancele com o app rodando; melhor, monte a
+  lista *desconectado* — `Subscribe` é estado desejado — conecte depois e ela já vale);
+  **o efeito do `RelayClientPublish` num clique** (duas janelas cliente assinando o mesmo
+  tópico: marque a caixa no hospedeiro e o que uma publica alcança a outra, desmarque e a
+  entrega para na hora — é a decisão central do recurso, e a property não tem
+  `EnsureInactive` justamente para permitir esse experimento);
+  e **o caminho da recusa**, que nenhum outro sample exercita (baixe `MaxSubscriptions` e
+  veja a assinatura ser recusada com a mensagem aparecendo nos **dois** lados, conexão de
+  pé; digite `caixa*` e veja `EPipeError` na hora, antes de virar frame).
+  A lista de recebidas carimba **`ret`** no que veio do cache de retidos, o que torna
+  visível a diferença entre *desenhar o estado que já existia* e *acompanhar o que
+  acontece*. Hospedando, o painel de assinaturas mostra **quem assinou o quê**
+  (`ClientSubscriptions` por conexão) e a contagem de `SubscriberCount` do tópico do campo
+  Publicar — a visão do roteador; como cliente, mostra as próprias, editáveis. Roteiro de
+  2 minutos no cabeçalho de
+  [`MonitorTopicos.dpr`](samples/MonitorTopicos/MonitorTopicos.dpr).
 
 ## Testes
 
@@ -653,6 +684,7 @@ packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (jogo de turno), PingPong (jogo em tempo real),
                      PainelLoja (pub/sub por topico, tres papeis num exe),
+                     MonitorTopicos (explorador de pub/sub com UI VCL/LCL),
                      PdvDualScreen (Operador + Cliente),
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
                      GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo)

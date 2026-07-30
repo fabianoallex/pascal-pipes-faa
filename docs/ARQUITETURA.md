@@ -473,7 +473,24 @@ parece nada com a causa; é o `Resubscribe_AposReconexaoAutomatica` que guarda i
 O que **não** se recupera é a janela entre a queda e a reassinatura: publicação que passou
 ali está perdida. Isso é propriedade, não bug — e é a razão de o *retain* existir.
 
-### 9.7 Milestones
+### 9.7 O bit de retenção no fio responde ao CONSUMIDOR, não ao remetente
+
+`PIPE_FLAG_RETAIN` sai ligado **apenas** no catch-up de assinatura (`SendRetained`); o fanout
+ao vivo o desliga sempre, mesmo quando o publicador pediu retenção. Chega ao app como
+`ARetained` em `OnTopicMessage`, e a pergunta que ele responde é a do consumidor — *isto
+acabou de acontecer, ou é o valor que já vigorava?* — e não a do remetente, que já sabe o
+que pediu.
+
+Propagar o bit adiante no fanout seria a leitura errada e um bug esperando: o app trataria a
+venda de agora como catch-up (ou o contrário) e contaria duas vezes, ou nenhuma. É a mesma
+regra do MQTT, e por isso mesmo: um app que já sabe MQTT não é surpreendido aqui. O teste
+`Retido_AoVivoNaoVemMarcado` guarda os dois lados — a publicação ao vivo *com* retain chega
+sem marca, e o valor fica guardado do mesmo jeito para o próximo assinante.
+
+Do lado do servidor, o mesmo parâmetro em `OnPublish` tem o único sentido possível ali: o
+cliente **pediu** para reter (pedido atendido só com `RelayClientPublish` ligado).
+
+### 9.8 Milestones
 
 | # | Milestone | Conteúdo | Status |
 |---|-----------|----------|--------|
@@ -481,4 +498,5 @@ ali está perdida. Isso é propriedade, não bug — e é a razão de o *retain*
 | P1 | Servidor | kinds 4-6, assinatura por conexão, fanout, retain, tetos | concluído |
 | P2 | Cliente | `Subscribe`/`Unsubscribe`/`Publish`, replay na reconexão | concluído |
 | P3 | Integração | fanout, ciclo de vida, retain, recusas, `Stop` sob carga | concluído |
-| P4 | Sample + docs | `samples/PainelLoja` (três papéis num exe) | concluído |
+| P4 | Sample + docs | `samples/PainelLoja` (console, três papéis num exe) | concluído |
+| P5 | `ARetained` + sample GUI | bit de retenção na API (§9.7) e `samples/MonitorTopicos` (VCL/LCL) | concluído |
