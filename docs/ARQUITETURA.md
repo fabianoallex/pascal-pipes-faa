@@ -581,3 +581,79 @@ uma sessão ociosa nos dois sentidos sobrevive ao prazo que a derrubaria em `ptT
 | H2 | Servidor | ticks por conexão, `StartHeartbeat`/`StopHeartbeat`/`HeartbeatTick`, `CloseAbort` no timeout | concluído |
 | H3 | Cliente | heartbeat por sessão (Connect + cada reconexão), mesmos pontos de join do `FReader` | concluído |
 | H4 | Testes | zumbi detectado nos dois sentidos, `ptLocal` imune, `Stop`/`Disconnect` <2s com heartbeat ativo | concluído |
+
+## 11. Métricas/observabilidade (`Stats`/`ConnectionStats`)
+
+Veio logo depois do heartbeat, do mesmo diagnóstico: o alvo de produção (PDV de loja) precisa
+de visibilidade sem log verboso — "está fluindo tráfego?", "tem request lento?", "quantos
+clientes de verdade?" — sem instrumentar a aplicação por fora. Ao contrário do heartbeat,
+isto vale para **qualquer transporte** (`ptLocal` incluso: um Named Pipe também se beneficia
+de saber quantos bytes passaram).
+
+### 11.1 Snapshot, não evento — o mesmo molde de `ClientCount`
+
+A lib já resolveu essa decisão de design antes: `ClientCount`, `ClientIds`, `Subscriptions`,
+`SubscriberCount`, `TryClientIdentity` são todos **snapshots sob demanda** — o app pergunta
+quando quer saber, a lib não empurra nada periodicamente. `Stats`/`ConnectionStats` seguem o
+mesmo molde, em vez de um `OnStats` com timer e `DispatchMode` próprios: menos API nova, zero
+mecanismo de despacho a inventar. Quem quer uma amostra periódica usa o próprio timer da
+aplicação chamando `Stats` quando convier.
+
+### 11.2 Sempre ativos, sem opt-in
+
+Ao contrário do heartbeat (que só existe com `HeartbeatIntervalMs` configurado), os
+contadores de bytes/mensagens custam um `PipeAtomicAdd64` por frame — nanossegundos, a mesma
+ordem de grandeza que `FInFlight` já paga em todo callback despachado. Não há property
+`EnableStats`: o custo é baixo demais para justificar mais uma decisão de configuração, e uma
+métrica que só existe às vezes é a fonte clássica de "por que não vi isso no painel".
+
+### 11.3 Por conexão morre com ela; agregado do servidor sobrevive
+
+`TPipeConnStats` (por conexão, via `ConnectionStats`) morre com a conexão — como `FSubs`, ao
+contrário de `TPipePeerIdentity` (que sobrevive de propósito para responder "quem saiu?" em
+`OnClientDisconnected`, §3). `TPipeServerStats` (via `Stats`) é o oposto: cumulativo desde o
+`Listen`, sobrevive a conexões que já caíram — é o número para um health-check ou painel de
+operação ("quanto tráfego este processo já moveu"), não para depurar UMA conexão específica.
+`TotalConnectionsAccepted` só conta conexões **estabelecidas**, mesmo critério de
+`ClientCount`/`ClientIds`: uma conexão recusada no meio do handshake mTLS não infla o número.
+
+### 11.4 `PoolQueueDepth` pode mentir — e isso está documentado, não escondido
+
+Em `pdmPool` (o padrão), `EventPool` resolve para o pool **global** do processo
+(`Pipes.Threading.PipePool`), compartilhado por todo `TPipeServer`/`TPipeClient` da mesma
+aplicação. `Server.Stats.PoolQueueDepth` reflete o backlog de TODO MUNDO nesse caso, não só
+deste servidor — só é exclusivo dele em `pdmSerialized` (pool privado de 1 worker). A
+alternativa — filtrar por dono no pool global — exigiria linkar cada item de trabalho ao
+servidor que o enfileirou, complexidade real para um número que já existe barato do jeito
+simples. A opção foi documentar a ressalva no XMLDoc da property em vez de resolver o
+problema errado.
+
+### 11.5 Latência de Request: só o caminho de sucesso conta
+
+`TPipeClient.Request` já sabe quando começou (antes de escrever) e quando terminou (o
+`WaitFor` do slot RPC). `AvgRequestLatencyMs`/`MaxRequestLatencyMs` só são atualizados no
+`if LSlot.Ok then` — nunca em timeout ou reply de erro. A razão: "quanto tempo o servidor
+levou para responder" e "o servidor não respondeu" são perguntas diferentes, e somar um
+timeout de 30s à média de latência transformaria um problema de disponibilidade num número
+de performance mentiroso. `MaxRequestLatencyMs` usa um CAS loop (não um `PipeAtomicAdd64`,
+que soma — aqui a operação é "troca só se for maior"), pela mesma razão que motivou
+`PipeAtomicAdd64` existir: não há um `InterlockedMax64` portátil nos dois compiladores.
+
+### 11.6 Contadores do cliente são por SESSÃO, sem cumulativo entre sessões
+
+Mesma decisão de `FLastReadTick`/`FLastWriteTick` do heartbeat: zeram em `Connect` e em cada
+`TryReopenSession` bem-sucedido (`ResetSessionStats`, chamado incondicionalmente — ao
+contrário de `StartHeartbeat`, não depende de `HeartbeatIntervalMs`). Decisão explícita do
+usuário ao aprovar o design: **sem** um segundo par de campos "desde sempre" ao lado do
+por-sessão — o cliente é uma conexão de cada vez, e `ReconnectAttempts` já responde "por que a
+sessão trocou" melhor do que um total histórico de bytes responderia.
+
+### 11.7 Milestones
+
+| # | Milestone | Conteúdo | Status |
+|---|-----------|----------|--------|
+| S0 | `Pipes.Threading` | `PipeAtomicCompareExchange64`/`PipeAtomicAdd64` (CAS loop); `TPipeThreadPool.QueueDepth` | concluído |
+| S1 | `Pipes.Types` | `TPipeConnStats`/`TPipeServerStats`/`TPipeClientStats` | concluído |
+| S2 | Servidor | contadores por conexão e agregados, `Stats`/`ConnectionStats` (padrão Try* de `TryClientIdentity`) | concluído |
+| S3 | Cliente | contadores por sessão, latência de Request (só sucesso), `Stats` | concluído |
+| S4 | Testes | bytes/mensagens batem com o enviado, `ConnectionStats` de conexão inexistente, timeout excluído da latência | concluído |

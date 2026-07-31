@@ -183,6 +183,7 @@
         <DCCReference Include="Pipes.StressTests.pas"/>
         <DCCReference Include="Pipes.TlsTests.pas"/>
         <DCCReference Include="Pipes.HeartbeatTests.pas"/>
+        <DCCReference Include="Pipes.StatsTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

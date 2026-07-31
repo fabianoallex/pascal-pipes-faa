@@ -55,6 +55,14 @@ function PipeAtomicCompareExchange(var ATarget: Integer; ANew, AComparand: Integ
 /// Leitura/escrita atomica de 64 bits (ticks de heartbeat).
 function PipeAtomicRead64(var ATarget: UInt64): UInt64;
 procedure PipeAtomicWrite64(var ATarget: UInt64; AValue: UInt64);
+/// Troca por ANew somente se o valor atual for AComparand; devolve o valor
+/// ANTIGO (CAS de 64 bits, para loops de CAS — base de PipeAtomicAdd64).
+function PipeAtomicCompareExchange64(var ATarget: UInt64;
+  ANew, AComparand: UInt64): UInt64;
+/// Soma ADelta atomicamente (contadores de bytes/mensagens); devolve o valor
+/// NOVO. CAS loop sobre PipeAtomicCompareExchange64 — nao ha
+/// InterlockedExchangeAdd64 portatil nos dois compiladores.
+function PipeAtomicAdd64(var ATarget: UInt64; ADelta: UInt64): UInt64;
 
 /// Milissegundos monotonicos (GetTickCount64).
 function PipeTickMs: UInt64;
@@ -133,6 +141,10 @@ type
     /// Enfileira e garante um worker para atender (cria um, se todos ocupados
     /// e abaixo do teto). Assume a posse do item.
     procedure Queue(AItem: TPipeWorkItem);
+    /// Itens na fila aguardando um worker livre (nao conta os em execucao).
+    /// Em pdmPool este pool e' GLOBAL e compartilhado por todo TPipeServer/
+    /// TPipeClient do processo — ver a ressalva em TPipeServerStats.PoolQueueDepth.
+    function QueueDepth: Integer;
   end;
 
 /// Pool global compartilhado (criado sob demanda, liberado na finalizacao).
@@ -232,6 +244,28 @@ begin
   {$ELSE}
   AtomicExchange(PInt64(@ATarget)^, Int64(AValue));
   {$ENDIF}
+end;
+
+function PipeAtomicCompareExchange64(var ATarget: UInt64;
+  ANew, AComparand: UInt64): UInt64;
+begin
+  {$IFDEF FPC}
+  Result := UInt64(InterlockedCompareExchange64(PInt64(@ATarget)^,
+    Int64(ANew), Int64(AComparand)));
+  {$ELSE}
+  Result := UInt64(AtomicCmpExchange(PInt64(@ATarget)^, Int64(ANew),
+    Int64(AComparand)));
+  {$ENDIF}
+end;
+
+function PipeAtomicAdd64(var ATarget: UInt64; ADelta: UInt64): UInt64;
+var
+  LOld: UInt64;
+begin
+  repeat
+    LOld := PipeAtomicRead64(ATarget);
+    Result := LOld + ADelta;
+  until PipeAtomicCompareExchange64(ATarget, Result, LOld) = LOld;
 end;
 
 function PipeTickMs: UInt64;
@@ -464,6 +498,16 @@ begin
     if Terminated then
       Break;
     FOnTick;
+  end;
+end;
+
+function TPipeThreadPool.QueueDepth: Integer;
+begin
+  FLock.Enter;
+  try
+    Result := FQueue.Count;
+  finally
+    FLock.Leave;
   end;
 end;
 

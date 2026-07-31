@@ -596,3 +596,80 @@ under `ptTcp`.
 | H2 | Server | per-connection ticks, `StartHeartbeat`/`StopHeartbeat`/`HeartbeatTick`, `CloseAbort` on timeout | done |
 | H3 | Client | per-session heartbeat (Connect + every reconnection), same `FReader` join points | done |
 | H4 | Tests | zombie detected both ways, `ptLocal` immune, `Stop`/`Disconnect` <2s with heartbeat active | done |
+
+## 11. Metrics/observability (`Stats`/`ConnectionStats`)
+
+Came right after the heartbeat, from the same diagnosis: the production target (store POS)
+needs visibility without verbose logging — "is traffic actually flowing?", "any slow
+requests?", "how many real clients?" — without instrumenting the application from outside.
+Unlike the heartbeat, this applies to **any transport** (`ptLocal` included: a Named Pipe
+benefits from knowing how many bytes went through too).
+
+### 11.1 Snapshot, not event — the same mold as `ClientCount`
+
+The library already settled this design decision before: `ClientCount`, `ClientIds`,
+`Subscriptions`, `SubscriberCount`, `TryClientIdentity` are all **on-demand snapshots** — the
+app asks when it wants to know, the library never pushes anything periodically.
+`Stats`/`ConnectionStats` follow the same mold, instead of an `OnStats` with its own timer and
+`DispatchMode`: less new API, zero dispatch mechanism to invent. Whoever wants a periodic
+sample uses their own app timer calling `Stats` whenever convenient.
+
+### 11.2 Always on, no opt-in
+
+Unlike the heartbeat (which only exists with `HeartbeatIntervalMs` configured), the
+byte/message counters cost one `PipeAtomicAdd64` per frame — nanoseconds, the same order of
+magnitude `FInFlight` already pays on every dispatched callback. There is no `EnableStats`
+property: the cost is too low to justify one more configuration decision, and a metric that
+only sometimes exists is the classic source of "why didn't I see this on the dashboard."
+
+### 11.3 Per-connection dies with it; server aggregate survives
+
+`TPipeConnStats` (per connection, via `ConnectionStats`) dies with the connection — like
+`FSubs`, unlike `TPipePeerIdentity` (which survives on purpose to answer "who left?" in
+`OnClientDisconnected`, §3). `TPipeServerStats` (via `Stats`) is the opposite: cumulative
+since `Listen`, survives connections that already dropped — it's the number for a
+health-check or ops dashboard ("how much traffic has this process moved"), not for debugging
+ONE specific connection. `TotalConnectionsAccepted` only counts **established** connections,
+same criterion as `ClientCount`/`ClientIds`: a connection refused mid-handshake under mTLS
+doesn't inflate the number.
+
+### 11.4 `PoolQueueDepth` can lie — and that's documented, not hidden
+
+Under `pdmPool` (the default), `EventPool` resolves to the process's **global** pool
+(`Pipes.Threading.PipePool`), shared by every `TPipeServer`/`TPipeClient` in the same
+application. `Server.Stats.PoolQueueDepth` reflects EVERYONE's backlog in that case, not just
+this server's — it's only exclusive to it under `pdmSerialized` (private 1-worker pool). The
+alternative — filtering by owner inside the global pool — would require linking each work
+item back to the server that queued it, real complexity for a number that's already cheap the
+simple way. The choice was to document the caveat in the property's XMLDoc rather than solve
+the wrong problem.
+
+### 11.5 Request latency: only the success path counts
+
+`TPipeClient.Request` already knows when it started (before writing) and when it finished
+(the RPC slot's `WaitFor`). `AvgRequestLatencyMs`/`MaxRequestLatencyMs` are only updated
+inside `if LSlot.Ok then` — never on timeout or error reply. The reason: "how long did the
+server take to respond" and "the server didn't respond" are different questions, and adding a
+30s timeout into the latency average would turn an availability problem into a lying
+performance number. `MaxRequestLatencyMs` uses a CAS loop (not a `PipeAtomicAdd64`, which
+sums — here the operation is "swap only if greater"), for the same reason that motivated
+`PipeAtomicAdd64` to exist: there is no portable `InterlockedMax64` across both compilers.
+
+### 11.6 Client counters are per SESSION, no cross-session cumulative
+
+Same decision as the heartbeat's `FLastReadTick`/`FLastWriteTick`: they zero on `Connect` and
+on every successful `TryReopenSession` (`ResetSessionStats`, called unconditionally — unlike
+`StartHeartbeat`, it does not depend on `HeartbeatIntervalMs`). Explicit decision by the user
+when approving the design: **no** second "since forever" pair of fields alongside the
+per-session ones — the client is one connection at a time, and `ReconnectAttempts` already
+answers "why did the session change" better than a lifetime byte total would.
+
+### 11.7 Milestones
+
+| # | Milestone | Content | Status |
+|---|-----------|---------|--------|
+| S0 | `Pipes.Threading` | `PipeAtomicCompareExchange64`/`PipeAtomicAdd64` (CAS loop); `TPipeThreadPool.QueueDepth` | done |
+| S1 | `Pipes.Types` | `TPipeConnStats`/`TPipeServerStats`/`TPipeClientStats` | done |
+| S2 | Server | per-connection and aggregate counters, `Stats`/`ConnectionStats` (same Try* pattern as `TryClientIdentity`) | done |
+| S3 | Client | per-session counters, Request latency (success only), `Stats` | done |
+| S4 | Tests | bytes/messages match what was sent, `ConnectionStats` for a nonexistent connection, timeout excluded from latency | done |

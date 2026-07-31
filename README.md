@@ -258,6 +258,39 @@ detecta fecha a própria conexão e segue o fluxo normal de queda
 ignora a property, pela mesma razão do Keepalive: a morte do processo par já fecha o
 pipe/UDS local na hora.
 
+### Métricas/observabilidade (`Stats`/`ConnectionStats`)
+
+Snapshot sob demanda — mesmo molde de `ClientCount`/`ClientIds`/`Subscriptions`: a lib não
+empurra nada periodicamente, o app pergunta quando quiser. Sempre ativos, sem opt-in (o
+custo é um incremento atômico por frame). Válido em **qualquer transporte**, inclusive
+`ptLocal`.
+
+```pascal
+LConnStats: TPipeConnStats;
+if Server.ConnectionStats(AConnId, LConnStats) then
+  WriteLn(LConnStats.BytesReceived, ' bytes recebidos desta conexao');
+
+LSrvStats := Server.Stats;      // agregado, cumulativo desde o Listen
+LCliStats := Client.Stats;      // da SESSAO atual, zera a cada reconexao
+WriteLn('fila do pool: ', LSrvStats.PoolQueueDepth);
+WriteLn('latencia media de request: ', LCliStats.AvgRequestLatencyMs, ' ms');
+```
+
+- **`Server.ConnectionStats(AConnId, out AStats): Boolean`** — bytes/mensagens enviados e
+  recebidos por UMA conexão. Morre com ela (como as assinaturas de tópico), diferente de
+  `TryClientIdentity`. `False` se a conexão não existe ou não está estabelecida.
+- **`Server.Stats: TPipeServerStats`** — agregado cumulativo desde o `Listen`, sobrevive a
+  conexões que já caíram: `TotalConnectionsAccepted` (só estabelecidas), `TotalBytesSent/
+  Received`, `TotalMessagesSent/Received`, `ClientCount`, e `PoolQueueDepth`. **Ressalva:**
+  em `pdmPool` (padrão) o pool de despacho é GLOBAL, compartilhado por todo `TPipeServer`/
+  `TPipeClient` do processo — `PoolQueueDepth` reflete o backlog de todo mundo, não só deste
+  servidor. Só é exclusivo dele em `pdmSerialized`.
+- **`Client.Stats: TPipeClientStats`** — bytes/mensagens da SESSÃO atual (zera a cada
+  `Connect`/reconexão, sem contador cumulativo entre sessões), `ReconnectAttempts`,
+  `PendingRequests`, e `AvgRequestLatencyMs`/`MaxRequestLatencyMs` — só contam Requests que
+  chegaram a ter reply (timeout e erro ficam de fora: são "o servidor não respondeu", uma
+  pergunta diferente de "quanto tempo levou").
+
 ## Recursos
 
 - **Servidor multi-cliente** — acceptor + uma reader thread por conexão; `MaxClients`
@@ -442,6 +475,8 @@ TPipeServer
   MaxClients                             // limite de recurso: conta as em handshake
   OnClientConnected/OnClientDisconnected: TPipeConnectionEvent
   OnRequest: TPipeRequestEvent           // (const ARequest: TBytes; out AReply: TBytes)
+  Stats: TPipeServerStats                // agregado, cumulativo desde o Listen
+  ConnectionStats(ConnId, out Stats): Boolean  // por conexao; morre com ela
 
 TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect re-tenta até o prazo
@@ -454,6 +489,7 @@ TPipeClient
                                          // ARetained: True só em catch-up de assinatura
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
   OnConnected/OnDisconnected: TPipeConnectionEvent
+  Stats: TPipeClientStats                // da SESSAO atual; zera a cada reconexao
 
 Pipes.Topics (unit pura, útil também fora da lib)
   PipeTopicMatches(Filtro, Topico); PipeIsValidTopic; PipeIsValidTopicFilter
