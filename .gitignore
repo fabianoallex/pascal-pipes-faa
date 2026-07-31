@@ -26,3 +26,10 @@ tests/Integration/fpc/PipesIntegrationTestsFpc
 __history/
 __recovery/
 packagefiles.xml
+
+# segredos de PKI/mTLS gerados por tools/gerar-pki.sh (nunca versionar; a
+# PKI de teste em tests/pki ja esta rastreada e nao e afetada por isto)
+*.pfx
+*_key.pem
+senha-pfx.txt
+/tools/*/
