@@ -51,6 +51,14 @@ type
 
 implementation
 
+// Comparacao nao-generica (evita E2532: Length() e' NativeInt no Win64 e o
+// AreEqual<T> generico do DUnitX nao infere T com argumentos de tipos
+// diferentes — ver Pipes.FramingTests/Pipes.EndToEndTests).
+procedure EqualInt(AExpected, AActual: Integer);
+begin
+  Assert.AreEqual(AExpected, AActual);
+end;
+
 var
   GNameSeq: Integer;
 
@@ -143,7 +151,7 @@ begin
     'servidor nao recebeu as N mensagens a tempo');
 
   LIds := FServer.ClientIds;
-  Assert.AreEqual(1, Length(LIds));
+  EqualInt(1, Length(LIds));
   Assert.IsTrue(FServer.ConnectionStats(LIds[0], LConnStats),
     'ConnectionStats devia achar a conexao estabelecida');
   Assert.IsTrue(LConnStats.MessagesReceived = UInt64(N),
