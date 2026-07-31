@@ -68,6 +68,10 @@ type
     class function Reply(ACorrId: UInt64; const APayload: TBytes): TPipeFrame; static;
     /// Reply de erro (request-reply): PIPE_FLAG_ERROR + mensagem no payload.
     class function ErrorReply(ACorrId: UInt64; const AMsgText: string): TPipeFrame; static;
+    /// Heartbeat de aplicacao (ver Pipes.Base.HeartbeatIntervalMs). Simetrico e
+    /// sem correlacao: qualquer frame recebido (inclusive este) reseta o
+    /// relogio de vida que o peer observa, entao nao ha pfkPong.
+    class function Ping: TPipeFrame; static;
   end;
 
 // --- Conversao string <-> UTF-8 ---------------------------------------------
@@ -224,6 +228,14 @@ begin
   Result.Flags := PIPE_FLAG_ERROR;
   Result.CorrId := ACorrId;
   Result.Payload := PipeUtf8Encode(AMsgText);
+end;
+
+class function TPipeFrame.Ping: TPipeFrame;
+begin
+  Result.Kind := pfkPing;
+  Result.Flags := 0;
+  Result.CorrId := 0;
+  Result.Payload := nil;
 end;
 
 { --- encode / read / write --- }

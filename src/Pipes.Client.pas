@@ -52,7 +52,14 @@ unit Pipes.Client;
     (cada ciclo dele e' uma tentativa, ainda que a conexao chegue a abrir),
     sem penalizar o cliente de longa duracao que reconecta legitimamente ao
     longo de dias. Atingido o teto, FGaveUp impede que ReaderFinished crie
-    outra thread e reinicie tudo. }
+    outra thread e reinicie tudo.
+  - Heartbeat de aplicacao (ptTcp/ptTls; ver Pipes.Base.HeartbeatIntervalMs):
+    vive por SESSAO, nao pelo cliente inteiro. StartHeartbeat roda logo apos
+    CADA FReader novo (Connect e TryReopenSession); StopHeartbeat roda nos
+    MESMOS pontos que ja fazem o join do FReader da sessao que esta saindo
+    (Disconnect e o topo de TryReopenSession), sempre ANTES de FStream/
+    FEndpoint serem trocados ou liberados — e' o que impede a heartbeat
+    thread de uma sessao morta de escrever no stream da sessao seguinte. }
 
 interface
 
@@ -110,9 +117,25 @@ type
     FSubLock: TCriticalSection;
     FSubs: TList<string>;      // filtros assinados (estado desejado)
     FOnTopicMessage: TPipeTopicEvent;
+    // --- heartbeat de aplicacao (ptTcp/ptTls; ver Pipes.Base.HeartbeatIntervalMs) ---
+    // Vive por SESSAO: StartHeartbeat roda logo apos cada FReader novo
+    // (Connect e cada TryReopenSession bem-sucedido); StopHeartbeat roda nos
+    // MESMOS pontos que ja fazem o join do FReader da sessao que esta saindo
+    // (Disconnect e o topo de TryReopenSession) — sempre ANTES de FStream/
+    // FEndpoint serem trocados ou liberados, para a heartbeat thread nunca
+    // escrever num stream de outra sessao.
+    FLastReadTick: UInt64;
+    FLastWriteTick: UInt64;
+    FHeartbeatThread: TThread;
+    FHbStopEvent: TEvent;
     // Chamados pelas threads internas (mesma unit):
     procedure ReaderFinished(const AError: string);
     procedure HandleFrame(const AFrame: TPipeFrame);
+    procedure StartHeartbeat;
+    procedure StopHeartbeat;
+    /// Callback do TPipeHeartbeatThread: manda Ping se ocioso na escrita,
+    /// CloseAbort se sem NENHUM frame recebido ha' mais de 2x o intervalo.
+    procedure HeartbeatTick;
     /// Reenvia todos os filtros de FSubs ao servidor. Chamada na instalacao de
     /// CADA sessao (Connect e reconexao), antes de OnConnected.
     procedure ReplaySubscriptions;
@@ -266,6 +289,7 @@ begin
     while True do
     begin
       LFrame := PipeReadFrame(FClient.FStream, FClient.MaxMessageSize);
+      PipeAtomicWrite64(FClient.FLastReadTick, PipeTickMs);
       FClient.HandleFrame(LFrame);
     end;
   except
@@ -398,6 +422,7 @@ begin
   PipeAtomicSet(FDisconnectNotified, 0);
   FConnected := True;
   FReader := TPipeClientReaderThread.Create(Self);
+  StartHeartbeat;
   // Antes de OnConnected: quem assinou algo antes do Connect encontra as
   // assinaturas ja enviadas quando o proprio handler rodar.
   ReplaySubscriptions;
@@ -422,6 +447,7 @@ begin
     FReader.WaitFor;
     FreeAndNil(FReader);
   end;
+  StopHeartbeat;
   FailPendingRpc; // acorda Requests pendentes com EPipeClosed
   if LHadSession then
     NotifyDisconnectedOnce;
@@ -451,6 +477,7 @@ begin
     FReader.WaitFor;
     FreeAndNil(FReader);
   end;
+  StopHeartbeat; // ANTES de liberar FStream/FEndpoint da sessao morta
   FWriteLock.Enter;
   try
     FreeAndNil(FStream);
@@ -538,6 +565,7 @@ begin
   FConnected := True;
   FSessionUpTick := PipeTickMs; // marca para o criterio de sessao duravel
   FReader := TPipeClientReaderThread.Create(Self);
+  StartHeartbeat;
   // A conexao anterior levou consigo a lista de filtros do lado do servidor:
   // sem este replay a sessao nova voltaria viva e muda, e o sintoma (mensagens
   // que param de chegar depois de uma reconexao que o app nem viu) seria
@@ -555,6 +583,65 @@ procedure TPipeClient.NotifyDisconnectedOnce;
 begin
   if PipeAtomicCompareExchange(FDisconnectNotified, 1, 0) = 0 then
     DispatchConnEvent(FOnDisconnected, 0);
+end;
+
+procedure TPipeClient.StartHeartbeat;
+begin
+  if (HeartbeatIntervalMs = 0) or not (Transport in [ptTcp, ptTls]) then
+    Exit;
+  PipeAtomicWrite64(FLastReadTick, PipeTickMs);
+  PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+  FHbStopEvent := TEvent.Create(nil, True, False, ''); // manual-reset
+  FHeartbeatThread := TPipeHeartbeatThread.Create(HeartbeatIntervalMs,
+    FHbStopEvent, HeartbeatTick);
+end;
+
+procedure TPipeClient.StopHeartbeat;
+begin
+  if not Assigned(FHeartbeatThread) then
+    Exit;
+  FHeartbeatThread.Terminate;
+  FHbStopEvent.SetEvent;
+  FHeartbeatThread.WaitFor;
+  FreeAndNil(FHeartbeatThread);
+  FreeAndNil(FHbStopEvent);
+end;
+
+procedure TPipeClient.HeartbeatTick;
+var
+  LNow: UInt64;
+begin
+  LNow := PipeTickMs;
+  // Nenhum frame recebido (Ping incluso) ha' mais de 2x o intervalo: trata
+  // como morta. CloseAbort e' thread-safe/idempotente (Pipes.Transport) e
+  // desbloqueia a propria reader thread, que segue o teardown normal
+  // (ReaderFinished, e AutoReconnect se estiver ligado).
+  if (LNow - PipeAtomicRead64(FLastReadTick)) >
+     (2 * UInt64(HeartbeatIntervalMs)) then
+  begin
+    if FConnected and Assigned(FEndpoint) then
+      FEndpoint.CloseAbort;
+    Exit;
+  end;
+  // Ocioso na escrita ha' >= metade do intervalo: manda um Ping para o
+  // servidor resetar o relogio de leitura dele.
+  if (LNow - PipeAtomicRead64(FLastWriteTick)) <
+     (UInt64(HeartbeatIntervalMs) div 2) then
+    Exit;
+  FWriteLock.Enter;
+  try
+    if (not FConnected) or (FStream = nil) then
+      Exit; // sessao trocou/caiu entre a checagem acima e aqui
+    try
+      PipeWriteFrame(FStream, TPipeFrame.Ping, MaxMessageSize);
+      PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    except
+      // Escrita falhou = sessao morrendo (mesma tolerancia de
+      // SendControlFrame): o reader esta a ponto de notificar a queda.
+    end;
+  finally
+    FWriteLock.Leave;
+  end;
 end;
 
 procedure TPipeClient.ReaderFinished(const AError: string);
@@ -622,6 +709,7 @@ begin
       Exit; // sem sessao: o replay da proxima cobre
     try
       PipeWriteFrame(FStream, AFrame, MaxMessageSize);
+      PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     except
       // Escrita falhou = sessao morrendo. Nao levanta: o reader esta a ponto de
       // notificar a queda, e o filtro (que ja esta em FSubs) volta no replay da
@@ -711,6 +799,7 @@ begin
       raise EPipeClosed.Create('cliente nao esta conectado');
     PipeWriteFrame(FStream, PipePublishFrame(ATopic, AData, False),
       MaxMessageSize);
+    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
   finally
     FWriteLock.Leave;
   end;
@@ -784,6 +873,7 @@ begin
         if (not FConnected) or (FStream = nil) then
           raise EPipeClosed.Create('cliente nao esta conectado');
         PipeWriteFrame(FStream, TPipeFrame.Request(LCorrId, AData), MaxMessageSize);
+        PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
       finally
         FWriteLock.Leave;
       end;
@@ -829,6 +919,7 @@ begin
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
     PipeWriteFrame(FStream, TPipeFrame.Msg(AData), MaxMessageSize);
+    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
   finally
     FWriteLock.Leave;
   end;

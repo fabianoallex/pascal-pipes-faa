@@ -101,6 +101,7 @@ type
     FAddress: string;
     FTransport: TPipeTransport;
     FKeepAliveSeconds: Cardinal;
+    FHeartbeatIntervalMs: Cardinal;
     FDispatchMode: TPipeDispatchMode;
     FMaxMessageSize: Cardinal;
     FOnMessage: TPipeMessageEvent;
@@ -112,6 +113,7 @@ type
     procedure SetAddress(const AValue: string);
     procedure SetTransport(AValue: TPipeTransport);
     procedure SetKeepAliveSeconds(AValue: Cardinal);
+    procedure SetHeartbeatIntervalMs(AValue: Cardinal);
     procedure SetDispatchMode(AValue: TPipeDispatchMode);
     procedure SetMaxMessageSize(AValue: Cardinal);
   protected
@@ -167,6 +169,19 @@ type
     /// o timeout de ociosidade do tunel, nao maior.
     property KeepAliveSeconds: Cardinal
       read FKeepAliveSeconds write SetKeepAliveSeconds;
+    /// Intervalo do heartbeat de aplicacao; 0 desliga (padrao). So tem efeito
+    /// em ptTcp/ptTls (ptLocal ignora: mesma razao de KeepAliveSeconds — a
+    /// morte do processo par ja fecha o pipe/UDS local na hora).
+    ///
+    /// Complementar a KeepAliveSeconds, nao substituto: aquele e' um probe do
+    /// SO (barato, mas tipicamente leva minutos para acusar); este e' um frame
+    /// de aplicacao (pfkPing) que atravessa o registro TLS e da' controle fino
+    /// sobre o tempo de deteccao. Conexao morta = nenhum frame recebido (de
+    /// qualquer kind, o Ping inclusive) em 2x este intervalo — quem detecta
+    /// fecha a propria conexao (CloseAbort) e segue o fluxo normal de queda
+    /// (OnClientDisconnected/OnDisconnected), sem evento dedicado.
+    property HeartbeatIntervalMs: Cardinal
+      read FHeartbeatIntervalMs write SetHeartbeatIntervalMs;
     /// Compatibilidade com a API anterior a generalizacao do transporte.
     /// Mesmo campo de Address; sera marcada deprecated apos a migracao de
     /// samples e testes.
@@ -508,6 +523,7 @@ begin
   FAddress := AAddress; // direto no campo: GetActive e' abstrato aqui
   FTransport := ATransport;
   FKeepAliveSeconds := PIPES_DEFAULT_KEEPALIVE_SECONDS;
+  FHeartbeatIntervalMs := 0; // desligado por padrao
   FDispatchMode := pdmPool;
   FMaxMessageSize := PIPES_DEFAULT_MAX_MESSAGE_SIZE;
   FGuard := TPipeGuard.Create;
@@ -546,6 +562,12 @@ procedure TPipeBase.SetKeepAliveSeconds(AValue: Cardinal);
 begin
   EnsureInactive('KeepAliveSeconds');
   FKeepAliveSeconds := AValue;
+end;
+
+procedure TPipeBase.SetHeartbeatIntervalMs(AValue: Cardinal);
+begin
+  EnsureInactive('HeartbeatIntervalMs');
+  FHeartbeatIntervalMs := AValue;
 end;
 
 procedure TPipeBase.SetDispatchMode(AValue: TPipeDispatchMode);

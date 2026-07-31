@@ -516,3 +516,83 @@ on).
 | P3 | Integration | fanout, lifecycle, retain, refusals, `Stop` under load | done |
 | P4 | Sample + docs | `samples/PainelLoja` (console, three roles in one exe) | done |
 | P5 | `ARetained` + GUI sample | retain bit in the API (§9.7) and `samples/MonitorTopicos` (VCL/LCL) | done |
+
+## 10. Application heartbeat (`ptTcp`/`ptTls`)
+
+Came after T5, driven by the same use case that brought `ptTcp` (§7, "Later milestones":
+a store POS talking to the back office over VPN, where an idle connection dying in
+silence was already one of the two problems cited). `KeepAliveSeconds` (§2, `Pipes.Base`)
+already detects that silent death, but it is an OS probe — typically takes minutes
+(`TCP_KEEPIDLE`/`TCP_KEEPINTVL`/`TCP_KEEPCNT`, not configurable to the second) and only
+ever sees the raw TCP socket, never what crosses the encrypted `ptTls` record.
+`HeartbeatIntervalMs` solves the same problem on top of the framing layer: an application
+frame, with the application in full control of detection time.
+
+### 10.1 Symmetric and uncorrelated: why there is no `pfkPong`
+
+`pfkPing` (kind 3) had been reserved in NPF1 since M2 and never grew a `pfkPong` sibling.
+The reason: a heartbeat is not a question waiting for an answer, it is a liveness signal
+observed on both sides at once. **Any frame received — the Ping itself included — resets
+the read clock of whoever received it.** That removes all the state a correlated
+ping/pong would require (nonce, "outstanding ping" table, per-attempt timeout), and it is
+the same design AMQP 0-9-1's heartbeat uses (`AMQP.Connection.pas`,
+`TAMQPHeartbeatThread`/`HeartbeatTick` in `pascal-amqp-faa`): each side sends a heartbeat
+when idle on writes, and each side measures its own read idleness independently.
+
+### 10.2 Killing the connection is just `CloseAbort` — no new interruption mechanism
+
+Detecting death (no frame received, Ping included, for more than **2x the interval**) and
+acting on it is a single call: `FEndpoint.CloseAbort`. It is the same "thread-safe and
+idempotent" mechanism (`Pipes.Transport.pas`, header comment) that any protocol error
+already uses (`Pipes.Server.pas` `ReaderFinished`, for instance) — it unblocks the reader
+thread with `EPipeClosed`, which falls into the usual `except` and follows the normal
+teardown (`OnClientDisconnected` on the server; `OnDisconnected` + `AutoReconnect` on the
+client). There is no new signal/cancellation pair to maintain: the heartbeat *reuses* the
+interruption M3-M5 already solved, in full.
+
+### 10.3 `TPipeHeartbeatThread`: a generic thread in `Pipes.Threading`
+
+Server and client needed the same loop (wake every half the interval through a
+cancellable wait — never `TTimer` — and call a tick), so the thread lives in
+`Pipes.Threading.pas`, parameterized by an `of object` callback
+(`TPipeHeartbeatTick = procedure of object`), not a closure (banned in this library).
+The owner (`TPipeServerConnection.HeartbeatTick` or `TPipeClient.HeartbeatTick`) decides
+what to do on each tick, not the thread — it only wraps the "wake up periodically,
+cancellably" pattern already repeated in the thread pool and in the sibling project's
+`TAMQPHeartbeatThread`.
+
+### 10.4 Lifecycle: the SAME points that already join the reader
+
+On the server, `StartHeartbeat` runs on the reader thread itself, right after
+`OnClientConnected` (the connection just became "established"); `StopHeartbeat` runs at
+the same two places that already `WaitFor` the connection's `FReader` (`Stop` and
+`RunCleanup`) — never inside `HeartbeatTick` itself, and always before the `Destroy` that
+frees `FStream`/`FEndpoint`.
+
+On the client the lifetime is per **session**, not per client instance: `StartHeartbeat`
+runs in `Connect` and on every successful `TryReopenSession`; `StopHeartbeat` runs at the
+same points that already join the outgoing session's `FReader` (`Disconnect` and the top
+of `TryReopenSession`) — **before** `FStream`/`FEndpoint` are swapped or freed. Without
+that ordering, a dead session's heartbeat thread could write into the next session's
+stream (or, worse, into an already-freed object): the reason for this ordering is the
+same reason `FWriteLock` protects the `FStream`/`FEndpoint` pair itself against
+concurrent swap (see the header of `Pipes.Client.pas`).
+
+### 10.5 Scope: `ptTcp`/`ptTls` only
+
+`ptLocal` ignores `HeartbeatIntervalMs` on purpose — same rule and same reason as
+`KeepAliveSeconds`: the peer process dying already closes the local Named Pipe/UDS right
+away (`ERROR_BROKEN_PIPE`/`POLLHUP`, §5.1-5.2), so there is no local "zombie" to detect.
+The `PtLocal_IgnoraHeartbeatIntervalMs` test guards this by configuring the interval and
+confirming an idle session on both sides survives past the deadline that would kill it
+under `ptTcp`.
+
+### 10.6 Milestones
+
+| # | Milestone | Content | Status |
+|---|-----------|---------|--------|
+| H0 | `Pipes.Framing` + `Pipes.Threading` | `TPipeFrame.Ping` (kind 3, uncorrelated); generic `TPipeHeartbeatThread` | done |
+| H1 | `TPipeBase` | `HeartbeatIntervalMs` property (0 = off; `ptTcp`/`ptTls` only) | done |
+| H2 | Server | per-connection ticks, `StartHeartbeat`/`StopHeartbeat`/`HeartbeatTick`, `CloseAbort` on timeout | done |
+| H3 | Client | per-session heartbeat (Connect + every reconnection), same `FReader` join points | done |
+| H4 | Tests | zombie detected both ways, `ptLocal` immune, `Stop`/`Disconnect` <2s with heartbeat active | done |

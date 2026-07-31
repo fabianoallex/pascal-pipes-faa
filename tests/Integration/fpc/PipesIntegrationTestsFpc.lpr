@@ -21,7 +21,8 @@ uses
   Pipes.EndToEndTests,
   Pipes.PubSubTests,
   Pipes.StressTests,
-  Pipes.TlsTests;
+  Pipes.TlsTests,
+  Pipes.HeartbeatTests;
 
 var
   ConsoleApp: TTestRunner;
