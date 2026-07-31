@@ -113,6 +113,9 @@ Cli.TlsOptions.CertPassword := 'senha';
 Esse é o desenho pensado para o caso de PDVs de loja sobre VPN: o certificado, e não o IP
 de origem, é o que diz quem é quem.
 
+Para gerar sua própria CA/certificados (não a PKI de teste de `tests/pki`), veja
+`tools/gerar-pki.sh` e o guia passo a passo em `tools/LEIA-ME.md`.
+
 #### O que muda entre os backends
 
 O backend é escolhido em **tempo de compilação** (ver `src/pipes.inc`): Schannel (SSPI
