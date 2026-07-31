@@ -28,7 +28,8 @@ uses
   Pipes.HeartbeatTests in 'Pipes.HeartbeatTests.pas',
   Pipes.StatsTests in 'Pipes.StatsTests.pas',
   Pipes.Json in '..\..\src\Pipes.Json.pas',
-  Pipes.JsonTests in 'Pipes.JsonTests.pas';
+  Pipes.JsonTests in 'Pipes.JsonTests.pas',
+  Pipes.FailoverTests in 'Pipes.FailoverTests.pas';
 
 var
   runner: ITestRunner;

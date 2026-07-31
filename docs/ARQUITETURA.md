@@ -657,3 +657,82 @@ sessão trocou" melhor do que um total histórico de bytes responderia.
 | S2 | Servidor | contadores por conexão e agregados, `Stats`/`ConnectionStats` (padrão Try* de `TryClientIdentity`) | concluído |
 | S3 | Cliente | contadores por sessão, latência de Request (só sucesso), `Stats` | concluído |
 | S4 | Testes | bytes/mensagens batem com o enviado, `ConnectionStats` de conexão inexistente, timeout excluído da latência | concluído |
+
+## 12. Failover de endereço (`TPipeClient.FailoverAddresses`)
+
+Mesmo diagnóstico do heartbeat e das métricas: o alvo de produção é o PDV de loja sobre VPN
+(§7, "Milestones posteriores"), e lá o servidor principal cair é um modo de falha real, não
+hipotético. Até aqui `AutoReconnect` só sabia insistir no MESMO `Address`; se o principal
+ficasse fora do ar por mais tempo (manutenção, queda do link da loja específica), o cliente
+não tinha como alcançar um secundário sem o app derrubar e recriar o `TPipeClient` com outro
+endereço — perdendo assinaturas de pub/sub, contadores de sessão e o próprio `AutoReconnect`
+em voo.
+
+### 12.1 Só no `TPipeClient` — o servidor não tem o que "falhar para"
+
+`TPipeServer` escuta um único `Address`; failover não tem sentido do lado de quem aceita
+conexões. A property fica ao lado de `AutoReconnect`/`ReconnectDelayMs`/`MaxReconnectAttempts`,
+que já eram exclusivas do cliente pelo mesmo motivo.
+
+### 12.2 `Address` continua o primário; `FailoverAddresses` é aditivo e vazio por padrão
+
+Nenhum código existente muda de comportamento: com `FailoverAddresses` vazio,
+`ConnectAnyAddress` é uma única chamada a `PipeConnect(Address, ...)`, idêntica à de antes
+desta feature. Todos os endereços da lista compartilham `Transport`/`TlsOptions`/
+`KeepAliveSeconds` do cliente — são locais de rede alternativos do MESMO serviço (ex.:
+loja principal e DR da mesma retaguarda), não um jeito de falar com um servidor diferente
+com outro protocolo ou outra credencial.
+
+### 12.3 `Connect` divide o orçamento; `TryReopenSession` avança um endereço por tentativa
+
+Os dois pontos que abrem conexão têm formas diferentes de gastar tempo, e o failover respeita
+a forma de cada um em vez de unificar à força:
+
+- `Connect(ATimeoutMs)` já era "re-tenta até o prazo" para UM endereço (`PipeConnect`
+  interno, ver `WinPipeConnect`/`PosixPipeConnect`, retry até `ERROR_FILE_NOT_FOUND`
+  parar de acontecer). Com mais de um endereço, `ConnectAnyAddress` dá voltas pela lista
+  inteira com uma fatia igual de `ATimeoutMs` por endereço, repetindo até um conectar ou o
+  prazo total estourar — o mesmo formato "`while true` com deadline" que já existia para um
+  endereço só, um nível acima.
+- `TryReopenSession` já era um laço espaçado por `ReconnectDelayMs` (o funil único de
+  reabertura, §"Reconexão" no cabeçalho de `Pipes.Client.pas`); failover só acrescenta
+  "endereço atual falhou → mira o próximo (com wraparound) na PRÓXIMA tentativa", sem
+  orçamento próprio nem mudar o espaçamento entre tentativas.
+
+### 12.4 Sessão DURÁVEL volta a preferir o primário
+
+`FAddrIndex` é zerado no MESMO critério que já zera `FReconnectAttempts` — uma sessão que
+durou mais que `ReconnectDelayMs` foi sessão de verdade, e a PRÓXIMA falha (se houver) deve
+tentar o primário de novo antes de espalhar pelos alternativos. Sem isso, um cliente que
+migrou para o secundário ficaria "grudado" nele (ou pior, avançando cegamente para o
+terceiro endereço) mesmo depois do principal voltar ao ar — o teste
+`Reconexao_SessaoDuravelNoBackup_VoltaAoPrimarioDepois` existe justamente para travar essa
+diferença contra o "avança pro próximo" ingênuo.
+
+### 12.5 `MaxReconnectAttempts`/`ReconnectDelayMs` continuam por TENTATIVA, não por endereço
+
+O teto e o espaçamento não ganharam um orçamento separado por endereço: cada chamada a
+`PipeConnect` — mire ela o primário ou um alternativo — continua contando como UMA tentativa
+para `MaxReconnectAttempts`, e o intervalo entre tentativas continua o mesmo
+`ReconnectDelayMs`, não importa se a próxima mira o mesmo endereço ou um diferente. Trocar de
+endereço "na hora" (sem esperar o espaçamento) foi considerado e descartado: mais um estado a
+raciocinar numa unit que o próprio cabeçalho já trata como apertada em invariantes, por um
+ganho marginal.
+
+### 12.6 Nenhuma mudança no wire format (NPF1) nem no lado do servidor
+
+Failover é inteiramente uma decisão de QUAL ENDEREÇO DISCAR, resolvida antes de qualquer
+frame trafegar — `Pipes.Framing`, `Pipes.Server.pas` e o protocolo no fio ficam intocados.
+`ActiveAddress` (snapshot, mesmo molde de `ClientCount`/`Stats`) é a única forma de o app
+saber qual endereço a sessão atual usa, já que `TPipeConnectionEvent`
+(`OnConnected`/`OnDisconnected`) não ganhou parâmetro novo — mudar aquela assinatura afetaria
+todo o resto da lib por um dado que a property já resolve sem quebrar nada em uso.
+
+### 12.7 Milestones
+
+| # | Milestone | Conteúdo | Status |
+|---|-----------|----------|--------|
+| F0 | `Pipes.Client` | `FailoverAddresses`/`ActiveAddress`, `FAddrIndex`, `AddressAt`/`AddressCount` | concluído |
+| F1 | `Connect` | `ConnectAnyAddress` (volta pela lista, orçamento dividido por `ATimeoutMs`) | concluído |
+| F2 | `TryReopenSession` | avança um endereço por tentativa falha; reseta ao primário em sessão DURÁVEL | concluído |
+| F3 | Testes | primário vivo/morto em `Connect`, migração na reconexão, reset ao primário após sessão durável, `MaxReconnectAttempts` compartilhado entre endereços | concluído |

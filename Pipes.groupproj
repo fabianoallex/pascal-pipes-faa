@@ -21,6 +21,9 @@
         <Projects Include="samples\EchoJson\EchoJsonClient.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="samples\EchoFailover\EchoFailoverClient.dproj">
+            <Dependencies/>
+        </Projects>
         <Projects Include="samples\EchoSeguro\EchoSeguroServer.dproj">
             <Dependencies/>
         </Projects>
@@ -148,6 +151,15 @@
     </Target>
     <Target Name="EchoJsonClient:Make">
         <MSBuild Projects="samples\EchoJson\EchoJsonClient.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="EchoFailoverClient">
+        <MSBuild Projects="samples\EchoFailover\EchoFailoverClient.dproj"/>
+    </Target>
+    <Target Name="EchoFailoverClient:Clean">
+        <MSBuild Projects="samples\EchoFailover\EchoFailoverClient.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EchoFailoverClient:Make">
+        <MSBuild Projects="samples\EchoFailover\EchoFailoverClient.dproj" Targets="Make"/>
     </Target>
     <Target Name="EchoSeguroServer">
         <MSBuild Projects="samples\EchoSeguro\EchoSeguroServer.dproj"/>
@@ -348,13 +360,13 @@
         <MSBuild Projects="samples\GatewaySeguro\ClienteRemoto.dproj" Targets="Make"/>
     </Target>
     <Target Name="Build">
-        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoJsonServer;EchoJsonClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PingPong;PongCheck;PainelLoja;MonitorTopicos;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente;ServicoLocal;GatewaySeguro;ClienteRemoto"/>
+        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoJsonServer;EchoJsonClient;EchoFailoverClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PingPong;PongCheck;PainelLoja;MonitorTopicos;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente;ServicoLocal;GatewaySeguro;ClienteRemoto"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoJsonServer:Clean;EchoJsonClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PontosECaixas:Clean;PingPong:Clean;PongCheck:Clean;PainelLoja:Clean;MonitorTopicos:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean;ServicoLocal:Clean;GatewaySeguro:Clean;ClienteRemoto:Clean"/>
+        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoJsonServer:Clean;EchoJsonClient:Clean;EchoFailoverClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PontosECaixas:Clean;PingPong:Clean;PongCheck:Clean;PainelLoja:Clean;MonitorTopicos:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean;ServicoLocal:Clean;GatewaySeguro:Clean;ClienteRemoto:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoJsonServer:Make;EchoJsonClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PontosECaixas:Make;PingPong:Make;PongCheck:Make;PainelLoja:Make;MonitorTopicos:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make;ServicoLocal:Make;GatewaySeguro:Make;ClienteRemoto:Make"/>
+        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoJsonServer:Make;EchoJsonClient:Make;EchoFailoverClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PontosECaixas:Make;PingPong:Make;PongCheck:Make;PainelLoja:Make;MonitorTopicos:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make;ServicoLocal:Make;GatewaySeguro:Make;ClienteRemoto:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

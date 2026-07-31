@@ -59,7 +59,19 @@ unit Pipes.Client;
     MESMOS pontos que ja fazem o join do FReader da sessao que esta saindo
     (Disconnect e o topo de TryReopenSession), sempre ANTES de FStream/
     FEndpoint serem trocados ou liberados — e' o que impede a heartbeat
-    thread de uma sessao morta de escrever no stream da sessao seguinte. }
+    thread de uma sessao morta de escrever no stream da sessao seguinte.
+  - Failover de endereco (FailoverAddresses): FAddrIndex e' o unico estado
+    novo, e segue o mesmo dono-por-vez de FReconnectAttempts/FSessionUpTick —
+    escrito so' por quem tem a sessao no momento (Connect ou a thread de
+    reconexao, nunca as duas), lido de fora via PipeAtomicGet em
+    GetActiveAddress. Connect SEMPRE zera FAddrIndex antes de tentar (prefere
+    o primario); TryReopenSession avanca para o proximo endereco a cada
+    tentativa que falha, e volta a zerar quando uma sessao e' DURAVEL (o
+    mesmo criterio que zera FReconnectAttempts) — uma nova sequencia de
+    falhas sempre tenta o primario primeiro, so espalhando pelos alternativos
+    se ele estiver mesmo fora. MaxReconnectAttempts/ReconnectDelayMs contam e
+    espacam tentativas contra QUALQUER endereco igualmente, sem orcamento
+    separado por endereco. }
 
 interface
 
@@ -110,6 +122,14 @@ type
     FReconnectAttempts: Integer;
     // Instante em que a sessao atual foi instalada; 0 = nenhuma.
     FSessionUpTick: UInt64;
+    // --- failover de endereco ---
+    // Endereco ATUAL da lista (0 = Address, 1..N = FFailoverAddresses[i-1]).
+    FFailoverAddresses: TArray<string>;
+    // Escrito so' por quem detem a sessao no momento (Connect OU a thread de
+    // reconexao - nunca as duas ao mesmo tempo, mesma exclusao mutua de
+    // FReconnecting); lido de qualquer thread via PipeAtomicGet em
+    // GetActiveAddress, mesmo padrao de FReconnectAttempts em Stats.
+    FAddrIndex: Integer;
     // Atomico: 1 quando MaxReconnectAttempts foi atingido. Impede que
     // ReaderFinished crie uma thread nova e ressuscite a reconexao.
     FGaveUp: Integer;
@@ -172,6 +192,17 @@ type
     /// Acorda na hora se houver Disconnect.
     procedure WaitBetweenRetries;
     procedure WaitReconnectDone;
+    // --- failover de endereco ---
+    function AddressCount: Integer; // 1 + Length(FFailoverAddresses)
+    function AddressAt(AIndex: Integer): string; // 0 = Address; 1..N = failover
+    /// Usado so' por Connect: tenta os enderecos a partir de FAddrIndex, dando
+    /// voltas pela lista inteira com uma fatia igual de ATimeoutMs cada, ate
+    /// um conectar ou o prazo total estourar. Com FailoverAddresses vazio e'
+    /// uma unica chamada a PipeConnect(Address, ATimeoutMs, ...) - o mesmo
+    /// comportamento de antes desta feature. Atualiza FAddrIndex para o
+    /// endereco que conectou.
+    function ConnectAnyAddress(ATimeoutMs: Cardinal): TPipeEndpoint;
+    function GetActiveAddress: string;
   protected
     function GetActive: Boolean; override;
   public
@@ -237,6 +268,20 @@ type
     property ReconnectDelayMs: Cardinal read FReconnectDelayMs write FReconnectDelayMs;
     property MaxReconnectAttempts: Integer
       read FMaxReconnectAttempts write FMaxReconnectAttempts;
+    /// Enderecos alternativos, tentados em ordem DEPOIS de Address (o
+    /// primario) quando ele falha - em Connect e em cada tentativa de
+    /// reconexao automatica. Mesmo Transport/TlsOptions/KeepAliveSeconds do
+    /// cliente: sao enderecos de rede alternativos do MESMO servico, nao
+    /// servidores com protocolo/credenciais diferentes. Vazio (o padrao) =
+    /// comportamento de sempre, so' Address. Definir antes do primeiro
+    /// Connect, como AutoReconnect - nao e' pensado para mudar com uma
+    /// reconexao em curso.
+    property FailoverAddresses: TArray<string>
+      read FFailoverAddresses write FFailoverAddresses;
+    /// Qual endereco a sessao ATUAL (ou a ultima tentada) realmente usa -
+    /// Address ou um item de FailoverAddresses. Snapshot, mesmo molde de
+    /// ClientCount/Subscriptions.
+    property ActiveAddress: string read GetActiveAddress;
     property OnConnected: TPipeConnectionEvent
       read FOnConnected write FOnConnected;
     property OnDisconnected: TPipeConnectionEvent
@@ -429,13 +474,75 @@ begin
     Sleep(5);
 end;
 
+function TPipeClient.AddressCount: Integer;
+begin
+  Result := 1 + Length(FFailoverAddresses);
+end;
+
+function TPipeClient.AddressAt(AIndex: Integer): string;
+begin
+  if AIndex <= 0 then
+    Result := Address
+  else
+    Result := FFailoverAddresses[AIndex - 1];
+end;
+
+function TPipeClient.GetActiveAddress: string;
+begin
+  Result := AddressAt(PipeAtomicGet(FAddrIndex));
+end;
+
+function TPipeClient.ConnectAnyAddress(ATimeoutMs: Cardinal): TPipeEndpoint;
+var
+  LCount, LSliceMs: Integer;
+  LDeadline: UInt64;
+  LLastErr: string;
+  LLastWasTimeout: Boolean;
+begin
+  LCount := AddressCount;
+  if LCount = 1 then
+    // Sem FailoverAddresses: uma unica chamada, comportamento identico ao de
+    // antes desta feature (nenhuma volta extra, orcamento inteiro pro unico
+    // endereco).
+    Exit(PipeConnect(Address, ATimeoutMs, Transport, KeepAliveSeconds,
+      TlsOptions.AsOptions));
+
+  LSliceMs := ATimeoutMs div Cardinal(LCount);
+  if LSliceMs = 0 then
+    LSliceMs := 1;
+  LDeadline := PipeTickMs + ATimeoutMs;
+  LLastErr := '';
+  LLastWasTimeout := True;
+  repeat
+    try
+      Result := PipeConnect(AddressAt(FAddrIndex), LSliceMs, Transport,
+        KeepAliveSeconds, TlsOptions.AsOptions);
+      Exit; // FAddrIndex ja aponta pro endereco que funcionou
+    except
+      on E: EPipeError do
+      begin
+        LLastErr := E.Message;
+        LLastWasTimeout := E is EPipeTimeout;
+        FAddrIndex := (FAddrIndex + 1) mod LCount;
+      end;
+    end;
+  until PipeTickMs >= LDeadline;
+  if LLastWasTimeout then
+    raise EPipeTimeout.CreateFmt(
+      'nenhum dos %d enderecos respondeu em %u ms (ultimo erro: %s)',
+      [LCount, ATimeoutMs, LLastErr])
+  else
+    raise EPipeError.CreateFmt('nenhum dos %d enderecos conectou (ultimo erro: %s)',
+      [LCount, LLastErr]);
+end;
+
 procedure TPipeClient.Connect(ATimeoutMs: Cardinal);
 begin
   Disconnect; // encerra/limpa sessao anterior (viva ou morta); idempotente
   SetupDispatch;
+  FAddrIndex := 0; // Connect explicito sempre prefere o primario (Address)
   try
-    FEndpoint := PipeConnect(Address, ATimeoutMs, Transport, KeepAliveSeconds,
-      TlsOptions.AsOptions);
+    FEndpoint := ConnectAnyAddress(ATimeoutMs);
   except
     TeardownDispatch;
     raise;
@@ -544,7 +651,12 @@ begin
   // vezes ao longo de dias acabaria esbarrando no teto.
   if (FSessionUpTick <> 0) and
      (Int64(PipeTickMs) - Int64(FSessionUpTick) >= Int64(FReconnectDelayMs)) then
+  begin
     FReconnectAttempts := 0;
+    // Sessao duravel: a proxima FALHA (se houver) volta a preferir o
+    // primario, em vez de continuar de onde a volta pela lista havia parado.
+    FAddrIndex := 0;
+  end;
   FSessionUpTick := 0;
 
   Inc(FReconnectAttempts);
@@ -563,11 +675,16 @@ begin
   try
     // Reconexao usa as MESMAS credenciais: um cliente que reconecta sem elas
     // voltaria em texto claro, ou seria recusado pelo servidor mTLS.
-    LEndpoint := PipeConnect(Address, FReconnectDelayMs, Transport,
+    LEndpoint := PipeConnect(AddressAt(FAddrIndex), FReconnectDelayMs, Transport,
       KeepAliveSeconds, TlsOptions.AsOptions);
   except
     on EPipeError do
+    begin
+      // Endereco atual falhou: a PROXIMA tentativa mira o seguinte da lista
+      // (com FailoverAddresses vazio, AddressCount = 1 e isto e' sempre 0).
+      FAddrIndex := (FAddrIndex + 1) mod AddressCount;
       Exit; // inclui EPipeTimeout: proxima tentativa (ou desiste no teto)
+    end;
   end;
   // Segunda checagem, agora com a conexao ja aberta: a flag pode ter virado
   // DURANTE o PipeConnect. Descartar aqui e' o que impede uma sessao natimorta

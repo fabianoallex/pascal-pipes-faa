@@ -24,7 +24,8 @@ uses
   Pipes.TlsTests,
   Pipes.HeartbeatTests,
   Pipes.StatsTests,
-  Pipes.JsonTests;
+  Pipes.JsonTests,
+  Pipes.FailoverTests;
 
 var
   ConsoleApp: TTestRunner;

@@ -32,6 +32,11 @@
           <Mode Name="Default"/>
         </BuildModes>
       </Target>
+      <Target FileName="samples\EchoFailover\EchoFailoverClient.lpi">
+        <BuildModes>
+          <Mode Name="Default"/>
+        </BuildModes>
+      </Target>
       <Target FileName="samples\EchoSeguro\EchoSeguroServer.lpi">
         <BuildModes>
           <Mode Name="Default"/>

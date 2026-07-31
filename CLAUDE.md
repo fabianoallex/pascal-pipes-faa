@@ -104,9 +104,19 @@ SendBytes/SendText por ConnId, Broadcast, DisconnectClient, ClientCount/ClientId
 (só conexões estabelecidas), TryClientIdentity (identidade do par mTLS), MaxClients,
 OnClientConnected/Disconnected, OnRequest, Stats/ConnectionStats — métricas, ver abaixo)
 e `TPipeClient` (Connect, Disconnect, SendBytes/SendText, Request/RequestText síncrono
-com timeout, AutoReconnect, MaxReconnectAttempts, OnConnected/OnDisconnected, Stats).
+com timeout, AutoReconnect, MaxReconnectAttempts, FailoverAddresses/ActiveAddress —
+failover, ver abaixo —, OnConnected/OnDisconnected, Stats).
 Assinaturas completas e exemplos em `README.md`; racional de design em
 `docs/ARQUITETURA.md`.
+
+Failover de endereço (milestones F0-F3, `docs/ARQUITETURA.md` §12): `Client.FailoverAddresses:
+TArray<string>` — endereços tentados em ordem DEPOIS de `Address` (o primário), com o mesmo
+`Transport`/`TlsOptions`/`KeepAliveSeconds`; vazio por padrão (nenhuma mudança de
+comportamento). `Connect` divide `ATimeoutMs` entre os endereços da lista; a reconexão
+automática avança um endereço por tentativa que falha e volta a preferir o primário quando
+uma sessão é DURÁVEL (mesmo critério que já zera `MaxReconnectAttempts`). Só no cliente — o
+servidor escuta um único `Address`. `Client.ActiveAddress` (snapshot) diz qual endereço a
+sessão atual usa.
 
 Métricas/observabilidade (milestones S0-S4, `docs/ARQUITETURA.md` §11): `Server.Stats:
 TPipeServerStats` (agregado cumulativo desde o Listen) e `Server.ConnectionStats(ConnId,
@@ -147,7 +157,7 @@ src/Pipes.Json.pas                (bytes<->JSON OPCIONAL: System.JSON/fpjson —
 tests/Unit (Threading/Framing/Topics/Address)
   + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
-samples/ (15 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+samples/ (16 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 
@@ -177,6 +187,7 @@ agente para o próximo milestone que surgir, não como trabalho pendente.
 | P0-P5 | Pub/sub por tópico (`Pipes.Topics`, fanout, retain, replay na reconexão, samples `PainelLoja` e `MonitorTopicos`) — ver `docs/ARQUITETURA.md` §9 | opus | concluído |
 | H0-H4 | Heartbeat de aplicação (`ptTcp`/`ptTls`): `TPipeFrame.Ping`, `TPipeHeartbeatThread`, `HeartbeatIntervalMs`, detecção de zumbi nos dois sentidos — ver `docs/ARQUITETURA.md` §10 | sonnet | concluído |
 | S0-S4 | Métricas/observabilidade: `Stats`/`ConnectionStats`, `PipeAtomicAdd64`, latência de Request — ver `docs/ARQUITETURA.md` §11 | sonnet | concluído |
+| F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 
@@ -195,4 +206,9 @@ sentidos dentro de ~2x `HeartbeatIntervalMs`, `ptLocal` imune à property, e `St
 `Disconnect` com heartbeat ativo concluindo em < 2s. S0-S4 exigem: bytes/mensagens
 contados batem exatamente com o que foi enviado (servidor e cliente), `ConnectionStats`
 de uma conexão inexistente devolve `False`, e um Request que estoura o timeout NÃO entra
-na latência média/máxima (só o caminho de sucesso conta).
+na latência média/máxima (só o caminho de sucesso conta). F0-F3 exigem: `Connect` alcança
+um endereço da lista mesmo com o primário fora do ar, reconexão automática migra para um
+alternativo quando o primário cai em definitivo, uma sessão DURÁVEL num alternativo faz a
+PRÓXIMA falha voltar a preferir o primário (não só avançar para o próximo da lista), e
+`MaxReconnectAttempts` conta tentativas contra QUALQUER endereço num teto só, não um por
+endereço.

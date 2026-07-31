@@ -291,6 +291,31 @@ WriteLn('latencia media de request: ', LCliStats.AvgRequestLatencyMs, ' ms');
   chegaram a ter reply (timeout e erro ficam de fora: são "o servidor não respondeu", uma
   pergunta diferente de "quanto tempo levou").
 
+### Failover de endereço (`FailoverAddresses`)
+
+Só em `TPipeClient` (`TPipeServer` escuta um único `Address`; não há o que "falhar para" do
+lado de quem aceita). Endereços tentados em ordem DEPOIS de `Address`, o primário — vazio
+por padrão, comportamento idêntico a antes desta property existir. Todos compartilham
+`Transport`/`TlsOptions`/`KeepAliveSeconds` do cliente: são locais de rede alternativos do
+MESMO serviço (ex.: loja principal e DR da mesma retaguarda), não um jeito de falar com um
+servidor diferente.
+
+```pascal
+Client := TPipeClient.Create('loja-principal:9000', ptTcp);
+Client.FailoverAddresses := ['loja-dr:9000'];
+Client.AutoReconnect := True;
+Client.Connect(5000);             // divide o prazo entre os enderecos da lista
+WriteLn(Client.ActiveAddress);    // qual deles a sessao atual usa
+```
+
+`Connect(ATimeoutMs)` dá voltas pela lista com uma fatia igual do prazo por endereço, até um
+conectar ou o total estourar. A reconexão automática (`AutoReconnect`) avança um endereço por
+tentativa que falha, e volta a preferir o primário assim que uma sessão dura mais que
+`ReconnectDelayMs` — uma sessão "de verdade" num alternativo não deixa o cliente grudado
+nele: a PRÓXIMA falha tenta o primário de novo antes de espalhar pelos outros.
+`MaxReconnectAttempts`/`ReconnectDelayMs` continuam contando/espaçando por TENTATIVA, sem
+orçamento separado por endereço.
+
 ## Recursos
 
 - **Servidor multi-cliente** — acceptor + uma reader thread por conexão; `MaxClients`
@@ -488,6 +513,8 @@ TPipeClient
   OnTopicMessage: TPipeTopicEvent        // (...; ATopic; AData; ARetained)
                                          // ARetained: True só em catch-up de assinatura
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
+  FailoverAddresses: TArray<string>      // tentados apos Address; vazio = so Address (padrao)
+  ActiveAddress                          // qual endereco a sessao atual usa (snapshot)
   OnConnected/OnDisconnected: TPipeConnectionEvent
   Stats: TPipeClientStats                // da SESSAO atual; zera a cada reconexao
 
@@ -570,6 +597,15 @@ marcados `deprecated` só depois que samples e testes migrarem.
   síncrono, com o total calculado pelo servidor no reply. Mostra também a única parte que
   `Pipes.Json.pas` não esconde: montar/ler o valor (`AddPair` vs `Add`, `GetValue<T>` vs
   `Get`) é `{$IFDEF FPC}` local ao sample, atrás de duas funções pequenas (`JStr`/`JInt`).
+- **EchoFailover** (só `EchoFailoverClient` — reaproveita o `EchoServer.exe` de sempre, rodado
+  duas vezes) — vitrine de `FailoverAddresses`/`ActiveAddress` (ver seção "Failover de
+  endereço" acima). Suba `EchoServer.exe pipes_faa_primario` e
+  `EchoServer.exe pipes_faa_backup`, depois
+  `EchoFailoverClient.exe pipes_faa_primario pipes_faa_backup`: troque mensagens (o log
+  mostra `endereço ativo: pipes_faa_primario`), derrube a janela do primário e troque
+  mensagens de novo — sem reiniciar o cliente, o log passa a mostrar
+  `endereço ativo: pipes_faa_backup`. Roteiro completo no cabeçalho de
+  `EchoFailoverClient.dpr`.
 - **EchoSeguro** (`EchoSeguroServer` + `EchoSeguroClient`) — o mesmo eco, mas sobre `ptTls`
   com mTLS: servidor exige certificado de cliente (`CaFile`), cliente apresenta o dele,
   tráfego cifrado ponta a ponta. Usa a PKI de teste versionada em `tests/pki`; um cliente sem
@@ -798,6 +834,7 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Wi
                      Pipes.Json (bytes<->JSON, OPCIONAL — nao acoplada ao core)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),
+                     EchoFailover (FailoverAddresses, reaproveita o EchoServer.exe),
                      EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (jogo de turno), PingPong (jogo em tempo real),
                      PainelLoja (pub/sub por topico, tres papeis num exe),
