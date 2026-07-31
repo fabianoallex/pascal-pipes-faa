@@ -260,6 +260,40 @@ whoever detects it closes its own connection and follows the normal drop flow
 ignores the property, for the same reason as Keepalive: the peer process dying already
 closes the local pipe/UDS right away.
 
+### Metrics/observability (`Stats`/`ConnectionStats`)
+
+On-demand snapshot — same mold as `ClientCount`/`ClientIds`/`Subscriptions`: the library
+never pushes anything periodically, the app asks whenever it wants. Always on, no opt-in
+(the cost is one atomic increment per frame). Valid on **any transport**, `ptLocal`
+included.
+
+```pascal
+LConnStats: TPipeConnStats;
+if Server.ConnectionStats(AConnId, LConnStats) then
+  WriteLn(LConnStats.BytesReceived, ' bytes received on this connection');
+
+LSrvStats := Server.Stats;      // aggregate, cumulative since Listen
+LCliStats := Client.Stats;      // current SESSION, resets on every reconnect
+WriteLn('pool queue depth: ', LSrvStats.PoolQueueDepth);
+WriteLn('avg request latency: ', LCliStats.AvgRequestLatencyMs, ' ms');
+```
+
+- **`Server.ConnectionStats(AConnId, out AStats): Boolean`** — bytes/messages sent and
+  received by ONE connection. Dies with it (like topic subscriptions), unlike
+  `TryClientIdentity`. `False` if the connection doesn't exist or isn't established.
+- **`Server.Stats: TPipeServerStats`** — cumulative aggregate since `Listen`, survives
+  connections that already dropped: `TotalConnectionsAccepted` (established only),
+  `TotalBytesSent/Received`, `TotalMessagesSent/Received`, `ClientCount`, and
+  `PoolQueueDepth`. **Caveat:** under `pdmPool` (default) the dispatch pool is GLOBAL,
+  shared by every `TPipeServer`/`TPipeClient` in the process — `PoolQueueDepth` reflects
+  everyone's backlog, not just this server's. It's only exclusive to it under
+  `pdmSerialized`.
+- **`Client.Stats: TPipeClientStats`** — bytes/messages of the current SESSION (resets on
+  every `Connect`/reconnect, no cross-session cumulative counter), `ReconnectAttempts`,
+  `PendingRequests`, and `AvgRequestLatencyMs`/`MaxRequestLatencyMs` — only count Requests
+  that actually got a reply (timeout and error are excluded: "the server didn't respond"
+  is a different question from "how long did it take").
+
 ## Features
 
 - **Multi-client server** — acceptor + one reader thread per connection; optional
@@ -447,6 +481,8 @@ TPipeServer
   MaxClients                             // resource limit: counts handshaking connections
   OnClientConnected/OnClientDisconnected: TPipeConnectionEvent
   OnRequest: TPipeRequestEvent           // (const ARequest: TBytes; out AReply: TBytes)
+  Stats: TPipeServerStats                // aggregate, cumulative since Listen
+  ConnectionStats(ConnId, out Stats): Boolean  // per connection; dies with it
 
 TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect retries until the deadline
@@ -459,6 +495,7 @@ TPipeClient
                                          // ARetained: True only on subscription catch-up
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
   OnConnected/OnDisconnected: TPipeConnectionEvent
+  Stats: TPipeClientStats                // current SESSION; resets on every reconnect
 
 Pipes.Topics (pure unit, also useful outside the lib)
   PipeTopicMatches(Filter, Topic); PipeIsValidTopic; PipeIsValidTopicFilter
@@ -590,7 +627,8 @@ marked `deprecated` only after samples and tests migrate.
   `TPipeClient` are supported: several `TThread`s share a single client instance and fire
   RPCs in parallel; each one checks that the reply that came back is exactly the one for
   the request it made (correlation id), exposing any reply crossover between callers as a
-  bug.
+  bug. Prints `Client.Stats` at the end: it's the showcase for Request latency
+  (average/max), the metric that only makes sense with concurrent traffic like this.
 - **GatewaySeguro** (`ServicoLocal` + `GatewaySeguro` + `ClienteRemoto`) — the only sample
   where `TPipeServer` and `TPipeClient` are **alive at the same time** in the same process,
   with different transports on each end:

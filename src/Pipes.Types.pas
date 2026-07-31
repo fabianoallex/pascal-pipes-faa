@@ -104,6 +104,66 @@ type
     Subject: string;
   end;
 
+  { Contadores de uma conexao ESTABELECIDA do servidor (ver
+    TPipeServer.ConnectionStats). Morrem com a conexao, como TPipePeerIdentity
+    NAO faz — quem precisa do numero depois da queda usa TPipeServerStats
+    (agregado, sobrevive as conexoes). Sempre ativos, sem opt-in: o custo por
+    frame e' um incremento atomico, o mesmo que FInFlight ja paga. }
+  TPipeConnStats = record
+    BytesSent: UInt64;
+    BytesReceived: UInt64;
+    MessagesSent: UInt64;
+    MessagesReceived: UInt64;
+    /// PipeTickMs no instante em que OnClientConnected disparou.
+    ConnectedSinceTick: UInt64;
+  end;
+
+  { Agregado do servidor (ver TPipeServer.Stats): cumulativo desde o Listen,
+    sobrevive a conexoes que ja cairam — e' o numero para um health-check ou
+    painel de operacao, nao para depurar UMA conexao (isso e' ConnectionStats). }
+  TPipeServerStats = record
+    /// Igual a TPipeServer.ClientCount; incluido aqui para nao exigir uma
+    /// segunda chamada de quem so' quer um snapshot completo.
+    ClientCount: Integer;
+    /// So conta conexoes ESTABELECIDAS (mesmo criterio de ClientCount/
+    /// ClientIds) — uma conexao recusada no meio do handshake mTLS nao infla
+    /// este numero.
+    TotalConnectionsAccepted: UInt64;
+    TotalBytesSent: UInt64;
+    TotalBytesReceived: UInt64;
+    TotalMessagesSent: UInt64;
+    TotalMessagesReceived: UInt64;
+    /// Itens aguardando um worker no pool de despacho (EventPool). Em
+    /// pdmPool (padrao) esse pool e' GLOBAL, compartilhado por todo
+    /// TPipeServer/TPipeClient do MESMO PROCESSO — este numero e' o backlog
+    /// de todo mundo, nao so deste servidor. So e' exclusivo deste servidor em
+    /// pdmSerialized (pool privado de 1 worker).
+    PoolQueueDepth: Integer;
+  end;
+
+  { Contadores do cliente (ver TPipeClient.Stats): da SESSAO atual, como
+    FLastReadTick/FLastWriteTick do heartbeat — zeram a cada Connect/
+    reconexao. Sem contador cumulativo entre sessoes de proposito: o cliente
+    e' uma unica conexao de cada vez, e "quantos bytes desde sempre" teria
+    pouco uso pratico que ReconnectAttempts (o motivo de a sessao ter trocado)
+    ja nao cubra melhor. }
+  TPipeClientStats = record
+    BytesSent: UInt64;
+    BytesReceived: UInt64;
+    MessagesSent: UInt64;
+    MessagesReceived: UInt64;
+    /// = FReconnectAttempts: tentativas desde a ultima sessao DURAVEL (o
+    /// mesmo criterio de MaxReconnectAttempts), nao desde sempre.
+    ReconnectAttempts: Integer;
+    /// Requests em voo (Request/RequestText de qualquer thread) aguardando
+    /// reply ou timeout.
+    PendingRequests: Integer;
+    /// Media/maximo de latencia de Request bem-sucedido (exclui timeout e
+    /// reply de erro) desde a sessao atual. 0 se nenhum Request completou.
+    AvgRequestLatencyMs: Cardinal;
+    MaxRequestLatencyMs: Cardinal;
+  end;
+
   TPipeMessageEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
     const AData: TBytes) of object;
   /// Request-reply no servidor: o retorno em AReply vira o frame de resposta

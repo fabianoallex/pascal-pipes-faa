@@ -128,11 +128,33 @@ type
     FLastWriteTick: UInt64;
     FHeartbeatThread: TThread;
     FHbStopEvent: TEvent;
+    // --- contadores de Stats (Pipes.Types.TPipeClientStats) ---
+    // Da SESSAO atual: zeram nos MESMOS pontos que resetam FLastReadTick/
+    // FLastWriteTick (Connect e cada TryReopenSession bem-sucedido). Sempre
+    // ativos, sem opt-in.
+    FBytesSent: UInt64;
+    FBytesReceived: UInt64;
+    FMessagesSent: UInt64;
+    FMessagesReceived: UInt64;
+    // Latencia de Request bem-sucedido (exclui timeout/erro), tambem por
+    // sessao. Media = FReqTotalMs / FReqCount.
+    FReqCount: UInt64;
+    FReqTotalMs: UInt64;
+    FReqMaxMs: UInt64;
     // Chamados pelas threads internas (mesma unit):
     procedure ReaderFinished(const AError: string);
     procedure HandleFrame(const AFrame: TPipeFrame);
     procedure StartHeartbeat;
     procedure StopHeartbeat;
+    /// Zera os contadores de Stats da sessao nova. Chamada em Connect e em
+    /// cada TryReopenSession bem-sucedido, SEMPRE (ao contrario de
+    /// StartHeartbeat, nao depende de HeartbeatIntervalMs: os contadores de
+    /// Stats sao sempre ativos).
+    procedure ResetSessionStats;
+    /// Atualiza FReqCount/FReqTotalMs/FReqMaxMs com um Request BEM-SUCEDIDO
+    /// (chamado so' no caminho de sucesso de Request — timeout e erro nao
+    /// entram na latencia, ver Stats).
+    procedure RecordRequestLatency(AElapsedMs: UInt64);
     /// Callback do TPipeHeartbeatThread: manda Ping se ocioso na escrita,
     /// CloseAbort se sem NENHUM frame recebido ha' mais de 2x o intervalo.
     procedure HeartbeatTick;
@@ -169,6 +191,9 @@ type
     /// EPipeClosed se a conexao caiu no meio.
     function Request(const AData: TBytes; ATimeoutMs: Cardinal = 30000): TBytes;
     function RequestText(const AText: string; ATimeoutMs: Cardinal = 30000): string;
+    /// Snapshot da SESSAO atual (zera a cada Connect/reconexao) — sem
+    /// contador cumulativo entre sessoes de proposito, ver TPipeClientStats.
+    function Stats: TPipeClientStats;
     // --- pub/sub ---------------------------------------------------------
     /// Passa a receber, em OnTopicMessage, as publicacoes que AFilter alcanca.
     /// O filtro e' hierarquico e aceita curingas: 'caixa.3.status',
@@ -290,6 +315,9 @@ begin
     begin
       LFrame := PipeReadFrame(FClient.FStream, FClient.MaxMessageSize);
       PipeAtomicWrite64(FClient.FLastReadTick, PipeTickMs);
+      PipeAtomicAdd64(FClient.FBytesReceived,
+        PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+      PipeAtomicAdd64(FClient.FMessagesReceived, 1);
       FClient.HandleFrame(LFrame);
     end;
   except
@@ -422,6 +450,7 @@ begin
   PipeAtomicSet(FDisconnectNotified, 0);
   FConnected := True;
   FReader := TPipeClientReaderThread.Create(Self);
+  ResetSessionStats;
   StartHeartbeat;
   // Antes de OnConnected: quem assinou algo antes do Connect encontra as
   // assinaturas ja enviadas quando o proprio handler rodar.
@@ -565,6 +594,7 @@ begin
   FConnected := True;
   FSessionUpTick := PipeTickMs; // marca para o criterio de sessao duravel
   FReader := TPipeClientReaderThread.Create(Self);
+  ResetSessionStats;
   StartHeartbeat;
   // A conexao anterior levou consigo a lista de filtros do lado do servidor:
   // sem este replay a sessao nova voltaria viva e muda, e o sintoma (mensagens
@@ -583,6 +613,33 @@ procedure TPipeClient.NotifyDisconnectedOnce;
 begin
   if PipeAtomicCompareExchange(FDisconnectNotified, 1, 0) = 0 then
     DispatchConnEvent(FOnDisconnected, 0);
+end;
+
+procedure TPipeClient.ResetSessionStats;
+begin
+  PipeAtomicWrite64(FBytesSent, 0);
+  PipeAtomicWrite64(FBytesReceived, 0);
+  PipeAtomicWrite64(FMessagesSent, 0);
+  PipeAtomicWrite64(FMessagesReceived, 0);
+  PipeAtomicWrite64(FReqCount, 0);
+  PipeAtomicWrite64(FReqTotalMs, 0);
+  PipeAtomicWrite64(FReqMaxMs, 0);
+end;
+
+procedure TPipeClient.RecordRequestLatency(AElapsedMs: UInt64);
+var
+  LOldMax: UInt64;
+begin
+  PipeAtomicAdd64(FReqCount, 1);
+  PipeAtomicAdd64(FReqTotalMs, AElapsedMs);
+  // CAS loop para o maximo: um Add64 simples nao serve (nao e' soma, e' "so
+  // atualiza se for maior"), e duas chamadas concorrentes de Request podem
+  // disputar o mesmo campo.
+  repeat
+    LOldMax := PipeAtomicRead64(FReqMaxMs);
+    if AElapsedMs <= LOldMax then
+      Break;
+  until PipeAtomicCompareExchange64(FReqMaxMs, AElapsedMs, LOldMax) = LOldMax;
 end;
 
 procedure TPipeClient.StartHeartbeat;
@@ -635,6 +692,8 @@ begin
     try
       PipeWriteFrame(FStream, TPipeFrame.Ping, MaxMessageSize);
       PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+      PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE);
+      PipeAtomicAdd64(FMessagesSent, 1);
     except
       // Escrita falhou = sessao morrendo (mesma tolerancia de
       // SendControlFrame): o reader esta a ponto de notificar a queda.
@@ -710,6 +769,9 @@ begin
     try
       PipeWriteFrame(FStream, AFrame, MaxMessageSize);
       PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+      PipeAtomicAdd64(FBytesSent,
+        PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload)));
+      PipeAtomicAdd64(FMessagesSent, 1);
     except
       // Escrita falhou = sessao morrendo. Nao levanta: o reader esta a ponto de
       // notificar a queda, e o filtro (que ja esta em FSubs) volta no replay da
@@ -790,6 +852,8 @@ begin
 end;
 
 procedure TPipeClient.Publish(const ATopic: string; const AData: TBytes);
+var
+  LFrame: TPipeFrame;
 begin
   if not PipeIsValidTopic(ATopic) then
     raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [ATopic]);
@@ -797,9 +861,14 @@ begin
   try
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
-    PipeWriteFrame(FStream, PipePublishFrame(ATopic, AData, False),
-      MaxMessageSize);
+    LFrame := PipePublishFrame(ATopic, AData, False);
+    PipeWriteFrame(FStream, LFrame, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    // Tamanho do payload JA CODIFICADO (topico em UTF-8 + envelope), nao um
+    // recalculo manual: Length(ATopic) sozinho mentiria para topico nao-ASCII.
+    PipeAtomicAdd64(FBytesSent,
+      PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+    PipeAtomicAdd64(FMessagesSent, 1);
   finally
     FWriteLock.Leave;
   end;
@@ -857,7 +926,9 @@ function TPipeClient.Request(const AData: TBytes;
 var
   LCorrId: UInt64;
   LSlot: TPipeRpcSlot;
+  LStart: UInt64;
 begin
+  LStart := PipeTickMs;
   LCorrId := UInt64(Cardinal(PipeAtomicInc(FCorrSeq)));
   LSlot := TPipeRpcSlot.Create;
   try
@@ -874,6 +945,8 @@ begin
           raise EPipeClosed.Create('cliente nao esta conectado');
         PipeWriteFrame(FStream, TPipeFrame.Request(LCorrId, AData), MaxMessageSize);
         PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+        PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
+        PipeAtomicAdd64(FMessagesSent, 1);
       finally
         FWriteLock.Leave;
       end;
@@ -897,7 +970,12 @@ begin
     if LSlot.IsError then
       raise EPipeError.Create('servidor respondeu erro: ' + LSlot.ErrorMsg);
     if LSlot.Ok then
+    begin
+      // So' o caminho de sucesso entra na latencia — timeout e erro nao sao
+      // "quanto tempo o servidor levou para responder".
+      RecordRequestLatency(PipeTickMs - LStart);
       Exit(LSlot.Data); // inclui reply que chegou entre o timeout e a remocao
+    end;
     if LSlot.Closed then
       raise EPipeClosed.Create('conexao encerrada durante o request');
     raise EPipeTimeout.CreateFmt('request sem resposta em %u ms', [ATimeoutMs]);
@@ -912,6 +990,32 @@ begin
   Result := PipeUtf8Decode(Request(PipeUtf8Encode(AText), ATimeoutMs));
 end;
 
+function TPipeClient.Stats: TPipeClientStats;
+var
+  LCount: UInt64;
+  LTotal: UInt64;
+begin
+  FillChar(Result, SizeOf(Result), 0);
+  Result.BytesSent := PipeAtomicRead64(FBytesSent);
+  Result.BytesReceived := PipeAtomicRead64(FBytesReceived);
+  Result.MessagesSent := PipeAtomicRead64(FMessagesSent);
+  Result.MessagesReceived := PipeAtomicRead64(FMessagesReceived);
+  Result.ReconnectAttempts := PipeAtomicGet(FReconnectAttempts);
+  FRpcLock.Enter;
+  try
+    Result.PendingRequests := FRpcSlots.Count;
+  finally
+    FRpcLock.Leave;
+  end;
+  LCount := PipeAtomicRead64(FReqCount);
+  if LCount > 0 then
+  begin
+    LTotal := PipeAtomicRead64(FReqTotalMs);
+    Result.AvgRequestLatencyMs := Cardinal(LTotal div LCount);
+  end;
+  Result.MaxRequestLatencyMs := Cardinal(PipeAtomicRead64(FReqMaxMs));
+end;
+
 procedure TPipeClient.SendBytes(const AData: TBytes);
 begin
   FWriteLock.Enter;
@@ -920,6 +1024,8 @@ begin
       raise EPipeClosed.Create('cliente nao esta conectado');
     PipeWriteFrame(FStream, TPipeFrame.Msg(AData), MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
+    PipeAtomicAdd64(FMessagesSent, 1);
   finally
     FWriteLock.Leave;
   end;

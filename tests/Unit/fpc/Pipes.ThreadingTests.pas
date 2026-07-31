@@ -20,6 +20,8 @@ type
     procedure Atomic_IncDec_DevolvemValorNovo;
     procedure Atomic_SetDevolveAntigo_CasSoTrocaSeIgual;
     procedure Atomic_RoundTrip64;
+    procedure Atomic_CompareExchange64_TrocaSoSeIgual;
+    procedure Atomic_Add64_ConcorrenteSomaCorreta;
     procedure TickMs_NaoRetrocede;
     procedure Monitor_WaitComTimeout_RetornaAposPrazo;
     procedure Monitor_PulseAll_AcordaWaiterAntesDoTimeout;
@@ -46,6 +48,20 @@ type
   TRaiseWork = class(TPipeWorkItem)
   public
     procedure Execute; override;
+  end;
+
+  { Soma AAmount ao contador compartilhado, ATimes vezes, via PipeAtomicAdd64
+    — usado para provar que o CAS loop nao perde incrementos sob concorrencia
+    real (um teste sequencial nao pegaria um loop de CAS mal escrito). }
+  TAdderThread = class(TThread)
+  private
+    FTarget: PUInt64;
+    FTimes: Integer;
+    FAmount: UInt64;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(ATarget: PUInt64; ATimes: Integer; AAmount: UInt64);
   end;
 
   { Entra no monitor, sinaliza que vai dormir e espera um PulseAll. }
@@ -77,6 +93,24 @@ end;
 procedure TRaiseWork.Execute;
 begin
   raise Exception.Create('excecao proposital do teste');
+end;
+
+constructor TAdderThread.Create(ATarget: PUInt64; ATimes: Integer;
+  AAmount: UInt64);
+begin
+  FTarget := ATarget;
+  FTimes := ATimes;
+  FAmount := AAmount;
+  FreeOnTerminate := False;
+  inherited Create(False);
+end;
+
+procedure TAdderThread.Execute;
+var
+  I: Integer;
+begin
+  for I := 1 to FTimes do
+    PipeAtomicAdd64(FTarget^, FAmount);
 end;
 
 constructor TMonitorWaiter.Create(AMon: TPipeMonitor; AInWait, AAwake: PInteger);
@@ -143,6 +177,39 @@ begin
   PipeAtomicWrite64(W, UInt64($0123456789ABCDEF));
   AssertTrue('roundtrip de 64 bits corrompeu o valor',
     PipeAtomicRead64(W) = UInt64($0123456789ABCDEF));
+end;
+
+procedure TPipeThreadingTests.Atomic_CompareExchange64_TrocaSoSeIgual;
+var
+  W: UInt64;
+begin
+  W := 100;
+  AssertTrue('comparand bateu: devia trocar',
+    PipeAtomicCompareExchange64(W, 200, 100) = 100); // devolve o valor ANTIGO
+  AssertTrue(W = 200);
+  AssertTrue('comparand nao bateu: devia manter',
+    PipeAtomicCompareExchange64(W, 300, 999) = 200);
+  AssertTrue('valor nao devia ter mudado', W = 200);
+end;
+
+procedure TPipeThreadingTests.Atomic_Add64_ConcorrenteSomaCorreta;
+const
+  NUM_THREADS = 8;
+  TIMES_PER_THREAD = 1000;
+var
+  LCounter: UInt64;
+  LThreads: array[0..NUM_THREADS - 1] of TAdderThread;
+  I: Integer;
+begin
+  LCounter := 0;
+  for I := 0 to NUM_THREADS - 1 do
+    LThreads[I] := TAdderThread.Create(@LCounter, TIMES_PER_THREAD, 1);
+  for I := 0 to NUM_THREADS - 1 do
+    LThreads[I].WaitFor;
+  for I := 0 to NUM_THREADS - 1 do
+    LThreads[I].Free;
+  AssertTrue('CAS loop perdeu incrementos sob concorrencia',
+    LCounter = UInt64(NUM_THREADS * TIMES_PER_THREAD));
 end;
 
 procedure TPipeThreadingTests.TickMs_NaoRetrocede;

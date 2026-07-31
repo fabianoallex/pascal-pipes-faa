@@ -113,6 +113,14 @@ type
     FLastWriteTick: UInt64;
     FHeartbeatThread: TThread;
     FHbStopEvent: TEvent;
+    // Contadores de Pipes.Server.ConnectionStats (Pipes.Types.TPipeConnStats).
+    // Sempre ativos (sem opt-in): custam um PipeAtomicAdd64 por frame, no
+    // MESMO ponto que ja atualiza FLastReadTick/FLastWriteTick.
+    FBytesSent: UInt64;
+    FBytesReceived: UInt64;
+    FMessagesSent: UInt64;
+    FMessagesReceived: UInt64;
+    FConnectedSinceTick: UInt64;
     // Conexao ESTABELECIDA: handshake concluido, prestes a disparar
     // OnClientConnected. Antes disso ela existe (ocupa vaga de MaxClients) mas
     // nao aparece em ClientIds/ClientCount — sob mTLS, uma conexao ainda
@@ -172,6 +180,14 @@ type
     FOnClientConnected: TPipeConnectionEvent;
     FOnClientDisconnected: TPipeConnectionEvent;
     FOnRequest: TPipeRequestEvent;
+    // Agregado de Stats (Pipes.Types.TPipeServerStats): cumulativo desde o
+    // Listen, sobrevive a conexoes que ja cairam. Bumped nos MESMOS pontos que
+    // os contadores por conexao (SendFrame, reader loop, PublishEstablished).
+    FTotalConnectionsAccepted: UInt64;
+    FTotalBytesSent: UInt64;
+    FTotalBytesReceived: UInt64;
+    FTotalMessagesSent: UInt64;
+    FTotalMessagesReceived: UInt64;
     // --- pub/sub ---
     FRelayClientPublish: Boolean;
     FMaxSubscriptionsPerClient: Integer;
@@ -268,6 +284,15 @@ type
     /// cair, e uma excecao ali obrigaria try/except dentro do laco.
     function TryClientIdentity(AConnId: TPipeConnectionId;
       out AIdentity: TPipePeerIdentity): Boolean;
+    /// Snapshot agregado (cumulativo desde o Listen; sobrevive a conexoes que
+    /// ja cairam). Ver a ressalva de TPipeServerStats.PoolQueueDepth sobre o
+    /// pool GLOBAL em pdmPool.
+    function Stats: TPipeServerStats;
+    /// Contadores da conexao AConnId (Pipes.Types.TPipeConnStats). False se
+    /// nao existe ou nao esta ESTABELECIDA (mesmo criterio de ClientCount) —
+    /// morrem com a conexao, ao contrario de TryClientIdentity.
+    function ConnectionStats(AConnId: TPipeConnectionId;
+      out AStats: TPipeConnStats): Boolean;
     // --- pub/sub ---------------------------------------------------------
     /// Publica em ATopic: entrega a TODOS os clientes cujo filtro assinado
     /// alcanca o topico, e a mais ninguem. Nome literal e hierarquico
@@ -446,6 +471,12 @@ begin
     begin
       LFrame := PipeReadFrame(FConn.FStream, FConn.FServer.MaxMessageSize);
       PipeAtomicWrite64(FConn.FLastReadTick, PipeTickMs);
+      PipeAtomicAdd64(FConn.FBytesReceived,
+        PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+      PipeAtomicAdd64(FConn.FMessagesReceived, 1);
+      PipeAtomicAdd64(FConn.FServer.FTotalBytesReceived,
+        PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+      PipeAtomicAdd64(FConn.FServer.FTotalMessagesReceived, 1);
       FConn.FServer.HandleFrame(FConn, LFrame);
     end;
   except
@@ -535,11 +566,18 @@ begin
 end;
 
 procedure TPipeServerConnection.SendFrame(const AFrame: TPipeFrame);
+var
+  LBytes: UInt64;
 begin
   FWriteLock.Enter;
   try
     PipeWriteFrame(FStream, AFrame, FServer.MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
+    LBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload));
+    PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FMessagesSent, 1);
+    PipeAtomicAdd64(FServer.FTotalBytesSent, LBytes);
+    PipeAtomicAdd64(FServer.FTotalMessagesSent, 1);
   finally
     FWriteLock.Leave;
   end;
@@ -1308,6 +1346,8 @@ begin
   finally
     FConnLock.Leave;
   end;
+  AConn.FConnectedSinceTick := PipeTickMs;
+  PipeAtomicAdd64(FTotalConnectionsAccepted, 1);
 end;
 
 function TPipeServer.ClientCount: Integer;
@@ -1341,6 +1381,50 @@ begin
     Result := FIdentities.TryGetValue(AConnId, AIdentity);
   finally
     FConnLock.Leave;
+  end;
+end;
+
+function TPipeServer.Stats: TPipeServerStats;
+begin
+  FillChar(Result, SizeOf(Result), 0);
+  Result.ClientCount := ClientCount;
+  Result.TotalConnectionsAccepted := PipeAtomicRead64(FTotalConnectionsAccepted);
+  Result.TotalBytesSent := PipeAtomicRead64(FTotalBytesSent);
+  Result.TotalBytesReceived := PipeAtomicRead64(FTotalBytesReceived);
+  Result.TotalMessagesSent := PipeAtomicRead64(FTotalMessagesSent);
+  Result.TotalMessagesReceived := PipeAtomicRead64(FTotalMessagesReceived);
+  Result.PoolQueueDepth := EventPool.QueueDepth;
+end;
+
+function TPipeServer.ConnectionStats(AConnId: TPipeConnectionId;
+  out AStats: TPipeConnStats): Boolean;
+var
+  LConn: TPipeServerConnection;
+begin
+  FillChar(AStats, SizeOf(AStats), 0);
+  FConnLock.Enter;
+  try
+    // Mesma regra de SendBytes: FEstablished na condicao, AddRef segura o
+    // objeto para ler os contadores FORA do lock sem risco de use-after-free
+    // se a conexao cair entre o TryGetValue e a leitura.
+    if FConnections.TryGetValue(AConnId, LConn) and LConn.FEstablished then
+      LConn.AddRef
+    else
+      LConn := nil;
+  finally
+    FConnLock.Leave;
+  end;
+  Result := LConn <> nil;
+  if not Result then
+    Exit;
+  try
+    AStats.BytesSent := PipeAtomicRead64(LConn.FBytesSent);
+    AStats.BytesReceived := PipeAtomicRead64(LConn.FBytesReceived);
+    AStats.MessagesSent := PipeAtomicRead64(LConn.FMessagesSent);
+    AStats.MessagesReceived := PipeAtomicRead64(LConn.FMessagesReceived);
+    AStats.ConnectedSinceTick := LConn.FConnectedSinceTick;
+  finally
+    LConn.Release;
   end;
 end;
 

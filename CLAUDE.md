@@ -102,10 +102,21 @@ HeartbeatIntervalMs, Active, DispatchMode, MaxMessageSize, OnMessage, OnError) �
 `TPipeServer` (Listen, Stop,
 SendBytes/SendText por ConnId, Broadcast, DisconnectClient, ClientCount/ClientIds
 (só conexões estabelecidas), TryClientIdentity (identidade do par mTLS), MaxClients,
-OnClientConnected/Disconnected, OnRequest) e `TPipeClient` (Connect, Disconnect,
-SendBytes/SendText, Request/RequestText síncrono com timeout, AutoReconnect,
-MaxReconnectAttempts, OnConnected/OnDisconnected). Assinaturas completas e exemplos em
-`README.md`; racional de design em `docs/ARQUITETURA.md`.
+OnClientConnected/Disconnected, OnRequest, Stats/ConnectionStats — métricas, ver abaixo)
+e `TPipeClient` (Connect, Disconnect, SendBytes/SendText, Request/RequestText síncrono
+com timeout, AutoReconnect, MaxReconnectAttempts, OnConnected/OnDisconnected, Stats).
+Assinaturas completas e exemplos em `README.md`; racional de design em
+`docs/ARQUITETURA.md`.
+
+Métricas/observabilidade (milestones S0-S4, `docs/ARQUITETURA.md` §11): `Server.Stats:
+TPipeServerStats` (agregado cumulativo desde o Listen) e `Server.ConnectionStats(ConnId,
+out): Boolean` (por conexão, morre com ela — padrão Try* de `TryClientIdentity`) e
+`Client.Stats: TPipeClientStats` (da SESSÃO atual, zera a cada reconexão, sem contador
+cumulativo entre sessões). Snapshot sob demanda, mesmo molde de `ClientCount`/
+`Subscriptions` — NÃO é um evento periódico. Sempre ativos, sem opt-in (custo de um
+`PipeAtomicAdd64` por frame). `PoolQueueDepth` é o backlog do pool GLOBAL em `pdmPool`,
+não só deste servidor — só é exclusivo dele em `pdmSerialized`. Latência de Request só
+conta o caminho de SUCESSO (timeout e erro ficam de fora).
 
 `TPipeDispatchMode`: `pdmPool` (padrão), `pdmSerialized` (pool de 1 worker, ordem FIFO),
 `pdmMainThread` (TThread.Queue — apps VCL/LCL).
@@ -133,7 +144,7 @@ src/Pipes.Transport.Tcp.pas      src/Pipes.Transport.Tls.pas
 src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
 src/Pipes.Client.pas             src/Pipes.Server.pas
 tests/Unit (Threading/Framing/Topics/Address)
-  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat)
+  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
 samples/ (14 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
@@ -164,6 +175,7 @@ agente para o próximo milestone que surgir, não como trabalho pendente.
 | T0-T5 | `ptTcp`/`ptTls`, mTLS, samples seguros — ver tabela em `docs/ARQUITETURA.md` §7 | opus/sonnet | concluído |
 | P0-P5 | Pub/sub por tópico (`Pipes.Topics`, fanout, retain, replay na reconexão, samples `PainelLoja` e `MonitorTopicos`) — ver `docs/ARQUITETURA.md` §9 | opus | concluído |
 | H0-H4 | Heartbeat de aplicação (`ptTcp`/`ptTls`): `TPipeFrame.Ping`, `TPipeHeartbeatThread`, `HeartbeatIntervalMs`, detecção de zumbi nos dois sentidos — ver `docs/ARQUITETURA.md` §10 | sonnet | concluído |
+| S0-S4 | Métricas/observabilidade: `Stats`/`ConnectionStats`, `PipeAtomicAdd64`, latência de Request — ver `docs/ARQUITETURA.md` §11 | sonnet | concluído |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 
@@ -179,4 +191,7 @@ desconhecida e certificado auto-assinado sob mTLS têm veredito correto e distin
 `docs/ARQUITETURA.md` §7, nota sobre `VerifyClientChain`) em Schannel e OpenSSL. H0-H4
 exigem: zumbi (endpoint cru que aceita e nunca mais fala nada, sem FIN) detectado nos dois
 sentidos dentro de ~2x `HeartbeatIntervalMs`, `ptLocal` imune à property, e `Stop`/
-`Disconnect` com heartbeat ativo concluindo em < 2s.
+`Disconnect` com heartbeat ativo concluindo em < 2s. S0-S4 exigem: bytes/mensagens
+contados batem exatamente com o que foi enviado (servidor e cliente), `ConnectionStats`
+de uma conexão inexistente devolve `False`, e um Request que estoura o timeout NÃO entra
+na latência média/máxima (só o caminho de sucesso conta).

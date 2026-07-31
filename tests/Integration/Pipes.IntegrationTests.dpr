@@ -25,7 +25,8 @@ uses
   Pipes.PubSubTests in 'Pipes.PubSubTests.pas',
   Pipes.StressTests in 'Pipes.StressTests.pas',
   Pipes.TlsTests in 'Pipes.TlsTests.pas',
-  Pipes.HeartbeatTests in 'Pipes.HeartbeatTests.pas';
+  Pipes.HeartbeatTests in 'Pipes.HeartbeatTests.pas',
+  Pipes.StatsTests in 'Pipes.StatsTests.pas';
 
 var
   runner: ITestRunner;
