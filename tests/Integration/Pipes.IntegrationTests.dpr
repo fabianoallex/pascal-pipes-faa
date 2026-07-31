@@ -26,7 +26,9 @@ uses
   Pipes.StressTests in 'Pipes.StressTests.pas',
   Pipes.TlsTests in 'Pipes.TlsTests.pas',
   Pipes.HeartbeatTests in 'Pipes.HeartbeatTests.pas',
-  Pipes.StatsTests in 'Pipes.StatsTests.pas';
+  Pipes.StatsTests in 'Pipes.StatsTests.pas',
+  Pipes.Json in '..\..\src\Pipes.Json.pas',
+  Pipes.JsonTests in 'Pipes.JsonTests.pas';
 
 var
   runner: ITestRunner;

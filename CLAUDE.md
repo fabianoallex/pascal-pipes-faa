@@ -143,10 +143,11 @@ src/Pipes.Transport.Windows.pas  src/Pipes.Transport.Posix.pas
 src/Pipes.Transport.Tcp.pas      src/Pipes.Transport.Tls.pas
 src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
 src/Pipes.Client.pas             src/Pipes.Server.pas
+src/Pipes.Json.pas                (bytes<->JSON OPCIONAL: System.JSON/fpjson — ver README.md)
 tests/Unit (Threading/Framing/Topics/Address)
-  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats)
+  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
-samples/ (14 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+samples/ (15 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 

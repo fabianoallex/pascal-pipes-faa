@@ -184,6 +184,8 @@
         <DCCReference Include="Pipes.TlsTests.pas"/>
         <DCCReference Include="Pipes.HeartbeatTests.pas"/>
         <DCCReference Include="Pipes.StatsTests.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Json.pas"/>
+        <DCCReference Include="Pipes.JsonTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

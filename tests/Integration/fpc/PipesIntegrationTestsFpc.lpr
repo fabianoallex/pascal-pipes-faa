@@ -23,7 +23,8 @@ uses
   Pipes.StressTests,
   Pipes.TlsTests,
   Pipes.HeartbeatTests,
-  Pipes.StatsTests;
+  Pipes.StatsTests,
+  Pipes.JsonTests;
 
 var
   ConsoleApp: TTestRunner;

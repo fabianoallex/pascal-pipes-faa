@@ -494,7 +494,53 @@ TPipeClient
 Pipes.Topics (unit pura, útil também fora da lib)
   PipeTopicMatches(Filtro, Topico); PipeIsValidTopic; PipeIsValidTopicFilter
 
-Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls
+Pipes.Json (OPCIONAL — só inclui quem for usar; ver "JSON" abaixo)
+  TPipeJSONValue                         // = TJSONValue (Delphi) / TJSONData (FPC)
+  PipeBytesToJSON(Data): TPipeJSONValue  // parse; EPipeJSONError se inválido/vazio
+  PipeJSONToBytes(Value): TBytes         // serializa; não libera Value
+  PipeSendJSON(Client/Server, ..., Value)     // wrapper de SendBytes
+  PipeRequestJSON(Client, Value, TimeoutMs): TPipeJSONValue  // wrapper de Request
+
+Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls | EPipeJSONError
+```
+
+### JSON (`Pipes.Json.pas`, opcional)
+
+A API trafega `TBytes`; texto vira JSON como qualquer outro texto — `SendText`/
+`RequestText` já bastam se o app monta e lê o JSON com a lib da sua preferência. O que
+`Pipes.Json.pas` acrescenta é só a fronteira bytes↔JSON usando a lib nativa de cada
+compilador (`System.JSON` no Delphi, `fpjson`/`jsonparser` no FPC), escondida atrás do
+alias `TPipeJSONValue`, mais dois wrappers finos (`PipeSendJSON`/`PipeRequestJSON`) sobre
+`SendBytes`/`Request`. Não faz parte do core — `Pipes.Client`/`Pipes.Server` não a
+conhecem — e não precisa ser incluída por quem não for usar JSON.
+
+Construir e ler o valor (`AddPair` vs `Add`, `GetValue<T>` vs `Get`) continua sendo a API
+nativa de cada lib; unificar isso também não está no escopo da unit — quem tiver um caso
+específico (outro formato, outra lib JSON) implementa por conta própria em cima de
+`TBytes`/`SendBytes`, sem nenhuma penalidade.
+
+```pascal
+uses Pipes.Client, Pipes.Json, System.JSON; // ou fpjson no FPC
+
+var
+  Obj, Reply: TJSONObject;
+begin
+  Obj := TJSONObject.Create;
+  try
+    Obj.AddPair('evento', 'abriu-caixa');
+    Obj.AddPair('caixa', TJSONNumber.Create(3));
+    PipeSendJSON(Client, Obj);              // fire-and-forget
+
+    Reply := PipeRequestJSON(Client, Obj, 3000) as TJSONObject; // RPC síncrono
+    try
+      // ... Reply.GetValue<...>(...)
+    finally
+      Reply.Free;
+    end;
+  finally
+    Obj.Free;
+  end;
+end;
 ```
 
 ### Compatibilidade com a API anterior
@@ -517,6 +563,13 @@ marcados `deprecated` só depois que samples e testes migrarem.
 - **EchoServer / EchoClient** — console, mesmo fonte nos dois compiladores. Rode o servidor,
   depois o cliente: texto simples usa `SendText` (eco assíncrono via `OnMessage`); linhas
   começando com `?` usam `RequestText` (RPC).
+- **EchoJson** (`EchoJsonServer` + `EchoJsonClient`) — o mesmo eco, mas com payload JSON via
+  `Pipes.Json.pas` em vez de texto cru (ver seção "JSON" acima). Digite `item quantidade`
+  (ex.: `cafe 2`) para `PipeSendJSON` fire-and-forget — a
+  confirmação assíncrona chega em `OnMessage` — ou `?item quantidade` para `PipeRequestJSON`
+  síncrono, com o total calculado pelo servidor no reply. Mostra também a única parte que
+  `Pipes.Json.pas` não esconde: montar/ler o valor (`AddPair` vs `Add`, `GetValue<T>` vs
+  `Get`) é `{$IFDEF FPC}` local ao sample, atrás de duas funções pequenas (`JStr`/`JInt`).
 - **EchoSeguro** (`EchoSeguroServer` + `EchoSeguroClient`) — o mesmo eco, mas sobre `ptTls`
   com mTLS: servidor exige certificado de cliente (`CaFile`), cliente apresenta o dele,
   tráfego cifrado ponta a ponta. Usa a PKI de teste versionada em `tests/pki`; um cliente sem
@@ -742,8 +795,10 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Wi
                      pub/sub: Pipes.Topics (nomes, curingas e envelope; unit pura)
                      rede: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
+                     Pipes.Json (bytes<->JSON, OPCIONAL — nao acoplada ao core)
 packages/            pipes_faa.lpk (pacote Lazarus)
-samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
+samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),
+                     EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (jogo de turno), PingPong (jogo em tempo real),
                      PainelLoja (pub/sub por topico, tres papeis num exe),
                      MonitorTopicos (explorador de pub/sub com UI VCL/LCL),

@@ -10,7 +10,7 @@
         <MainUnitHasScaledStatement Value="False"/>
       </Flags>
       <SessionStorage Value="InProjectDir"/>
-      <Title Value="PipesIntegrationTestsFpc"/>
+      <Title Value="EchoJsonClient"/>
       <UseAppBundle Value="False"/>
       <ResourceType Value="res"/>
     </General>
@@ -23,53 +23,15 @@
     </PublishOptions>
     <RunParams>
       <FormatVersion Value="2"/>
-      <local>
-        <CommandLineParams Value="--all --format=plain"/>
-      </local>
     </RunParams>
     <RequiredPackages>
       <Item>
-        <PackageName Value="FPCUnitTestRunner"/>
-      </Item>
-      <Item>
-        <PackageName Value="FCL"/>
+        <PackageName Value="pipes_faa"/>
       </Item>
     </RequiredPackages>
     <Units>
       <Unit>
-        <Filename Value="PipesIntegrationTestsFpc.lpr"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.TransportTests.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.StressTests.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.EndToEndTests.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.TlsTests.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.PubSubTests.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.HeartbeatTests.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.StatsTests.pas"/>
-        <IsPartOfProject Value="True"/>
-      </Unit>
-      <Unit>
-        <Filename Value="Pipes.JsonTests.pas"/>
+        <Filename Value="EchoJsonClient.dpr"/>
         <IsPartOfProject Value="True"/>
       </Unit>
     </Units>
@@ -78,11 +40,9 @@
     <Version Value="11"/>
     <PathDelim Value="\"/>
     <Target>
-      <Filename Value="PipesIntegrationTestsFpc"/>
+      <Filename Value="EchoJsonClient"/>
     </Target>
     <SearchPaths>
-      <IncludeFiles Value="..\..\..\src"/>
-      <OtherUnitFiles Value="..\..\..\src"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
     <Parsing>
