@@ -30,6 +30,13 @@ implementar qualquer milestone novo.
 - **Backend `ptTcp`:** socket TCP nos dois OS, keepalive ligado por padrão
   (`KeepAliveSeconds`). Adicionado depois do M8 para o caso de PDVs de loja sobre VPN
   (ver `docs/ARQUITETURA.md`, "Milestones posteriores").
+- **Heartbeat de aplicação (`HeartbeatIntervalMs`, milestones H0-H4):** só `ptTcp`/`ptTls`
+  (`ptLocal` ignora, mesma razão de `KeepAliveSeconds`). Simétrico e sem correlação — usa
+  o `pfkPing` (kind 3) já reservado no NPF1 desde o M2, sem `pfkPong`: qualquer frame
+  recebido reseta o relógio de leitura do peer. Morte = sem NENHUM frame recebido há mais
+  de 2x o intervalo; quem detecta chama `CloseAbort` (mecanismo já existente,
+  thread-safe/idempotente) e segue o teardown normal — nenhuma interrupção nova foi
+  inventada. Racional completo em `docs/ARQUITETURA.md` §10.
 - **Backend `ptTls`:** TCP + TLS via `Pipes.Transport.Tls.pas`, fachada neutra que delega
   a `Pipes.Transport.Schannel.pas` (Windows, SSPI nativo) ou `Pipes.Transport.OpenSSL.pas`
   (POSIX e Windows opt-in), com mTLS suportado nos dois backends. Milestones T0-T5 em
@@ -90,8 +97,9 @@ implementar qualquer milestone novo.
 
 ## API pública (resumo)
 
-`TPipeBase` (abstrata: Address, Transport, TlsOptions, KeepAliveSeconds, Active,
-DispatchMode, MaxMessageSize, OnMessage, OnError) → `TPipeServer` (Listen, Stop,
+`TPipeBase` (abstrata: Address, Transport, TlsOptions, KeepAliveSeconds,
+HeartbeatIntervalMs, Active, DispatchMode, MaxMessageSize, OnMessage, OnError) →
+`TPipeServer` (Listen, Stop,
 SendBytes/SendText por ConnId, Broadcast, DisconnectClient, ClientCount/ClientIds
 (só conexões estabelecidas), TryClientIdentity (identidade do par mTLS), MaxClients,
 OnClientConnected/Disconnected, OnRequest) e `TPipeClient` (Connect, Disconnect,
@@ -125,7 +133,7 @@ src/Pipes.Transport.Tcp.pas      src/Pipes.Transport.Tls.pas
 src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
 src/Pipes.Client.pas             src/Pipes.Server.pas
 tests/Unit (Threading/Framing/Topics/Address)
-  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls)
+  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
 samples/ (14 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
@@ -155,6 +163,7 @@ agente para o próximo milestone que surgir, não como trabalho pendente.
 | M8 | Samples (echo console, chat VCL/LCL) + README | haiku | concluído |
 | T0-T5 | `ptTcp`/`ptTls`, mTLS, samples seguros — ver tabela em `docs/ARQUITETURA.md` §7 | opus/sonnet | concluído |
 | P0-P5 | Pub/sub por tópico (`Pipes.Topics`, fanout, retain, replay na reconexão, samples `PainelLoja` e `MonitorTopicos`) — ver `docs/ARQUITETURA.md` §9 | opus | concluído |
+| H0-H4 | Heartbeat de aplicação (`ptTcp`/`ptTls`): `TPipeFrame.Ping`, `TPipeHeartbeatThread`, `HeartbeatIntervalMs`, detecção de zumbi nos dois sentidos — ver `docs/ARQUITETURA.md` §10 | sonnet | concluído |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 
@@ -167,4 +176,7 @@ automática após reconexão **sem o app reassinar nada**. M7 exige: Stop durant
 tráfego intenso conclui em < 2s (detector de deadlock) e queda abrupta de cliente dispara
 OnClientDisconnected sem vazar handle/fd. T4/T5 exigem além disso: certificado de CA
 desconhecida e certificado auto-assinado sob mTLS têm veredito correto e distinto (ver
-`docs/ARQUITETURA.md` §7, nota sobre `VerifyClientChain`) em Schannel e OpenSSL.
+`docs/ARQUITETURA.md` §7, nota sobre `VerifyClientChain`) em Schannel e OpenSSL. H0-H4
+exigem: zumbi (endpoint cru que aceita e nunca mais fala nada, sem FIN) detectado nos dois
+sentidos dentro de ~2x `HeartbeatIntervalMs`, `ptLocal` imune à property, e `Stop`/
+`Disconnect` com heartbeat ativo concluindo em < 2s.

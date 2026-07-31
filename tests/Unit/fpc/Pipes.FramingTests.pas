@@ -30,6 +30,7 @@ type
     procedure RoundTrip_PayloadVazio;
     procedure RoundTrip_MultiplosFramesEmSequencia;
     procedure RoundTrip_ErrorReply_PreservaFlagEMensagem;
+    procedure RoundTrip_Ping;
     procedure ReadFrame_MagicInvalido_Levanta;
     procedure ReadFrame_KindDesconhecido_Levanta;
     procedure ReadFrame_PayloadAcimaDoMaximo_Levanta;
@@ -208,6 +209,22 @@ begin
   AssertTrue('flag de erro nao preservada', LFrame.IsError);
   AssertTrue('corrId nao preservado', LFrame.CorrId = 7);
   AssertEquals('falha proposital', LFrame.PayloadAsText);
+end;
+
+procedure TPipeFramingTests.RoundTrip_Ping;
+var
+  LFrame: TPipeFrame;
+begin
+  // Heartbeat de aplicacao (Pipes.Base.HeartbeatIntervalMs): simetrico e sem
+  // correlacao, entao o frame e' so' kind+CorrId=0+payload vazio.
+  FStream := TBytesStream.Create;
+  PipeWriteFrame(FStream, TPipeFrame.Ping, 1024);
+  FStream.Position := 0;
+  LFrame := PipeReadFrame(FStream, 1024);
+  AssertTrue('kind devia ser pfkPing', LFrame.Kind = pfkPing);
+  AssertTrue('corrId de ping devia ser 0', LFrame.CorrId = 0);
+  AssertEquals(0, Integer(LFrame.Flags));
+  AssertEquals(0, Length(LFrame.Payload));
 end;
 
 procedure TPipeFramingTests.ReadFrame_MagicInvalido_Levanta;

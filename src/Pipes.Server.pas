@@ -61,7 +61,20 @@ unit Pipes.Server;
     cliente sao tratados NA reader thread, o que inclui escrever de volta
     (recusa, ou valores retidos na hora da assinatura). Uma escrita presa ali
     atrasa a leitura daquela conexao e de nenhuma outra — mesma exposicao de
-    qualquer envio servidor->cliente. }
+    qualquer envio servidor->cliente.
+
+  Heartbeat de aplicacao (ptTcp/ptTls; ver Pipes.Base.HeartbeatIntervalMs):
+  - Simetrico e sem correlacao — qualquer frame recebido (pfkPing incluso)
+    reseta FLastReadTick; nao ha pfkPong nem estado de "ping em aberto".
+  - TPipeHeartbeatThread (Pipes.Threading) roda por conexao, iniciada pela
+    propria reader thread apos OnClientConnected. Detectar conexao morta
+    (sem leitura ha' 2x o intervalo) chama FEndpoint.CloseAbort — o MESMO
+    mecanismo thread-safe/idempotente que qualquer erro de protocolo ja usa
+    (ver Pipes.Transport) — e deixa a reader thread cair e seguir o teardown
+    normal. Nenhuma interrupcao nova foi inventada para isto.
+  - StopHeartbeat roda nos MESMOS pontos que ja fazem o join de FReader
+    (Stop e RunCleanup), nunca dentro do proprio HeartbeatTick — por isso
+    Destroy nunca encontra a thread viva. }
 
 interface
 
@@ -90,6 +103,16 @@ type
     FReader: TThread;
     FWriteLock: TCriticalSection;
     FRefs: Integer;
+    // Heartbeat de aplicacao (ptTcp/ptTls; ver Pipes.Base.HeartbeatIntervalMs).
+    // FHeartbeatThread/FHbStopEvent so existem entre StartHeartbeat e
+    // StopHeartbeat (nil quando desligado ou antes de a conexao ser
+    // estabelecida); StopHeartbeat e' chamada nos MESMOS pontos que ja fazem
+    // o join de FReader (Stop e RunCleanup), entao Destroy nunca a encontra
+    // viva.
+    FLastReadTick: UInt64;
+    FLastWriteTick: UInt64;
+    FHeartbeatThread: TThread;
+    FHbStopEvent: TEvent;
     // Conexao ESTABELECIDA: handshake concluido, prestes a disparar
     // OnClientConnected. Antes disso ela existe (ocupa vaga de MaxClients) mas
     // nao aparece em ClientIds/ClientCount — sob mTLS, uma conexao ainda
@@ -107,6 +130,15 @@ type
     procedure SendFrame(const AFrame: TPipeFrame);
     /// True se algum filtro assinado alcanca ATopic. Sob FConnLock.
     function MatchesTopic(const ATopic: string): Boolean;
+    /// Chamada pela reader thread apos OnClientConnected. No-op se
+    /// HeartbeatIntervalMs = 0 ou o transporte nao for ptTcp/ptTls.
+    procedure StartHeartbeat;
+    /// Chamada nos mesmos pontos que ja fazem o join de FReader. Idempotente
+    /// (no-op se a heartbeat nunca foi iniciada).
+    procedure StopHeartbeat;
+    /// Callback do TPipeHeartbeatThread: manda Ping se ocioso na escrita,
+    /// CloseAbort se sem NENHUM frame recebido ha' mais de 2x o intervalo.
+    procedure HeartbeatTick;
   public
     constructor Create(AServer: TPipeServer; AId: TPipeConnectionId;
       AEndpoint: TPipeEndpoint);
@@ -409,9 +441,11 @@ begin
     // enxergue a propria conexao que acabou de ser anunciada.
     FConn.FServer.PublishEstablished(FConn);
     FConn.FServer.DispatchConnEvent(FConn.FServer.FOnClientConnected, FConn.Id);
+    FConn.StartHeartbeat;
     while True do
     begin
       LFrame := PipeReadFrame(FConn.FStream, FConn.FServer.MaxMessageSize);
+      PipeAtomicWrite64(FConn.FLastReadTick, PipeTickMs);
       FConn.FServer.HandleFrame(FConn, LFrame);
     end;
   except
@@ -473,7 +507,8 @@ end;
 
 destructor TPipeServerConnection.Destroy;
 begin
-  // FReader ja foi joinado e liberado por quem possuiu o teardown.
+  // FReader e FHeartbeatThread ja foram joinados e liberados por quem possuiu
+  // o teardown (StopHeartbeat roda nos mesmos pontos que o join de FReader).
   FStream.Free;
   FEndpoint.Free;
   FWriteLock.Free;
@@ -504,9 +539,59 @@ begin
   FWriteLock.Enter;
   try
     PipeWriteFrame(FStream, AFrame, FServer.MaxMessageSize);
+    PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
   finally
     FWriteLock.Leave;
   end;
+end;
+
+procedure TPipeServerConnection.StartHeartbeat;
+begin
+  if (FServer.HeartbeatIntervalMs = 0) or
+     not (FServer.Transport in [ptTcp, ptTls]) then
+    Exit;
+  PipeAtomicWrite64(FLastReadTick, PipeTickMs);
+  PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+  FHbStopEvent := TEvent.Create(nil, True, False, ''); // manual-reset
+  FHeartbeatThread := TPipeHeartbeatThread.Create(FServer.HeartbeatIntervalMs,
+    FHbStopEvent, HeartbeatTick);
+end;
+
+procedure TPipeServerConnection.StopHeartbeat;
+begin
+  if not Assigned(FHeartbeatThread) then
+    Exit;
+  FHeartbeatThread.Terminate;
+  FHbStopEvent.SetEvent;
+  FHeartbeatThread.WaitFor;
+  FreeAndNil(FHeartbeatThread);
+  FreeAndNil(FHbStopEvent);
+end;
+
+procedure TPipeServerConnection.HeartbeatTick;
+var
+  LNow: UInt64;
+begin
+  LNow := PipeTickMs;
+  // Nenhum frame recebido (Ping incluso) ha' mais de 2x o intervalo: trata
+  // como morta. CloseAbort e' thread-safe/idempotente (Pipes.Transport) e
+  // desbloqueia a propria reader thread, que segue o teardown normal.
+  if (LNow - PipeAtomicRead64(FLastReadTick)) >
+     (2 * UInt64(FServer.HeartbeatIntervalMs)) then
+  begin
+    FEndpoint.CloseAbort;
+    Exit;
+  end;
+  // Ocioso na escrita ha' >= metade do intervalo: manda um Ping para o peer
+  // resetar o relogio de leitura dele.
+  if (LNow - PipeAtomicRead64(FLastWriteTick)) >=
+     (UInt64(FServer.HeartbeatIntervalMs) div 2) then
+    try
+      SendFrame(TPipeFrame.Ping);
+    except
+      // Falha de envio aqui e' sintoma, nao causa: o proprio erro ja
+      // desbloqueia (ou vai desbloquear) a reader thread pelo caminho normal.
+    end;
 end;
 
 function TPipeServerConnection.MatchesTopic(const ATopic: string): Boolean;
@@ -609,6 +694,7 @@ begin
   begin
     LConn.FReader.WaitFor;
     FreeAndNil(LConn.FReader);
+    LConn.StopHeartbeat;
     DispatchConnEvent(FOnClientDisconnected, LConn.FId);
     LConn.Release; // referencia do registro
   end;
@@ -1090,6 +1176,7 @@ begin
       AConn.FReader.WaitFor;
       FreeAndNil(AConn.FReader);
     end;
+    AConn.StopHeartbeat;
     AConn.Release; // referencia do registro
   finally
     DecInFlight;

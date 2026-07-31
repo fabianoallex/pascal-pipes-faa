@@ -24,7 +24,8 @@ uses
   Pipes.EndToEndTests in 'Pipes.EndToEndTests.pas',
   Pipes.PubSubTests in 'Pipes.PubSubTests.pas',
   Pipes.StressTests in 'Pipes.StressTests.pas',
-  Pipes.TlsTests in 'Pipes.TlsTests.pas';
+  Pipes.TlsTests in 'Pipes.TlsTests.pas',
+  Pipes.HeartbeatTests in 'Pipes.HeartbeatTests.pas';
 
 var
   runner: ITestRunner;

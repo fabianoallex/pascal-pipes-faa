@@ -237,6 +237,27 @@ magic, kind, correlation id e length), idêntico nos dois SOs — fronteiras de 
 da biblioteca, nunca do transporte. Payloads são `TBytes`; os métodos `*Text` convertem
 de/para UTF-8 de forma portátil.
 
+### Heartbeat de aplicação (`HeartbeatIntervalMs`)
+
+Complementar ao Keepalive acima, não substituto. `KeepAliveSeconds` é um probe do SO:
+barato, mas tipicamente leva minutos para acusar e enxerga só o socket TCP por baixo —
+nunca o que atravessa o registro cifrado do `ptTls`. `HeartbeatIntervalMs` resolve o mesmo
+problema em cima do framing, com um frame de aplicação (`pfkPing`) e controle fino do
+tempo de detecção:
+
+```pascal
+Server.HeartbeatIntervalMs := 5000;  // desligado por padrao (0); so' ptTcp/ptTls
+Client.HeartbeatIntervalMs := 5000;  // mesmo valor nos dois lados, por simplicidade
+```
+
+Simétrico e sem correlação: qualquer frame recebido (o próprio `Ping` incluso) reseta o
+relógio de leitura de quem o recebeu — não existe `pfkPong` nem "ping em aberto" a
+rastrear. Conexão morta = **nenhum frame recebido em 2x o intervalo configurado**; quem
+detecta fecha a própria conexão e segue o fluxo normal de queda
+(`OnClientDisconnected`/`OnDisconnected` + `AutoReconnect`, sem evento dedicado). `ptLocal`
+ignora a property, pela mesma razão do Keepalive: a morte do processo par já fecha o
+pipe/UDS local na hora.
+
 ## Recursos
 
 - **Servidor multi-cliente** — acceptor + uma reader thread por conexão; `MaxClients`
@@ -396,7 +417,8 @@ nenhum caso. Para `ptTls` depende do backend:
 
 ```pascal
 TPipeBase (abstrata)
-  Address, Transport, KeepAliveSeconds, Active, DispatchMode, MaxMessageSize
+  Address, Transport, KeepAliveSeconds, HeartbeatIntervalMs, Active, DispatchMode,
+  MaxMessageSize
   TlsOptions: TPipeTlsConfig             // só usado em ptTls; lido no Listen/Connect
     CertFile, CertPassword, KeyFile, CaFile, SkipServerVerification, HandshakeTimeoutMs
   OnMessage: TPipeMessageEvent;  OnError: TPipeErrorEvent

@@ -138,6 +138,35 @@ type
 /// Pool global compartilhado (criado sob demanda, liberado na finalizacao).
 function PipePool: TPipeThreadPool;
 
+// --- Heartbeat de aplicacao (ptTcp/ptTls; ver Pipes.Base.HeartbeatIntervalMs) -
+
+type
+  /// Chamado a cada acordar do TPipeHeartbeatThread. Sem parametros e sem
+  /// closures (reference to e' proibido nesta lib): o metodo capturado le os
+  /// dados do dono em campos proprios (TPipeServerConnection/TPipeClient).
+  TPipeHeartbeatTick = procedure of object;
+
+  { Thread generica de heartbeat, reaproveitada por TPipeServerConnection e
+    TPipeClient: acorda periodicamente por uma espera interrompivel (NAO
+    TTimer, mesmo padrao de TAMQPHeartbeatThread no pascal-amqp-faa) e chama
+    AOnTick. O dono decide o que fazer no tick (mandar Ping se ocioso na
+    escrita, CloseAbort se ocioso na leitura ha' tempo demais).
+
+    AStopEvent e' do DONO (criado e liberado por ele, nao por esta thread):
+    a parada segue o mesmo par Terminate + SetEvent + WaitFor de qualquer
+    outra thread desta lib (reader, acceptor etc.). }
+  TPipeHeartbeatThread = class(TThread)
+  private
+    FStopEvent: TEvent;
+    FIntervalMs: Cardinal;
+    FOnTick: TPipeHeartbeatTick;
+  protected
+    procedure Execute; override;
+  public
+    constructor Create(AIntervalMs: Cardinal; AStopEvent: TEvent;
+      AOnTick: TPipeHeartbeatTick);
+  end;
+
 implementation
 
 { --- Atomics --- }
@@ -404,6 +433,37 @@ begin
       FWork.SetEvent;
   finally
     FLock.Leave;
+  end;
+end;
+
+{ TPipeHeartbeatThread }
+
+constructor TPipeHeartbeatThread.Create(AIntervalMs: Cardinal;
+  AStopEvent: TEvent; AOnTick: TPipeHeartbeatTick);
+begin
+  FIntervalMs := AIntervalMs;
+  FStopEvent := AStopEvent;
+  FOnTick := AOnTick;
+  FreeOnTerminate := False;
+  inherited Create(False);
+end;
+
+procedure TPipeHeartbeatThread.Execute;
+var
+  LWaitMs: Cardinal;
+begin
+  // Acorda a cada metade do intervalo (minimo 1s); FOnTick decide sozinho,
+  // a cada acordar, se e' hora de mandar Ping ou de declarar a conexao morta.
+  LWaitMs := FIntervalMs div 2;
+  if LWaitMs < 1000 then
+    LWaitMs := 1000;
+  while not Terminated do
+  begin
+    if FStopEvent.WaitFor(LWaitMs) = wrSignaled then
+      Break; // parada solicitada
+    if Terminated then
+      Break;
+    FOnTick;
   end;
 end;
 
