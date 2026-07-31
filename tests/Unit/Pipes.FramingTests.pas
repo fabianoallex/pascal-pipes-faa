@@ -229,8 +229,8 @@ begin
   LFrame := PipeReadFrame(FStream, 1024);
   Assert.IsTrue(LFrame.Kind = pfkPing, 'kind devia ser pfkPing');
   Assert.IsTrue(LFrame.CorrId = 0, 'corrId de ping devia ser 0');
-  Assert.AreEqual(0, Integer(LFrame.Flags));
-  Assert.AreEqual(0, Length(LFrame.Payload));
+  EqualInt(0, Integer(LFrame.Flags));
+  EqualInt(0, Length(LFrame.Payload));
 end;
 
 procedure TPipeFramingTests.ReadFrame_MagicInvalido_Levanta;
