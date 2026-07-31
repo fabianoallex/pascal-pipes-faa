@@ -43,6 +43,18 @@ customizado, `-p` para senha fixa do `.pfx`, `-l`/`-c` para validade).
 Requer `openssl` no `PATH`. No Windows com Git Bash ele normalmente já está em
 `C:\Program Files\Git\mingw64\bin`.
 
+**No Windows, rode a partir de um terminal já aberto, não com duplo-clique.**
+Dar duplo-clique num `.sh` e escolher "Git Bash" abre uma janela de console
+nova que **fecha sozinha assim que o script termina** — a saída inteira,
+inclusive a senha impressa na tela, some junto. Em vez disso: abra o Git Bash
+(ou clique com o botão direito na pasta `tools` e escolha "Git Bash Here"),
+depois rode o comando normalmente. A janela do terminal continua aberta
+depois que o script termina.
+
+Mesmo assim, se a senha foi gerada automaticamente (sem `-p`), o script também
+grava ela em `senha-pfx.txt` dentro da pasta de saída — então mesmo que a
+janela feche, a senha não se perde.
+
 ## O que fazer com os arquivos gerados
 
 No **servidor**:
@@ -81,9 +93,10 @@ Detalhes completos (o que cada campo faz, diferença entre backends) estão no
 ## Dúvidas comuns
 
 **Esses arquivos podem ir para o Git?**
-Não. `*_key.pem` e `*.pfx` são segredos — qualquer um com a chave privada do
-servidor pode se passar por ele, e qualquer um com `ca_key.pem` pode fabricar
-um certificado de cliente aceito pelo seu servidor. Coloque a pasta de saída
+Não. `*_key.pem`, `*.pfx` e `senha-pfx.txt` são segredos — qualquer um com a
+chave privada do servidor pode se passar por ele, e qualquer um com
+`ca_key.pem` pode fabricar um certificado de cliente aceito pelo seu
+servidor. Coloque a pasta de saída
 (`minha-pki/` ou o nome que você escolher) no `.gitignore` do seu projeto que
 consome a lib. A única PKI versionada neste repositório é `tests/pki`, e ela é
 deliberadamente pública — leia `tests/pki/LEIA-ME.md` antes de pensar em

@@ -109,8 +109,12 @@ for CLI_CN in "$@"; do
   echo "  Cliente:   ${CLI_CN}_cert.pem / ${CLI_CN}_key.pem / ${CLI_CN}.pfx"
 done
 if [[ "$GEROU_SENHA" -eq 1 ]]; then
+  # Também salva em arquivo: quem roda dando duplo-clique no .sh (em vez de
+  # num terminal já aberto) perde a saída assim que a janela fecha sozinha.
+  printf '%s\n' "$SENHA" > senha-pfx.txt
   echo
-  echo "Senha dos .pfx (gerada automaticamente, guarde-a): ${SENHA}"
+  echo "Senha dos .pfx (gerada automaticamente): ${SENHA}"
+  echo "Também salva em: $(pwd)/senha-pfx.txt (é um segredo — não versionar, apagar depois de guardar em outro lugar seguro)"
 else
   echo
   echo "Senha dos .pfx: a que você passou em -p"
