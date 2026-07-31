@@ -617,6 +617,8 @@ marcados `deprecated` só depois que samples e testes migrarem.
   suportadas: várias `TThread` compartilham uma única instância de cliente e disparam RPCs
   em paralelo; cada uma confere que a resposta que voltou é exatamente a do pedido que ela
   fez (correlation id), expondo qualquer cruzamento de respostas entre chamadores como bug.
+  Ao final imprime `Client.Stats`: é a vitrine de latência de Request (média/máxima), a
+  métrica que só faz sentido com tráfego concorrente como este.
 - **GatewaySeguro** (`ServicoLocal` + `GatewaySeguro` + `ClienteRemoto`) — o único sample em que
   `TPipeServer` e `TPipeClient` estão **vivos ao mesmo tempo** no mesmo processo, com
   transportes diferentes em cada ponta:

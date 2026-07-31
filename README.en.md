@@ -627,7 +627,8 @@ marked `deprecated` only after samples and tests migrate.
   `TPipeClient` are supported: several `TThread`s share a single client instance and fire
   RPCs in parallel; each one checks that the reply that came back is exactly the one for
   the request it made (correlation id), exposing any reply crossover between callers as a
-  bug.
+  bug. Prints `Client.Stats` at the end: it's the showcase for Request latency
+  (average/max), the metric that only makes sense with concurrent traffic like this.
 - **GatewaySeguro** (`ServicoLocal` + `GatewaySeguro` + `ClienteRemoto`) — the only sample
   where `TPipeServer` and `TPipeClient` are **alive at the same time** in the same process,
   with different transports on each end:

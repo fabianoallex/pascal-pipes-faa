@@ -14,6 +14,11 @@ program RpcConcorrenteCliente;
   aparece aqui como "CORRELACAO ERRADA" — o objetivo do sample e' expor esse
   tipo de bug, nao so demonstrar o caminho feliz.
 
+  Ao final, imprime Client.Stats (Pipes.Types.TPipeClientStats): e' a vitrine
+  natural da metrica de latencia de Request, que so faz sentido com trafego
+  concorrente como este. Stats e' snapshot sob demanda, sempre ativo (sem
+  opt-in) — ver README.md, secao "Metricas/observabilidade".
+
   Uso: RpcConcorrenteCliente [nome-do-pipe] [threads=8] [pedidos-por-thread=25]
   Compila nos dois mundos a partir do MESMO fonte:
     FPC:    fpc -MDelphi -Sh -Fu..\..\src RpcConcorrenteCliente.dpr  (ou lazbuild)
@@ -141,6 +146,7 @@ var
   I: Integer;
   LInicio: TDateTime;
   LTotalPedidos: Integer;
+  LStats: TPipeClientStats;
 begin
   FClient := TNamedPipeClient.Create(APipeName);
   FClient.OnConnected := OnConn;
@@ -175,6 +181,19 @@ begin
   else
     Log('ATENCAO: respostas cruzadas entre threads (ver linhas acima) - ' +
       'isso seria um bug na lib.');
+
+  // Vitrine de Client.Stats: snapshot da SESSAO atual, sempre ativo (sem
+  // opt-in). AvgRequestLatencyMs/MaxRequestLatencyMs so contam Requests que
+  // chegaram a ter reply - nenhum destes 200 pedidos deveria ter estourado o
+  // timeout de 5s, entao PendingRequests aqui deve ser 0.
+  LStats := FClient.Stats;
+  Log(Format('Stats do cliente: %d bytes enviados / %d recebidos, ' +
+    '%d mensagens enviadas / %d recebidas, latencia de request media %d ms ' +
+    '/ maxima %d ms, %d pendente(s).',
+    [Int64(LStats.BytesSent), Int64(LStats.BytesReceived),
+     Int64(LStats.MessagesSent), Int64(LStats.MessagesReceived),
+     Integer(LStats.AvgRequestLatencyMs), Integer(LStats.MaxRequestLatencyMs),
+     LStats.PendingRequests]));
 
   FClient.Disconnect;
 end;
