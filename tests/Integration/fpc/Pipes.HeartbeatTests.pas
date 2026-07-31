@@ -39,6 +39,7 @@ type
     function WaitStill(var ACounter: Integer; AExpected: Integer;
       ATimeoutMs: Cardinal): Boolean;
   protected
+    procedure SetUp; override;
     procedure TearDown; override;
   published
     procedure Servidor_DetectaClienteZumbi;
@@ -67,6 +68,17 @@ begin
 end;
 
 { TPipeHeartbeatTests }
+
+procedure TPipeHeartbeatTests.SetUp;
+begin
+  inherited;
+  // Mesmo padrao defensivo de Pipes.EndToEndTests.SetUp: garante contadores
+  // zerados independente de o framework reaproveitar ou nao a instancia do
+  // fixture entre metodos de teste (o DUnitX reaproveita; foi o que
+  // escondeu o falso positivo em PtLocal_IgnoraHeartbeatIntervalMs).
+  FSrvDiscCount := 0;
+  FCliDiscCount := 0;
+end;
 
 procedure TPipeHeartbeatTests.TearDown;
 begin

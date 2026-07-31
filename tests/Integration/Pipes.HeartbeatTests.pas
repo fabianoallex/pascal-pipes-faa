@@ -38,6 +38,7 @@ type
     function WaitStill(var ACounter: Integer; AExpected: Integer;
       ATimeoutMs: Cardinal): Boolean;
   public
+    [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
   published
     [Test] procedure Servidor_DetectaClienteZumbi;
@@ -66,6 +67,16 @@ begin
 end;
 
 { TPipeHeartbeatTests }
+
+procedure TPipeHeartbeatTests.SetUp;
+begin
+  // DUnitX reaproveita a MESMA instancia do fixture entre os metodos [Test]
+  // (ao contrario do que uma instancia "fresca" sugeriria) — sem isto, um
+  // teste anterior que ja incrementou os contadores deixaria o proximo
+  // nascer com estado sujo (mesmo padrao de Pipes.EndToEndTests.SetUp).
+  FSrvDiscCount := 0;
+  FCliDiscCount := 0;
+end;
 
 procedure TPipeHeartbeatTests.TearDown;
 begin
