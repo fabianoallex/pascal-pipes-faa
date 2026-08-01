@@ -181,6 +181,30 @@ make -j"$(nproc)" && make install_sw
 Depois **renomeie** os artefatos para `libcrypto.so` e `libssl.so`, sem sufixo
 de versão — ver a explicação no passo 2 da seção seguinte.
 
+### Onde guardar as `.so` no disco
+
+**Dentro do repositório, num diretório ignorado.** A convenção deste projeto é:
+
+```
+tools/openssl-android/arm64-v8a/libcrypto.so
+tools/openssl-android/arm64-v8a/libssl.so
+tools/openssl-android/armeabi-v7a/...      (se você publicar 32 bits também)
+```
+
+`tools/*/` já é ignorado pelo `.gitignore`, e existe ainda uma regra `*.so`
+global como rede de segurança — são megabytes de binário de terceiro, com
+licença e procedência próprias, que não devem entrar num `git add .` por
+descuido. (Se algum dia houver decisão consciente de versioná-los, `git add -f`.)
+
+Guardar **fora** do repositório parece mais "limpo", mas sai pior: o *LocalName*
+do Deployment vira um caminho absoluto da sua máquina (`C:\...\openssl\...`),
+e esse caminho fica gravado no `.dproj` — que é versionado. Caminho relativo
+dentro da árvore funciona em qualquer clone que tenha o diretório.
+
+Anote junto de onde elas vieram (URL e versão). Sem isso, daqui a um ano
+ninguém sabe se aquele `libssl.so` é 1.1.1d, 1.1.1w ou 3.x, nem se já foi
+alcançado por algum CVE.
+
 ### Como saber se deu certo
 
 O carregamento é preguiçoso: um app que só usa `ptTcp` sobe normalmente mesmo

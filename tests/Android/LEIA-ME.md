@@ -102,7 +102,18 @@ aparelho. A mensagem imprime o caminho exato onde procurou; confira em
 configuração que você está usando.
 
 **Falta ainda o OpenSSL.** Sem `libcrypto.so`/`libssl.so` empacotadas por ABI,
-os casos de `ptTls` **falham** (não pulam), com a mensagem de biblioteca ausente
-vinda do carregador — que é o comportamento correto: a PKI estar presente e o
-TLS não funcionar é um problema de verdade. De onde tirar as `.so` está em
-`samples/EchoAndroid/LEIA-ME.md`, seção "de onde vêm as `.so`".
+os **três** casos de `ptTls` falham (não pulam), com a mensagem
+`backend TLS ausente, este caso nao provou nada` — que é o comportamento
+correto: a PKI estar presente e o TLS não funcionar é um problema de verdade.
+De onde tirar as `.so` está em `samples/EchoAndroid/LEIA-ME.md`, seção "de onde
+vêm as `.so`".
+
+> **Por que existe o guarda `ExigeVeredictoDeTls`.** Os dois casos negativos
+> (CA desconhecida, auto-assinado sob mTLS) provam que a conexão foi
+> **recusada** — e "recusada" não pode ser satisfeita por qualquer exceção. Sem
+> as `.so`, o `EnsureOpenSsl` levanta `EPipeTls` antes de um único byte de TLS
+> sair, e os dois passariam em **verde** sem ter exercitado validação nenhuma.
+> Foi exatamente o que aconteceu numa rodada real: PKI no aparelho, `.so`
+> ausentes, resultado `10 ok, 1 falha` — com dois verdes falsos. O guarda
+> transforma isso em falha barulhenta. Um caso de TLS que passa porque o TLS não
+> existe é pior que um caso vermelho: ele mente sobre a cobertura.

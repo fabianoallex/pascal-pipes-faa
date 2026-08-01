@@ -130,6 +130,9 @@ type
     function PkiDir: string;
     function Pki(const AFile: string): string;
     procedure ExigePki;
+    /// Levanta se AErro for a falha do CARREGADOR do OpenSSL, e nao um
+    /// veredito de certificado. Ver o corpo para o porque disto existir.
+    procedure ExigeVeredictoDeTls(const AErro: string);
     procedure Verdadeiro(ACond: Boolean; const AMsg: string);
     // --- casos ---
     procedure Local_RecusadoComMensagemClara;
@@ -383,6 +386,27 @@ begin
   if not FileExists(Pki('ca_cert.pem')) then
     raise ETestePulado.Create('PKI ausente em ' + PkiDir +
       ' (ver LEIA-ME.md)');
+end;
+
+procedure TExecutorDeTestes.ExigeVeredictoDeTls(const AErro: string);
+begin
+  // Os casos NEGATIVOS de TLS (CA desconhecida, auto-assinado sob mTLS) provam
+  // que a conexao foi RECUSADA. Mas "recusada" nao pode ser satisfeita por
+  // qualquer exceção: sem libssl/libcrypto no aparelho, o EnsureOpenSsl levanta
+  // EPipeTls antes de qualquer byte de TLS sair, e o caso passaria em VERDE sem
+  // ter exercitado validacao nenhuma. Foi o que aconteceu na primeira rodada com
+  // a PKI presente e as .so ausentes: "10 ok" com dois verdes falsos.
+  //
+  // Este guarda transforma esse cenario em falha barulhenta. Um caso de TLS que
+  // passa porque o TLS nao existe e' pior que um caso vermelho: ele mente sobre
+  // a cobertura.
+  if (Pos('OpenSSL', AErro) > 0)
+    and ((Pos('encontrado', AErro) > 0) or (Pos('simbolo', AErro) > 0)
+         or (Pos('símbolo', AErro) > 0)) then
+    raise ETesteFalhou.Create(
+      'backend TLS ausente, este caso nao provou nada — empacote ' +
+      'libcrypto.so/libssl.so por ABI (ver samples/EchoAndroid/LEIA-ME.md). ' +
+      'Erro do carregador: ' + AErro);
 end;
 
 procedure TExecutorDeTestes.Verdadeiro(ACond: Boolean; const AMsg: string);
@@ -750,6 +774,7 @@ begin
     end;
     Verdadeiro(LErro <> '',
       'GRAVE: servidor de CA desconhecida foi aceito pelo cliente');
+    ExigeVeredictoDeTls(LErro); // recusa tem que ser de certificado, nao do loader
     Avisa('         (veredito: ' + LErro + ')');
   finally
     LClient.Free;
@@ -794,6 +819,10 @@ begin
       on E: Exception do
         LErro := E.ClassName + ': ' + E.Message;
     end;
+    // A ordem importa: checar o loader ANTES do silencio da fila. Sem OpenSSL
+    // nenhuma mensagem chega, e o "nao trafegou" seria satisfeito pelo motivo
+    // errado.
+    ExigeVeredictoDeTls(LErro);
     Verdadeiro(not LG.Mensagens.Espera(1, 1500),
       'GRAVE: cliente auto-assinado trafegou sob mTLS');
     Avisa('         (veredito: ' + LErro + ')');
