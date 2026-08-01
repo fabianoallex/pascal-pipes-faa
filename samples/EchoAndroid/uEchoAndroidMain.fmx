@@ -1,0 +1,141 @@
+object frmEchoAndroid: TfrmEchoAndroid
+  Left = 0
+  Top = 0
+  Caption = 'Echo Android'
+  ClientHeight = 640
+  ClientWidth = 360
+  FormFactor.Width = 360
+  FormFactor.Height = 640
+  FormFactor.Devices = [Desktop, iPhone, iPad]
+  OnCreate = FormCreate
+  OnDestroy = FormDestroy
+  DesignerMasterStyle = 0
+  object lblEndereco: TLabel
+    Align = Top
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 8.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 20.000000000000000000
+    Size.PlatformDefault = False
+    TextSettings.Font.Style = [fsBold]
+    Text = 'Servidor (host:porta)'
+    TabOrder = 0
+  end
+  object edtEndereco: TEdit
+    Touch.InteractiveGestures = [LongTap, DoubleTap]
+    Align = Top
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 4.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Position.Y = 28.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 40.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
+    Text = '192.168.0.10:5300'
+    KeyboardType = URL
+  end
+  object lytTls: TLayout
+    Align = Top
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 8.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Position.Y = 76.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 32.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 2
+    object lblTls: TLabel
+      Align = Left
+      Size.Width = 240.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      Text = 'Usar TLS (ptTls)'
+      TabOrder = 0
+    end
+    object swTls: TSwitch
+      Align = Right
+      IsChecked = False
+      Position.X = 284.000000000000000000
+      Size.Width = 60.000000000000000000
+      Size.Height = 32.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+    end
+  end
+  object lytBotoes: TLayout
+    Align = Top
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 8.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Position.Y = 116.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 48.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 3
+    object btnConectar: TButton
+      Align = Left
+      Size.Width = 168.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      Text = 'Conectar'
+      OnClick = btnConectarClick
+    end
+    object btnDesconectar: TButton
+      Align = Right
+      Position.X = 176.000000000000000000
+      Size.Width = 168.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 1
+      Text = 'Desconectar'
+      OnClick = btnDesconectarClick
+    end
+  end
+  object edtMensagem: TEdit
+    Touch.InteractiveGestures = [LongTap, DoubleTap]
+    Align = Top
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 12.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Position.Y = 176.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 40.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 4
+    TextPrompt = 'mensagem'
+  end
+  object btnEnviar: TButton
+    Align = Top
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 4.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Position.Y = 220.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 48.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 5
+    Text = 'Enviar'
+    OnClick = btnEnviarClick
+  end
+  object memLog: TMemo
+    Touch.InteractiveGestures = [Pan, LongTap, DoubleTap]
+    DataDetectorTypes = []
+    ReadOnly = True
+    StyledSettings = [Family, Style, FontColor]
+    Align = Client
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 12.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Margins.Bottom = 8.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 348.000000000000000000
+    Size.PlatformDefault = False
+    TextSettings.Font.Size = 12.000000000000000000
+    TabOrder = 6
+    Viewport.Width = 340.000000000000000000
+    Viewport.Height = 344.000000000000000000
+  end
+end
