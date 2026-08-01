@@ -6,15 +6,15 @@
 > apenas um dos transportes suportados — a API antiga segue funcionando (ver
 > [Compatibilidade](#compatibilidade-com-a-api-anterior)).
 
-Biblioteca multiplataforma de **comunicação entre processos** para **Delphi 12+ (Win64)** e
-**FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**, com uma única base de código e uma API de
-alto nível que abstrai completamente as chamadas nativas do sistema operacional.
+Biblioteca multiplataforma de **comunicação entre processos** para **Delphi 12+ (Win64 e
+Android)** e **FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**, com uma única base de código e
+uma API de alto nível que abstrai completamente as chamadas nativas do sistema operacional.
 
 A mesma API atende três alcances, trocando uma property:
 
 | `Transport` | Alcance | Por baixo |
 |---|---|---|
-| `ptLocal` (padrão) | mesma máquina | Named Pipe (Windows) / Unix Domain Socket (Linux) |
+| `ptLocal` (padrão) | mesma máquina | Named Pipe (Windows) / Unix Domain Socket (Linux) — **não existe no Android** |
 | `ptTcp` | rede | socket TCP, com keepalive ligado por padrão |
 | `ptTls` | rede não confiável | o mesmo TCP com TLS, e mTLS opcional por certificado |
 
@@ -76,6 +76,27 @@ funcionam. `TCP_NODELAY` é ligado (o atraso do Nagle penalizaria muito `Request
 > (ACL do Windows, permissão de arquivo do UDS). Um listener em `0.0.0.0` aceita qualquer
 > um que alcance a porta — autenticar é responsabilidade da aplicação. É esse buraco que
 > `ptTls` fecha.
+
+#### Android
+
+Android é um terceiro eixo de plataforma (Delphi, `Android64`/`Android32`), ao lado de
+Delphi/Win64 e FPC/POSIX. A API é a mesma; muda o que está disponível:
+
+- **`ptTcp` e `ptTls` funcionam**, cliente e servidor. `ptLocal` **não existe** — app
+  Android é single-process e expor um Unix Domain Socket esbarra em sandboxing. Usá-lo
+  levanta `EPipeError` dizendo o que fazer, em vez de falhar obscuramente adiante.
+- **`ptTls` é sempre OpenSSL** (Schannel é Windows-only), e por isso é o único alvo onde
+  `PIPES_OPENSSL` é ligado automaticamente. Você precisa empacotar `libcrypto.so` e
+  `libssl.so` por ABI no Deployment do app — ver `samples/EchoAndroid/LEIA-ME.md`.
+- **Permissão `INTERNET` no manifesto** é obrigatória, e `ptTcp` (texto claro) ainda exige
+  `usesCleartextTraffic` do Android 9 em diante. Mais um motivo para preferir `ptTls`.
+- Recomendado num celular: `DispatchMode := pdmMainThread` (eventos chegam pela thread
+  principal, dá para mexer na UI direto) e `Connect` fora da thread principal, já que ele
+  bloqueia até o prazo.
+
+Verificação é em aparelho: não há par dual-compiler (o FPC não compila para Android neste
+projeto). A suíte de device fica em `tests/Android/`. Racional completo em
+[`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §13.
 
 ### TLS (`ptTls`)
 
@@ -592,7 +613,10 @@ marcados `deprecated` só depois que samples e testes migrarem.
 
 - **EchoServer / EchoClient** — console, mesmo fonte nos dois compiladores. Rode o servidor,
   depois o cliente: texto simples usa `SendText` (eco assíncrono via `OnMessage`); linhas
-  começando com `?` usam `RequestText` (RPC).
+  começando com `?` usam `RequestText` (RPC). Os dois aceitam um segundo parâmetro opcional
+  `tcp` (`EchoServer.exe *:5300 tcp`, `EchoClient.exe 192.168.0.10:5300 tcp`) para trocar
+  `ptLocal` por `ptTcp` — é como o **EchoAndroid** fala com eles, já que celular não alcança
+  Named Pipe nem Unix Domain Socket. Sem o parâmetro, o comportamento é o de sempre.
 - **EchoJson** (`EchoJsonServer` + `EchoJsonClient`) — o mesmo eco, mas com payload JSON via
   `Pipes.Json.pas` em vez de texto cru (ver seção "JSON" acima). Digite `item quantidade`
   (ex.: `cafe 2`) para `PipeSendJSON` fire-and-forget — a
@@ -614,6 +638,12 @@ marcados `deprecated` só depois que samples e testes migrarem.
   tráfego cifrado ponta a ponta. Usa a PKI de teste versionada em `tests/pki`; um cliente sem
   certificado (ou um `TPipeClient` comum) é recusado antes de `OnClientConnected` disparar —
   prova de que o mTLS não é decorativo.
+- **EchoAndroid** — cliente **Android** (FMX, só Delphi) do `EchoServer`: conecta por
+  `ptTcp` ou `ptTls`, manda texto e mostra a resposta. Vitrine do que muda num celular —
+  `pdmMainThread`, `Connect` fora da thread principal, `HeartbeatIntervalMs` ligado (Wi-Fi
+  que dorme e NAT de operadora derrubam conexão ociosa em silêncio). O `LEIA-ME.md` do
+  sample tem os passos de IDE que não dá para versionar no `.dproj`: permissão `INTERNET`,
+  `usesCleartextTraffic` e o empacotamento do OpenSSL por ABI.
 - **ChatVcl** — chat com UI (VCL no Delphi, LCL no Lazarus, mesmo fonte): uma instância é o
   servidor-hub (retransmite via `Broadcast`), as outras são clientes. Vitrine do
   `pdmMainThread` (handlers mexem na UI direto) e do `AutoReconnect`.
@@ -829,7 +859,8 @@ ausente. A ausência da PKI **falha**, não pula.
 ## Estrutura
 
 ```
-src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Windows|.Posix],
+src/                 biblioteca (Pipes.Types, Pipes.Framing,
+                     Pipes.Transport[.Windows|.Posix|.Android],
                      Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
                      pub/sub: Pipes.Topics (nomes, curingas e envelope; unit pura)
                      rede: Pipes.Transport.Tcp
@@ -844,8 +875,10 @@ samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional)
                      MonitorTopicos (explorador de pub/sub com UI VCL/LCL),
                      PdvDualScreen (Operador + Cliente),
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
-                     GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo)
+                     GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo),
+                     EchoAndroid (FMX/Android, so Delphi)
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
+tests/Android/       suite de DEVICE do backend Android (loopback; sem par dual-compiler)
 tests/pki/           PKI de TESTE versionada, sem valor de seguranca (ver LEIA-ME)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)
 Pipes.groupproj      grupo de projetos Delphi    Pipes.lpg  grupo Lazarus

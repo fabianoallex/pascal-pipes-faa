@@ -737,93 +737,245 @@ todo o resto da lib por um dado que a property já resolve sem quebrar nada em u
 | F2 | `TryReopenSession` | avança um endereço por tentativa falha; reseta ao primário em sessão DURÁVEL | concluído |
 | F3 | Testes | primário vivo/morto em `Connect`, migração na reconexão, reset ao primário após sessão durável, `MaxReconnectAttempts` compartilhado entre endereços | concluído |
 
-## 13. Delphi Android — avaliação de viabilidade (`ptTcp`/`ptTls` cliente)
+## 13. Delphi Android (`ptTcp`/`ptTls`)
 
-> **Status: AVALIADO, NÃO DECIDIDO.** Diferente das seções anteriores, isto NÃO é
-> trabalho concluído — é o racional de uma investigação de viabilidade (spike descartável,
-> fora do repo) que respondeu a maior dúvida arquitetural em aberto. Se/quando a
-> implementação for autorizada, esta seção vira o histórico de "por quê"; até lá, a tabela
-> de milestones em §13.6 fica com status "proposto".
+> **Status: A0/A1/A3 VERIFICADOS em aparelho; A2 (TLS) implementado mas NÃO verificado.**
+> Esta seção começou como o racional de uma investigação de viabilidade (spike descartável,
+> fora do repo) e virou o histórico de "por quê" da implementação. A suíte
+> `tests/Android/` rodou num device real com **8 ok, 0 falhas** — números em §13.8. Os três
+> casos de `ptTls` ficaram PULADOS por falta da PKI e das bibliotecas do OpenSSL no
+> aparelho, então **nada de A2 está confirmado em runtime**: o que se sabe é que o ramo
+> compila. §13.7 registra o que a implementação mudou em relação à proposta original.
 
-Delphi Android seria um **terceiro eixo de plataforma**, ao lado de Delphi/Win64 e
+Delphi Android é um **terceiro eixo de plataforma**, ao lado de Delphi/Win64 e
 FPC/POSIX — não uma extensão de nenhum dos dois. A dúvida que motivou a investigação: o
 invariante de interrupção de leitura bloqueante (§5) depende de mecanismos específicos
 por plataforma (`CancelIoEx` no Windows, self-pipe+`fpPoll` no Linux); não havia garantia
 de que existisse um equivalente viável no Android sem cair em polling.
 
-### 13.1 Escopo: só `ptTcp`/`ptTls` cliente — `ptLocal` fica de fora
+### 13.1 Escopo: só `ptTcp`/`ptTls` — `ptLocal` fica de fora
 
 Apps Android são single-process por padrão — não existe o cenário de "duas partes do
 mesmo app trocando IPC local" que justifica Named Pipe/UDS no Windows/Linux. Expor um UDS
 para outro processo/app esbarra em sandboxing (SELinux, scoped storage). O caso de uso
 real em mobile é cliente de rede falando com o mesmo servidor Windows/Linux já existente
 (mesmo racional do PDV de loja sobre VPN que motivou `ptTcp`, §7 "Milestones
-posteriores"), não IPC local. Servidor Android também não faz sentido no caso de uso alvo.
+posteriores"), não IPC local.
+
+`ptLocal` não cai em backend nenhum no Android: `PipeValidateAddress` recusa com uma
+mensagem que diz o que fazer ("use `ptTcp` ou `ptTls`"). É melhor que a alternativa
+silenciosa — quem portasse um app Windows esquecendo de trocar o `Transport` veria um erro
+obscuro de resolução de nome muito mais adiante.
+
+**O listener existe, ao contrário do que esta seção dizia enquanto era proposta.** O
+raciocínio de que "servidor Android não faz sentido no caso de uso" continua válido para
+*aplicações*, mas ele levava a uma consequência que só apareceu na hora de implementar:
+sem `Accept` não há teste **loopback** (servidor e cliente no mesmo app), e sem loopback a
+verificação deste backend passaria a depender de um servidor externo no ar e de uma rede
+funcionando — um teste de infraestrutura disfarçado de teste de transporte. Como o
+`Accept` custa ~40 linhas sobre o mesmo `poll`+self-pipe que o endpoint já usa, o custo de
+tê-lo é muito menor que o custo de não poder testar. Ver `tests/Android/LEIA-ME.md`.
 
 ### 13.2 Não é uma extensão de `PIPES_POSIX`
 
-`PIPES_POSIX` hoje é código **exclusivo do FPC**: `Pipes.Transport.Posix.pas` usa
+`PIPES_POSIX` é código **exclusivo do FPC**: `Pipes.Transport.Posix.pas` usa
 `BaseUnix`, `Sockets`, `UnixType` — units que não existem no Delphi, em nenhuma
-plataforma. `pipes.inc` (§ cabeçalho do arquivo) define `PIPES_POSIX` sempre que
-`PIPES_WINDOWS` não está definido, o que hoje INCLUI Android por acidente — sem tratamento
-próprio, um build Android tentaria puxar esse backend FPC-only e falharia a compilar.
-Precisaria de um define novo (`PIPES_ANDROID`) para não herdar esse caminho.
+plataforma. `pipes.inc` definia `PIPES_POSIX` sempre que `PIPES_WINDOWS` não estava
+definido, o que INCLUÍA Android por acidente — sem tratamento próprio, um build Android
+tentaria puxar esse backend FPC-only e nem compilaria.
 
-### 13.3 Backend de transporte: `System.Net.Socket.TSocket`, não `Posix.*` na mão
+A0 resolveu isso testando `ANDROID` **antes**: no compilador Delphi, Android também define
+`POSIX`, então a ordem é o que separa os dois eixos. `PIPES_ANDROID` e `PIPES_POSIX` são
+mutuamente exclusivos por construção.
+
+### 13.3 Backend de transporte: `Posix.*` da RTL, não `System.Net.Socket.TSocket`
 
 Lendo o fonte de `System.Net.Socket.pas` (RAD Studio 12, `...\source\rtl\net\`):
 `TSocket` só tem branches `MSWINDOWS`/`POSIX` — sem um terceiro caminho para Android — ou
 seja, **Android implica `POSIX` nos defines do compilador Delphi**, e `TSocket` usa
 `Posix.SysSocket`/`recv`/`shutdown`/`Posix.Unistd.__close` de verdade por baixo, não é
-wrapper JNI/Java. Construir o backend Android sobre `TSocket` evita reescrever bind/
-connect/accept na mão contra `Posix.*`, cujo suporte a sockets no alvo Android é irregular.
+wrapper JNI/Java. Foi esse achado que destravou a viabilidade.
 
-Achado colateral que quase mascarou o teste real: `TSocket.Receive`/`Send` têm um overload
-tipado (`array of Byte; Offset; Count`) que sombreia o overload untyped
-(`var Buf; Count`) quando se passa um array estático ou até um elemento dele — o Delphi
-prioriza o overload tipado. A correção é atribuir o método a uma variável de procedimento
-com assinatura explícita antes de chamar (`function(var Buf; Count: Integer; Flags:
-TSocketFlags): Integer of object`), o que elimina a ambiguidade por construção. Vale a
-pena documentar isso no cabeçalho de `Pipes.Transport.Android.pas` quando a unit existir,
-para quem for implementar não perder tempo redescobrindo.
+A proposta original era construir o backend **sobre** `TSocket`, para não reescrever
+bind/connect/accept contra `Posix.*`. Na hora de implementar isso se inverteu, por três
+motivos concretos:
 
-### 13.4 Invariante de interrupção de leitura bloqueante: `Close(False)` já resolve
+1. **O mecanismo de interrupção fica mais fraco** (§13.4). `TSocket.Close` fecha o fd
+   imediatamente, de outra thread, com a reader possivelmente ainda dentro do `recv` — a
+   corrida de fd reciclado que o resto da lib evita de propósito adiando o `close` para o
+   destructor (`Pipes.Transport.Posix.pas`, invariantes do cabeçalho).
+2. **As units `Posix.*` existem todas para Android** — conferido em
+   `lib\Android64\release`: as 100, incluindo `Posix.SysSocket` (com `MSG_NOSIGNAL`,
+   `SHUT_RDWR`, `SO_KEEPALIVE`, `SO_ERROR`), `Posix.NetDB`, `Posix.Unistd`, `Posix.Fcntl`,
+   `Posix.Errno`, `Posix.NetinetTCP`. A premissa de que "o suporte a sockets em `Posix.*`
+   no Android é irregular" não se sustentou. Não há `Posix.Poll`, mas `poll()` se declara
+   localmente contra o mesmo `libc` de `Posix.Base` — idioma que a lib já usava para o
+   `getaddrinfo` (`Pipes.Transport.Tcp.pas`) e o `CancelIoEx` (`Pipes.Transport.Windows.pas`).
+3. **Um modelo a menos para manter.** Com `Posix.*` o backend Android é o backend Linux
+   com outros nomes de função; com `TSocket` seria um terceiro desenho.
 
-`TSocket.Close(ForceClosed=False)` já implementa exatamente `shutdown(BOTH)` → drena
-`recv` residual → `closesocket` — o MESMO mecanismo que `Pipes.Transport.Posix.pas` usa
-hoje (`fpShutdown`+`fpClose`) para o invariante #4. Testado num device Android real (não
-emulador): uma thread bloqueada em `Receive` sem nenhum dado chegando, e a thread da
-"UI" chamando `Close(False)` depois de alguns segundos — o `Receive` destravou em ~1-2ms,
-retornando EOF (0 bytes), sem exceção. Repetido passando o app pelo background durante a
-espera: mesmo resultado, sem diferença de comportamento.
+Duas armadilhas de plataforma ficaram registradas no cabeçalho de
+`Pipes.Transport.Android.pas`:
 
-Isso bate o melhor cenário do critério de aceite combinado antes da investigação: o
-mecanismo **forte** (acordar por evento, sem polling) é portável quase como está — **não
-é necessária** a variante mais fraca (timeout de recv) como regra geral. Essa variante
-(`TSocket.ReceiveTimeout`, que seta `SO_RCVTIMEO`) também foi testada e confirmada
-funcional (~205ms de latência para um timeout configurado de 200ms), e fica disponível
-como fallback documentado SÓ PARA ANDROID caso algum caso de borda futuro mostre o
-contrário — sem tocar no invariante de `PIPES_WINDOWS`/`PIPES_POSIX` (FPC), que continuam
-sem polling.
+- **`addrinfo` do bionic tem `ai_canonname` ANTES de `ai_addr`** — ordem BSD, ao contrário
+  do glibc. O `TPipeAddrInfo` local de `Pipes.Transport.Tcp.pas` segue o layout glibc no
+  ramo não-Windows; reaproveitá-lo no Android passaria um `char*` ao `connect()` como se
+  fosse o `sockaddr`, sem erro de compilação. Por isso o backend Android usa o `addrinfo`
+  do próprio `Posix.NetDB` e é auto-contido — `Pipes.Transport.Tcp.pas` apenas delega.
+- **`TSocket.Receive`/`Send` têm um overload tipado** (`array of Byte; Offset; Count`) que
+  sombreia o untyped (`var Buf; Count`) quando se passa um array: o Delphi prioriza o
+  tipado e lê o 2º argumento como `Offset`. Foi o que quase mascarou o teste do spike. A
+  lib não usa `TSocket`, então não está exposta; o registro serve a quem escrever
+  sample/teste com ele — a correção é atribuir o método a uma variável de procedimento com
+  assinatura explícita antes de chamar.
 
-### 13.5 TLS: só OpenSSL, e o loader já tem o ramo certo
+### 13.4 Invariante de interrupção de leitura bloqueante: self-pipe + `poll`, igual ao Linux
 
-Schannel é Windows-only (SSPI nativo); Android só teria OpenSSL como backend de TLS. O
-loader dinâmico em `Pipes.Transport.OpenSSL.pas` já tem um ramo "Delphi fora do Windows"
-via `SysUtils.LoadLibrary`/`GetProcAddress`, compatível com `dlopen` no Android — essa
-parte está mais perto de reaproveitável do que o transporte TCP em si. Falta empacotar
-`libssl.so`/`libcrypto.so` por ABI (`armeabi-v7a`/`arm64-v8a`) no deployment do app.
+O spike respondeu a pergunta que travava tudo: `TSocket.Close(ForceClosed=False)` faz
+`shutdown(BOTH)` → drena `recv` residual → `closesocket`, e num device Android real (não
+emulador) destravou em **~1-2ms** uma thread bloqueada em `Receive`, retornando EOF sem
+exceção. Repetido passando o app pelo segundo plano durante a espera: mesmo resultado.
+Isso bateu o melhor cenário do critério de aceite — o mecanismo **forte** (acordar por
+evento, sem polling) é portável.
 
-### 13.6 Milestones (propostos — nenhum iniciado)
+A implementação foi um passo além do que o spike mediu. Ela não usa `TSocket.Close`, e sim
+o mesmo desenho de `Pipes.Transport.Posix.pas`: cada endpoint/listener tem um par `pipe()`
+próprio, toda espera é um `poll()` em `[fd da operação, lado de leitura do self-pipe]`, e
+`CloseAbort` escreve 1 byte no self-pipe (nunca drenado, então esperas futuras também
+acordam na hora) mais `shutdown(SHUT_RDWR)`. **O fd só fecha no destructor**, depois do
+join.
+
+A diferença importa: com `TSocket.Close` o desbloqueio depende de fechar o fd embaixo de
+uma thread que ainda pode estar dentro do `recv` — funciona, mas aposta contra a
+reciclagem de descritor. Com self-pipe o `poll` acorda pelo *outro* fd e o `recv` nunca é
+chamado de novo; o desbloqueio não depende de o kernel fazer nada com o socket. Mesmo
+resultado observável, sem a aposta, e com o backend Android sendo o backend Linux com
+outros nomes.
+
+A variante fraca (`TSocket.ReceiveTimeout`, que seta `SO_RCVTIMEO`) também foi testada no
+spike e funciona (~205ms para um timeout de 200ms). Ela **não** está em uso e fica como
+plano B documentado SÓ PARA ANDROID, caso algum caso de borda futuro mostre o contrário —
+sem tocar no invariante de `PIPES_WINDOWS`/`PIPES_POSIX` (FPC), que continuam sem polling.
+O caso `CloseAbort destrava Read em ms` de `tests/Android/` existe justamente para
+detectar uma regressão nessa direção: ele reprova acima de 250ms.
+
+### 13.5 TLS: só OpenSSL, e sem opt-in
+
+Schannel é Windows-only (SSPI nativo); Android só tem OpenSSL como backend de TLS. O
+loader dinâmico em `Pipes.Transport.OpenSSL.pas` já tinha o ramo "Delphi fora do Windows"
+via `SysUtils.LoadLibrary`/`GetProcAddress`, que no POSIX mapeia para `dlopen`/`dlsym` —
+essa parte foi reaproveitada como estava.
+
+Três ajustes foram necessários:
+
+- **`PIPES_OPENSSL` é automático no Android**, a única plataforma onde não é opt-in. Não
+  há segunda opção a escolher, e deixar opt-in só renderia um "build sem backend TLS" em
+  runtime. O carregamento é preguiçoso, então um app que só usa `ptTcp` não paga nada.
+- **Um par de sonames só, sem sufixo de versão** (`libcrypto.so`/`libssl.so`). O
+  instalador do Android só extrai do APK arquivos que casem com `lib*.so` — `libssl.so.3`
+  nunca chegaria ao aparelho, e tentá-lo seria `dlopen` perdido. O `/system/lib*/libcrypto.so`
+  do próprio Android (BoringSSL, ABI incompatível) não atrapalha: desde o Android 7 ele
+  está fora do namespace público de apps.
+- **Trust store do sistema**. `SSL_CTX_set_default_verify_paths` usa o `OPENSSLDIR`
+  compilado dentro do `.so` (algo como `/usr/local/ssl`), diretório que não existe no
+  aparelho — a validação de cadeia falharia com um genérico "unable to get local issuer
+  certificate", como se o certificado fosse inválido. As CAs do Android ficam em
+  `/apex/com.android.conscrypt/cacerts` (14+) ou `/system/etc/security/cacerts`, já no
+  formato de diretório com hash que o OpenSSL espera como `CApath`. `ApplyDefaultTrustStore`
+  tenta os dois, **checando se o diretório existe** — o `X509_LOOKUP` de diretório devolve
+  sucesso mesmo para caminho inexistente, então sem essa checagem o primeiro candidato
+  "daria certo" sempre. CAs instaladas pelo usuário nas configurações do Android não
+  entram: desde o Android 7 elas ficam num store separado.
+
+Empacotar `libssl.so`/`libcrypto.so` por ABI (`armeabi-v7a`/`arm64-v8a`) no Deployment do
+app continua sendo tarefa de quem constrói o APK — ver `samples/EchoAndroid/LEIA-ME.md`.
+
+### 13.6 Milestones
 
 | # | Milestone | Conteúdo | Status |
 |---|-----------|----------|--------|
-| A0 | `pipes.inc` | novo define `PIPES_ANDROID`, sem herdar `PIPES_POSIX` (FPC-only) | proposto |
-| A1 | `Pipes.Transport.Android.pas` | backend `ptTcp` sobre `System.Net.Socket.TSocket`; interrupção de leitura via `Close(False)` (§13.4) | proposto |
-| A2 | `ptTls` | backend OpenSSL (§13.5), libs `.so` por ABI empacotadas no deployment | proposto |
-| A3 | Sample + testes | sample FMX Android; testes de integração em device/emulador real (sem par dual-compiler tradicional — FPC não compila para Android neste projeto) | proposto |
+| A0 | `pipes.inc` | define `PIPES_ANDROID` testado antes de `POSIX`; `PIPES_OPENSSL` automático | concluído, verificado em device |
+| A1 | `Pipes.Transport.Android.pas` | backend `ptTcp` sobre `Posix.*` + `poll` local; interrupção por self-pipe (§13.4); endpoint E listener; `ptLocal` recusado com mensagem própria | concluído, verificado em device |
+| A2 | `ptTls` | OpenSSL sem opt-in, sonames de Android, trust store do sistema (§13.5) | implementado; **NÃO verificado** (ver §13.9) |
+| A3 | Sample + testes | `samples/EchoAndroid` (FMX) e `tests/Android` (suíte de device, loopback) | concluído; suíte roda 8/8 em `ptTcp` |
 
-Dependências: T5 (já concluído) → A0 → A1 → A2 → A3. Eixo independente de P0-P5/H0-H4/
-S0-S4/F0-F3 (pub/sub, heartbeat, stats, failover) — nada ali muda; se algum dia
-implementado, o backend Android herda tudo isso de graça via `Pipes.Client`/
-`Pipes.Server` compartilhados.
+Dependências: T5 (concluído) → A0 → A1 → A2 → A3. Eixo independente de P0-P5/H0-H4/
+S0-S4/F0-F3 (pub/sub, heartbeat, stats, failover) — nada ali muda, e o backend Android
+herda tudo de graça via `Pipes.Client`/`Pipes.Server` compartilhados.
+
+### 13.7 O que a implementação mudou em relação à proposta
+
+Três decisões desta seção foram invertidas na hora de escrever o código. Ficam registradas
+porque a proposta original vinha de um spike, não de uma implementação — e um leitor que
+só conheça a versão anterior desta seção acharia que o código divergiu do plano por
+descuido.
+
+| Item | Proposta (spike) | Implementação | Por quê |
+|------|------------------|---------------|---------|
+| Backend | `System.Net.Socket.TSocket` | units `Posix.*` + `poll()` local | §13.3 |
+| Interrupção | `TSocket.Close(False)` | self-pipe + `poll`, fd fechado só no destructor | §13.4 |
+| Listener | fora de escopo | implementado | §13.1 (viabiliza teste loopback) |
+
+Nada disso enfraquece o que o spike concluiu: a resposta à pergunta central ("existe
+equivalente viável ao `CancelIoEx`/`fpPoll` no Android sem cair em polling?") continua
+sendo **sim**, e é ela que sustenta o backend. O que mudou foi qual das duas formas de
+"sim" entrou no código.
+
+### 13.8 Verificação: não há par dual-compiler
+
+Os outros milestones se verificam compilando nos dois compiladores e rodando a suíte nos
+dois. Aqui não existe esse par — o FPC não compila para Android neste projeto, e um APK
+não tem runner de console. Some-se a isso que o Delphi CE desta máquina recusa compilação
+por linha de comando (inclusive `dccaarm64`), então **o build Android e a rodada no
+aparelho são manuais, pelo IDE**.
+
+O que a máquina de desenvolvimento consegue garantir sozinha, e garantiu:
+
+- FPC/Win64 e FPC/Linux continuam verdes (suítes de unidade e integração) — A0 mexeu no
+  `pipes.inc`, que todo mundo inclui, então isso não é formalidade.
+- `Pipes.Transport.Tls.pas` compila no FPC com `-dPIPES_OPENSSL` (o ramo que A2 alterou).
+
+O que só o aparelho responde está em `tests/Android/LEIA-ME.md`, com os limites numéricos
+de cada caso — em especial os 250ms do desbloqueio de leitura, que é o número que separa
+"acordou por evento" de "acordou por timeout".
+
+**Rodada de referência (device real, 2026-08-01): 8 ok, 0 falhas, 3 pulados.**
+
+| Caso | Medido | Teto |
+|------|--------|------|
+| `CloseAbort` destrava `Read` | **1 ms** | 250 ms |
+| `Disconnect` com conexão ociosa | 2 ms | 2000 ms |
+| `Stop` com conexão ociosa | 6 ms | 2000 ms |
+| `Stop` sob tráfego intenso (1043 msgs vistas) | 1 ms | 2000 ms |
+
+O primeiro é o resultado que sustenta §13.4: **1 ms** é a assinatura de acordar por evento.
+Se o mecanismo tivesse regredido para `SO_RCVTIMEO`, o número seria da ordem do timeout
+configurado (o spike mediu ~205 ms para um timeout de 200 ms) e o caso reprovaria. Os
+outros três confirmam que o encerramento não depende de drenar nada — `Stop` sob carga
+cortou o fluxo com 1043 das 2000 mensagens vistas, que é o comportamento correto.
+
+Os demais casos (recusa de `ptLocal`, eco loopback, request/reply, queda abrupta
+notificando o servidor) passaram sem número relevante a registrar.
+
+### 13.9 O que ainda não foi verificado: `ptTls` no aparelho
+
+Os três casos de `ptTls` da suíte ficaram **PULADOS**, não verdes. Eles procuram os PEMs em
+`TPath.GetDocumentsPath` e não os acharam. Portanto, de A2 sabe-se apenas que o ramo
+compila; nenhuma afirmação sobre TLS no Android está confirmada em runtime — nem o
+carregamento das bibliotecas, nem o veredito de CA desconhecida, nem o `ApplyDefaultTrustStore`.
+
+Uma tentativa manual com `ptTls` a partir do `EchoAndroid` mostrou o modo de falha esperado
+e vale como registro: o servidor logou `conectou`/`desconectou` **sem nenhum erro de
+protocolo**. Isso localiza a falha com precisão — `TlsPipeConnect` faz o TCP primeiro e só
+depois monta o TLS, então o cliente morreu ao carregar o OpenSSL, antes de enviar o
+ClientHello. Se o ClientHello tivesse saído, o servidor teria lido `0x16 0x03 0x01…` no
+lugar do magic `NPF1` e registrado erro de protocolo.
+
+Para fechar A2 faltam quatro coisas, e nenhuma é código da biblioteca:
+
+1. `libcrypto.so` e `libssl.so` para a ABI do aparelho, no Deployment do projeto;
+2. a PKI de teste copiada para a pasta de documentos do app;
+3. um certificado de servidor cujo SAN cubra o endereço usado — o `tests/pki/srv_cert.pem`
+   versionado tem `DNS:localhost, IP:127.0.0.1`, então conectar por IP de LAN falha a
+   validação (corretamente). A suíte de device não sofre disso porque é loopback;
+4. certificado de cliente configurado, se o servidor do outro lado ligar mTLS.
