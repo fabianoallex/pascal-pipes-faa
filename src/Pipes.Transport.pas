@@ -4,7 +4,11 @@ unit Pipes.Transport;
 
 { Camada de transporte abstrata: o contrato que os backends por plataforma
   (Pipes.Transport.Windows = Named Pipe overlapped; Pipes.Transport.Posix =
-  Unix Domain Socket, milestone M4) implementam.
+  Unix Domain Socket, milestone M4; Pipes.Transport.Android = socket TCP sobre
+  as units Posix.* da RTL do Delphi, milestone A1) implementam.
+
+  O Android e' o unico dos tres sem transporte LOCAL: la ptLocal e' recusado
+  com mensagem propria (RaiseLocalUnsupported), nao cai em backend nenhum.
 
   Contrato de threads (herdado pela camada de cima):
   - Por endpoint: no maximo UMA thread em Read (a reader thread) e escritas
@@ -146,12 +150,17 @@ uses
   // Pipes.Transport.Tls usa ESTA unit na interface; a dependencia so' fecha
   // porque aqui e' na implementation.
   Pipes.Transport.Tcp,
-  Pipes.Transport.Tls,
+  Pipes.Transport.Tls
 {$IFDEF PIPES_WINDOWS}
-  Pipes.Transport.Windows;
+  , Pipes.Transport.Windows
 {$ELSE}
-  Pipes.Transport.Posix;
+  {$IFNDEF PIPES_ANDROID}
+  // Android nao tem transporte local (ver PipeNativeName abaixo), entao nao ha
+  // backend de ptLocal a referenciar.
+  , Pipes.Transport.Posix
+  {$ENDIF}
 {$ENDIF}
+  ;
 
 { TPipeEndpoint }
 
@@ -202,10 +211,28 @@ end;
 
 { --- fabricas --- }
 
+{$IFDEF PIPES_ANDROID}
+// ptLocal nao existe no Android e a recusa e' explicita, num unico lugar: app
+// Android e' single-process (nao ha o cenario de IPC local que justifica Named
+// Pipe/UDS) e expor um socket de dominio Unix esbarra em sandboxing. Ver
+// docs/ARQUITETURA.md secao 13.1. Sem esta mensagem, quem esquecesse de trocar
+// o Transport ao portar um app veria um erro obscuro de "unit nao encontrada"
+// em compilacao ou de socket em runtime.
+procedure RaiseLocalUnsupported;
+begin
+  raise EPipeError.Create('ptLocal (Named Pipe/UDS) nao existe no Android; ' +
+    'use Transport := ptTcp ou ptTls com Address no formato "host:porta"');
+end;
+{$ENDIF}
+
 function PipeNativeName(const AAddress: string): string;
 begin
   if AAddress = '' then
     raise EPipeError.Create('nome do pipe vazio');
+  {$IFDEF PIPES_ANDROID}
+  Result := '';
+  RaiseLocalUnsupported;
+  {$ELSE}
   {$IFDEF PIPES_WINDOWS}
   if Pos('\\', AAddress) = 1 then
     Result := AAddress // ja e' um caminho nativo (\\.\pipe\... ou \\server\pipe\...)
@@ -216,6 +243,7 @@ begin
     Result := AAddress // caminho absoluto de socket, controlado pelo chamador
   else
     Result := '/tmp/' + AAddress + '.sock';
+  {$ENDIF}
   {$ENDIF}
 end;
 
@@ -273,7 +301,12 @@ begin
   // validacao nenhuma. O else torna esse esquecimento barulhento.
   case ATransport of
     ptLocal:
-      ; // qualquer nome/caminho serve; PipeNativeName resolve
+      {$IFDEF PIPES_ANDROID}
+      RaiseLocalUnsupported
+      {$ELSE}
+      // qualquer nome/caminho serve; PipeNativeName resolve
+      {$ENDIF}
+      ;
     ptTcp, ptTls:
       begin
         // ptTls e' TCP por baixo: mesmo Address, mesma validacao.
@@ -303,10 +336,17 @@ begin
   PipeValidateAddress(AAddress, ATransport);
   if ATransport = ptTcp then
     Exit(TcpPipeCreateListener(AAddress, AKeepAliveSeconds));
+  // Daqui para baixo so' resta ptLocal. No Android e' inalcancavel (o
+  // PipeValidateAddress acima ja recusou), mas ainda precisa compilar.
+  {$IFDEF PIPES_ANDROID}
+  Result := nil;
+  RaiseLocalUnsupported;
+  {$ELSE}
   {$IFDEF PIPES_WINDOWS}
   Result := WinPipeCreateListener(AAddress);
   {$ELSE}
   Result := PosixPipeCreateListener(AAddress);
+  {$ENDIF}
   {$ENDIF}
 end;
 
@@ -328,10 +368,16 @@ begin
   PipeValidateAddress(AAddress, ATransport);
   if ATransport = ptTcp then
     Exit(TcpPipeConnect(AAddress, ATimeoutMs, AKeepAliveSeconds));
+  // Idem ao listener: inalcancavel no Android, mas precisa compilar.
+  {$IFDEF PIPES_ANDROID}
+  Result := nil;
+  RaiseLocalUnsupported;
+  {$ELSE}
   {$IFDEF PIPES_WINDOWS}
   Result := WinPipeConnect(AAddress, ATimeoutMs);
   {$ELSE}
   Result := PosixPipeConnect(AAddress, ATimeoutMs);
+  {$ENDIF}
   {$ENDIF}
 end;
 

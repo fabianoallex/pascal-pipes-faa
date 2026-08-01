@@ -19,6 +19,11 @@ unit Pipes.Transport.Tcp;
     Pipes.Transport.Windows: WSAEventSelect associa o socket a um WSAEVENT e
     toda espera e' um WSAWaitForMultipleEvents nesse par.
 
+  - Android: esta unit e' so' fachada — Pipes.Transport.Android traz endpoint,
+    listener E a montagem do socket. Nao da para reaproveitar o que esta aqui:
+    o ramo POSIX e' FPC-only e o addrinfo local segue o layout do glibc, que o
+    bionic nao respeita (ai_canonname vem antes de ai_addr).
+
   Invariantes (alem do contrato de Pipes.Transport):
   - Windows: WSAEventSelect deixa o socket NAO-BLOCANTE. Toda operacao tenta
     primeiro recv/send e so espera no evento se voltar WSAEWOULDBLOCK — isso
@@ -48,7 +53,11 @@ uses
   {$IFDEF PIPES_WINDOWS}
   , Windows, WinSock2
   {$ELSE}
+    {$IFDEF PIPES_ANDROID}
+  , Pipes.Transport.Android
+    {$ELSE}
   , UnixType, BaseUnix, Sockets, Pipes.Transport.Posix
+    {$ENDIF}
   {$ENDIF};
 
 {$IFDEF PIPES_WINDOWS}
@@ -98,6 +107,30 @@ function TcpPipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
   AKeepAliveSeconds: Cardinal): TPipeEndpoint;
 
 implementation
+
+{$IFDEF PIPES_ANDROID}
+
+{ ============================== Android (Posix.*) ===========================
+
+  Aqui esta unit e' so' a fachada: o backend inteiro vive em
+  Pipes.Transport.Android, e nao ha nada a compartilhar com os outros dois
+  ramos. Nem o getaddrinfo abaixo serve — o addrinfo do bionic troca a ordem de
+  ai_canonname/ai_addr em relacao ao glibc, entao la se usa o addrinfo do
+  proprio Posix.NetDB (ver o cabecalho daquela unit). }
+
+function TcpPipeCreateListener(const AAddress: string;
+  AKeepAliveSeconds: Cardinal): TPipeListener;
+begin
+  Result := AndroidTcpCreateListener(AAddress, AKeepAliveSeconds);
+end;
+
+function TcpPipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
+  AKeepAliveSeconds: Cardinal): TPipeEndpoint;
+begin
+  Result := AndroidTcpConnect(AAddress, ATimeoutMs, AKeepAliveSeconds);
+end;
+
+{$ELSE}
 
 { --- getaddrinfo -------------------------------------------------------------
 
@@ -859,6 +892,8 @@ begin
 end;
 
 {$ENDIF}
+
+{$ENDIF PIPES_ANDROID}
 
 {$IFDEF PIPES_WINDOWS}
 initialization
