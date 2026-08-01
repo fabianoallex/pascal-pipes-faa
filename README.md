@@ -842,6 +842,11 @@ marcados `deprecated` só depois que samples e testes migrarem.
 A suíte de integração inclui stress de encerramento (Stop sob flood < 2 s), detector de
 vazamento de handle/fd em quedas abruptas repetidas e correlação RPC sob concorrência.
 
+**Android não entra nessa suíte**: o FPC não compila para Android neste projeto e um APK não
+tem runner de console, então o backend Android se verifica em aparelho, com a suíte FMX de
+`tests/Android` (loopback: servidor e cliente no mesmo app). Ver `tests/Android/LEIA-ME.md`
+para os limites numéricos de cada caso e a rodada de referência.
+
 ### Testes de TLS
 
 O fixture `TPipeTlsTests` só existe se o build tiver backend TLS — no Linux, portanto, só

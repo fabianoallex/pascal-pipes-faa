@@ -308,16 +308,19 @@ Todos os handles com `FILE_FLAG_OVERLAPPED`; nenhuma chamada síncrona blocante.
 | `src/Pipes.Topics.pas` | pub/sub: validação de nome/filtro, casamento hierárquico, envelope de tópico. **Unit pura** (sem estado, sem locks, sem IO) — §9 |
 | `src/Pipes.Transport.pas` | `TPipeEndpoint`/`TPipeListener` abstratos (Read/Write/Accept interrompíveis + CloseAbort) |
 | `src/Pipes.Transport.Windows.pas` | Named Pipe overlapped (`{$IFDEF PIPES_WINDOWS}`) |
-| `src/Pipes.Transport.Posix.pas` | UDS + fpPoll + self-pipe (`{$IFDEF PIPES_POSIX}`) |
-| `src/Pipes.Transport.Tcp.pas` | socket TCP nos dois OS (`ptTcp`), keepalive (§5.3) |
+| `src/Pipes.Transport.Posix.pas` | UDS + fpPoll + self-pipe (`{$IFDEF PIPES_POSIX}`, FPC-only) |
+| `src/Pipes.Transport.Android.pas` | `ptTcp` sobre as units `Posix.*` da RTL + `poll` local + self-pipe (`{$IFDEF PIPES_ANDROID}`, Delphi-only); endpoint, listener e fábricas — §13 |
+| `src/Pipes.Transport.Tcp.pas` | socket TCP nos dois OS (`ptTcp`), keepalive (§5.3); no Android é só fachada que delega (§13.3) |
 | `src/Pipes.Transport.Tls.pas` | fachada neutra `ptTls`: embrulha um endpoint TCP numa sessão TLS, escolhe o backend por diretiva (§5.3) |
 | `src/Pipes.Transport.Schannel.pas` | backend TLS via SSPI (`{$IFDEF PIPES_SCHANNEL}`), cliente e servidor, validação manual de cadeia (§7) |
 | `src/Pipes.Transport.OpenSSL.pas` | backend TLS via OpenSSL (`{$IFDEF PIPES_OPENSSL}`), cliente e servidor, mTLS |
 | `src/Pipes.Base.pas` | `TPipeBase` (Address/Transport/TlsOptions/KeepAliveSeconds/DispatchMode), `TPipeTlsConfig`, `TPipeGuard` |
 | `src/Pipes.Server.pas` | `TPipeServer` + acceptor + conexões + identidade de par mTLS |
-| `src/Pipes.Client.pas` | `TPipeClient` + reconexão + `MaxReconnectAttempts` |
+| `src/Pipes.Client.pas` | `TPipeClient` + reconexão + `MaxReconnectAttempts` + failover de endereço (§12) |
+| `src/Pipes.Json.pas` | bytes⇄JSON **opcional** (`System.JSON`/`fpjson`); não acoplada ao core — ver `README.md` |
 | `tests/Unit/` (`Pipes.ThreadingTests`, `Pipes.FramingTests`, `Pipes.TopicsTests`, `Pipes.AddressTests`) | unitários; DUnit (Delphi) + fpcunit (FPC, em `fpc/`), layout espelhado do pascal-amqp-faa |
-| `tests/Integration/` (`Pipes.TransportTests`, `Pipes.EndToEndTests`, `Pipes.PubSubTests`, `Pipes.StressTests`, `Pipes.TlsTests`) | integração dual-OS, inclui mTLS; mesmo espelhamento DUnit/fpcunit |
+| `tests/Integration/` (`Pipes.TransportTests`, `Pipes.EndToEndTests`, `Pipes.PubSubTests`, `Pipes.StressTests`, `Pipes.TlsTests`, `Pipes.HeartbeatTests`, `Pipes.StatsTests`, `Pipes.JsonTests`, `Pipes.FailoverTests`) | integração dual-OS, inclui mTLS; mesmo espelhamento DUnit/fpcunit |
+| `tests/Android/` | suíte de **device** do backend Android (FMX, loopback). Sem par dual-compiler: o FPC não compila para Android neste projeto — §13.8 |
 | `tests/pki/` | PKI de **teste** versionada (sem valor de segurança; ver `LEIA-ME.md`) |
 | `samples/` | amostras (echo, chat, PDV, fila de impressão, RPC concorrente, pub/sub etc.) — ver `../README.md`, seção de samples |
 
