@@ -12,7 +12,15 @@ program EchoClient;
     FPC:    fpc -MDelphi -Sh -Fu..\..\src EchoClient.dpr   (ou lazbuild EchoClient.lpi)
     Delphi: abrir EchoClient.dproj no IDE
 
-  Uso: EchoClient [nome-do-pipe] }
+  Uso: EchoClient [endereco] [tcp]
+
+    EchoClient                       ptLocal em 'pipes_faa_echo' (padrao)
+    EchoClient meu_pipe              ptLocal em 'meu_pipe'
+    EchoClient 192.168.0.10:5300 tcp ptTcp
+
+  O segundo parametro e' opcional e nao muda o comportamento antigo. Serve para
+  conferir do PC um servidor ptTcp antes de culpar o celular (ver o sample
+  EchoAndroid). }
 
 {$IFDEF FPC}
   {$MODE DELPHI}
@@ -50,7 +58,7 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    procedure Run(const APipeName: string);
+    procedure Run(const AAddress: string; ATransport: TPipeTransport);
   end;
 
 constructor TEchoClientApp.Create;
@@ -98,17 +106,19 @@ begin
   Log('erro: ' + AError);
 end;
 
-procedure TEchoClientApp.Run(const APipeName: string);
+procedure TEchoClientApp.Run(const AAddress: string;
+  ATransport: TPipeTransport);
 var
   LLinha, LReply: string;
 begin
-  FClient := TNamedPipeClient.Create(APipeName);
+  FClient := TNamedPipeClient.Create(AAddress);
+  FClient.Transport := ATransport;
   FClient.OnMessage := OnMsg;
   FClient.OnConnected := OnConn;
   FClient.OnDisconnected := OnDisc;
   FClient.OnError := OnErr;
   FClient.Connect(5000); // re-tenta ate 5 s (cobre servidor ainda subindo)
-  Log('conectado a "' + APipeName + '". Digite texto, ?texto (RPC) ou sair.');
+  Log('conectado a "' + AAddress + '". Digite texto, ?texto (RPC) ou sair.');
   while True do
   begin
     Readln(LLinha);
@@ -133,18 +143,22 @@ end;
 
 var
   App: TEchoClientApp;
-  PipeName: string;
+  Address: string;
+  Transport: TPipeTransport;
 begin
   {$IFNDEF FPC}
   ReportMemoryLeaksOnShutdown := True;
   {$ENDIF}
   if ParamCount >= 1 then
-    PipeName := ParamStr(1)
+    Address := ParamStr(1)
   else
-    PipeName := 'pipes_faa_echo';
+    Address := 'pipes_faa_echo';
+  Transport := ptLocal;
+  if (ParamCount >= 2) and SameText(ParamStr(2), 'tcp') then
+    Transport := ptTcp;
   App := TEchoClientApp.Create;
   try
-    App.Run(PipeName);
+    App.Run(Address, Transport);
   finally
     App.Free;
   end;
