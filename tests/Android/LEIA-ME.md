@@ -79,22 +79,30 @@ diferentes do sistema; o caso `CloseAbort destrava Read em ms` tem que
 continuar medindo milissegundos. Foi assim que o spike de viabilidade validou
 o mecanismo antes de ele virar código.
 
-## Os casos de `ptTls` são pulados sem a PKI
+## Os casos de `ptTls`
 
 Eles procuram os PEMs em `TPath.GetDocumentsPath`. Sem eles a suíte reporta
 **PULADO** (não falha) — pulado em silêncio seria pior, dá impressão de
 cobertura que não existe.
 
-Para tê-los no aparelho:
+**O `.dproj` já traz as entradas de Deployment** dos oito PEMs necessários,
+apontando para a PKI de teste versionada em `tests/pki` (`ca_cert.pem`,
+`srv_cert.pem`/`srv_key.pem`, `cli_cert.pem`/`cli_key.pem`,
+`gemea_ca_cert.pem`, `selfsigned_cert.pem`/`selfsigned_key.pem`), com *Remote
+Path* `assets\internal\`. O `System.StartUpCopy` do `.dpr` copia isso para a
+pasta de documentos no primeiro start.
 
-1. Gere a PKI com `tools/gerar-pki.sh` (ver `tools/LEIA-ME.md`).
-2. Adicione ao `Project > Deployment`, com *Remote Path* `assets\internal\`:
-   `ca_cert.pem`, `srv_cert.pem`, `srv_key.pem`, `cli_cert.pem`, `cli_key.pem`,
-   `gemea_ca_cert.pem` e, para o último caso, `selfsigned_cert.pem` /
-   `selfsigned_key.pem`.
-3. Empacote `libcrypto.so` e `libssl.so` por ABI — ver
-   `samples/EchoAndroid/LEIA-ME.md`, seção "`ptTls` no Android".
+Aqui, diferente do sample `EchoAndroid`, versionar as entradas é seguro: esses
+arquivos estão no repositório e o SAN deles (`DNS:localhost, IP:127.0.0.1`)
+serve, porque a suíte é **loopback** — ela nunca disca um IP de LAN.
 
-Sem as bibliotecas do OpenSSL os casos de `ptTls` falham (não pulam), com a
-mensagem de biblioteca ausente vinda do carregador — que é o comportamento
-correto: a PKI estar presente e o TLS não funcionar é um problema de verdade.
+Se mesmo assim os casos aparecerem como PULADO, os arquivos não chegaram ao
+aparelho. A mensagem imprime o caminho exato onde procurou; confira em
+`Project > Deployment` se as oito linhas estão marcadas para a plataforma e a
+configuração que você está usando.
+
+**Falta ainda o OpenSSL.** Sem `libcrypto.so`/`libssl.so` empacotadas por ABI,
+os casos de `ptTls` **falham** (não pulam), com a mensagem de biblioteca ausente
+vinda do carregador — que é o comportamento correto: a PKI estar presente e o
+TLS não funcionar é um problema de verdade. De onde tirar as `.so` está em
+`samples/EchoAndroid/LEIA-ME.md`, seção "de onde vêm as `.so`".

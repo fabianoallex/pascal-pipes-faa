@@ -132,6 +132,64 @@ Copie de lá o conteúdo de `<EnabledSysJars>` para as duas seções
 dir "%BDS%\lib\android\Debug\*.dex.jar"
 ```
 
+## `ptTls` no Android: de onde vêm as `.so`
+
+Esta é a única peça que não dá para versionar no repositório nem gerar por
+script: são binários nativos, por ABI, e a licença/proveniência é decisão de
+quem publica o app. Três caminhos, do mais rápido ao mais controlado.
+
+### Opção A — pegar de um pacote pronto (mais rápido)
+
+Vários projetos publicam OpenSSL já compilado para Android. Os dois mais usados
+no mundo Delphi:
+
+- **KyIvI/OpenSSL-for-Android** ou similares no GitHub — trazem `libcrypto.so` e
+  `libssl.so` por ABI, geralmente OpenSSL 1.1.1 ou 3.x.
+- **O pacote que acompanha o Indy/`IdSSLOpenSSLHeaders`** para Android, se você
+  já usa Indy em outro projeto.
+
+Confira **sempre** a versão antes de usar: `Pipes.Transport.OpenSSL.pas` fala
+com a API pública de 1.1.1 e 3.x, e só com símbolos de assinatura idêntica nas
+duas. Uma `.so` de 1.0.2 (ainda encontrada em pacotes antigos) **não** serve — a
+ABI mudou.
+
+### Opção B — extrair de um APK que já as tenha
+
+Se você tem à mão um APK que empacota OpenSSL, as bibliotecas estão em
+`lib/<abi>/` dentro dele (um APK é um zip). Serve para desbloquear um teste
+rápido, mas não para produção: você herda a versão e o histórico de patches de
+outra pessoa, sem saber quando ela atualiza.
+
+### Opção C — compilar você mesmo (recomendado para produção)
+
+É o único caminho em que você controla a versão e consegue aplicar correções de
+segurança no seu ritmo. Com o NDK instalado:
+
+```bash
+export ANDROID_NDK_ROOT=/caminho/para/android-ndk
+export PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+
+# arm64-v8a (Android64) — o alvo deste sample
+./Configure android-arm64 -D__ANDROID_API__=23 no-shared-not-needed \
+  --prefix=$PWD/out-arm64
+make -j"$(nproc)" && make install_sw
+
+# armeabi-v7a (Android 32 bits), se você também publicar essa ABI
+./Configure android-arm -D__ANDROID_API__=23 --prefix=$PWD/out-arm
+```
+
+Depois **renomeie** os artefatos para `libcrypto.so` e `libssl.so`, sem sufixo
+de versão — ver a explicação no passo 2 da seção seguinte.
+
+### Como saber se deu certo
+
+O carregamento é preguiçoso: um app que só usa `ptTcp` sobe normalmente mesmo
+sem as `.so`. O erro só aparece na primeira conexão `ptTls`, e o modo de falha
+é característico — o servidor loga conexão e desconexão **sem erro de
+protocolo**, porque o cliente morre carregando a biblioteca antes de enviar o
+ClientHello. Se você vir exatamente isso, o problema é a `.so`, não o
+certificado. (Registrado em `docs/ARQUITETURA.md` §13.9.)
+
 ## `ptTls` no Android: empacotando o OpenSSL
 
 O Schannel é exclusivo do Windows, então no Android o único backend de TLS é o
@@ -152,23 +210,80 @@ Para usar `ptTls`:
 3. Adicione-as em `Project > Deployment`, com *Remote Path* `library\lib\arm64-v8a\`
    (ou `armeabi-v7a`), plataforma Android64 e a configuração desejada.
 
-4. **CA para validar o servidor.** Com PKI própria — o caso típico de frota —
-   copie o `ca_cert.pem` gerado por `tools/gerar-pki.sh` via Deployment para
-   `assets\internal\` e aponte:
+## A PKI: por que ela não está versionada aqui
 
-   ```pascal
-   FClient.TlsOptions.CaFile :=
-     TPath.Combine(TPath.GetDocumentsPath, 'ca_cert.pem');
-   ```
+O certificado do servidor precisa ter, no **SAN**, o endereço que o celular
+disca. Como esse endereço é o IP da *sua* rede, não dá para versionar um
+certificado que sirva para todo mundo — a PKI de teste em `tests/pki` tem
+`DNS:localhost, IP:127.0.0.1` e por isso **falha** (corretamente) quando o
+aparelho conecta por IP de LAN.
 
-   Com `CaFile` vazio a lib valida contra o trust store do sistema. No Android
-   isso exige um cuidado que a lib já toma por você: o
-   `SSL_CTX_set_default_verify_paths` do OpenSSL aponta para um `OPENSSLDIR`
-   que não existe no aparelho, então `Pipes.Transport.OpenSSL.pas` usa
-   `/apex/com.android.conscrypt/cacerts` ou `/system/etc/security/cacerts`.
-   CAs que o *usuário* instalou pelas configurações do Android **não** entram —
-   desde o Android 7 elas ficam num store separado, válido só para quem usa a
-   API de rede do próprio sistema.
+Gere a sua, com o IP da máquina que roda o servidor:
+
+```bash
+cd tools
+./gerar-pki.sh -o ./pki-android -s pipes-faa-lan \
+  -a "IP:192.168.0.10,DNS:localhost,IP:127.0.0.1" android-001
+```
+
+O diretório `tools/pki-android/` é ignorado pelo git (`/tools/*/` no
+`.gitignore`) — chaves privadas não entram no repositório. Confira o SAN antes
+de usar:
+
+```bash
+openssl x509 -in tools/pki-android/srv_cert.pem -noout -ext subjectAltName
+```
+
+### Levando os PEMs para o aparelho
+
+Este `.dproj` **não** traz entradas de Deployment para a PKI, de propósito:
+elas apontariam para um diretório que não existe num clone novo, e quebrariam o
+deploy de quem só quer ver o `ptTcp` funcionando. São quatro cliques no IDE:
+
+1. `Project > Deployment`, plataforma **Android64**, configuração **Debug**.
+2. *Add Files*: `tools\pki-android\ca_cert.pem`,
+   `tools\pki-android\android-001_cert.pem`,
+   `tools\pki-android\android-001_key.pem`.
+3. Em cada um, *Remote Path* = `assets\internal\`.
+4. Renomeie o *Remote Name* dos dois últimos para `cli_cert.pem` e
+   `cli_key.pem` — são os nomes que `ConfiguraTls` procura.
+
+O `System.StartUpCopy` do `.dpr` copia `assets/internal` para a pasta de
+documentos do app no primeiro start; é de lá que o sample lê. O log da tela diz
+o que encontrou:
+
+```
+TLS: validando o servidor contra ca_cert.pem
+TLS: apresentando cli_cert.pem (mTLS)
+```
+
+Se aparecer `sem ca_cert.pem` ou `sem certificado de cliente`, os arquivos não
+chegaram — reveja o Remote Path.
+
+### Do lado do servidor (PC)
+
+`samples/EchoSeguro/EchoSeguroServer.exe` usa a PKI de `tests/pki`, que não tem
+o IP da sua LAN no SAN. Para o teste com o celular, aponte-o para a PKI nova —
+ou rode um servidor próprio com:
+
+```pascal
+Srv.TlsOptions.CertFile := '...\tools\pki-android\srv_cert.pem';
+Srv.TlsOptions.KeyFile  := '...\tools\pki-android\srv_key.pem';
+Srv.TlsOptions.CaFile   := '...\tools\pki-android\ca_cert.pem';  // liga mTLS
+```
+
+Sem `CaFile` o servidor não exige certificado de cliente, e o app conecta mesmo
+sem os `cli_*` — útil para separar "o TLS subiu?" de "o mTLS está certo?".
+
+### Sobre o trust store do sistema
+
+Com `CaFile` vazio a lib valida contra o trust store do aparelho. Isso exige um
+cuidado que a lib já toma por você: o `SSL_CTX_set_default_verify_paths` do
+OpenSSL aponta para um `OPENSSLDIR` que não existe no Android, então
+`Pipes.Transport.OpenSSL.pas` usa `/apex/com.android.conscrypt/cacerts` ou
+`/system/etc/security/cacerts`. CAs que o *usuário* instalou pelas configurações
+do Android **não** entram — desde o Android 7 elas ficam num store separado,
+válido só para quem usa a API de rede do próprio sistema.
 
 ## O que o sample mostra
 

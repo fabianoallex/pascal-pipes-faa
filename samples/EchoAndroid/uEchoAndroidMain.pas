@@ -24,6 +24,7 @@ interface
 uses
   System.SysUtils,
   System.Classes,
+  System.IOUtils,
   System.UITypes,
   FMX.Types,
   FMX.Controls,
@@ -61,6 +62,10 @@ type
     FConnecting: Boolean;
     procedure Log(const AText: string);
     procedure AtualizaBotoes;
+    /// Aponta TlsOptions para os PEMs que estiverem na pasta de documentos do
+    /// app. Cada um e' opcional e a ausencia tem significado proprio — ver o
+    /// corpo do metodo.
+    procedure ConfiguraTls;
     /// Chamado pela TConnectThread ao terminar (ja na thread principal).
     procedure ConexaoTerminou(const AError: string);
     // Eventos da lib (chegam na thread principal por causa de pdmMainThread).
@@ -166,6 +171,52 @@ begin
   swTls.Enabled := not LConectado and not FConnecting;
 end;
 
+procedure TfrmEchoAndroid.ConfiguraTls;
+var
+  LDocs, LCa, LCert, LKey: string;
+begin
+  // Os PEMs chegam aqui pelo Deployment do projeto (Remote Path
+  // 'assets\internal\'): o System.StartUpCopy do .dpr copia assets/internal
+  // para a pasta de documentos do app no primeiro start. Nomes fixos de
+  // proposito — este e' um sample, nao um instalador de credenciais.
+  LDocs := IncludeTrailingPathDelimiter(TPath.GetDocumentsPath);
+  LCa := LDocs + 'ca_cert.pem';
+  LCert := LDocs + 'cli_cert.pem';
+  LKey := LDocs + 'cli_key.pem';
+
+  if FileExists(LCa) then
+  begin
+    // CA propria (frota com PKI interna): o certificado do servidor nao esta
+    // no trust store do sistema, e nem deveria estar.
+    FClient.TlsOptions.CaFile := LCa;
+    Log('TLS: validando o servidor contra ca_cert.pem');
+  end
+  else
+  begin
+    FClient.TlsOptions.CaFile := '';
+    // Sem CaFile a lib valida contra o trust store do sistema. No Android isso
+    // so' funciona porque Pipes.Transport.OpenSSL aponta para os cacerts do
+    // aparelho — o default do OpenSSL e' um diretorio que nao existe la.
+    Log('TLS: sem ca_cert.pem; validando contra o trust store do sistema');
+  end;
+
+  if FileExists(LCert) and FileExists(LKey) then
+  begin
+    // mTLS: o cliente so' apresenta certificado se tiver um configurado. Sem
+    // isto, um servidor com mTLS ligado recusa a conexao — e' o modo de falha
+    // esperado, nao um bug do app.
+    FClient.TlsOptions.CertFile := LCert;
+    FClient.TlsOptions.KeyFile := LKey;
+    Log('TLS: apresentando cli_cert.pem (mTLS)');
+  end
+  else
+  begin
+    FClient.TlsOptions.CertFile := '';
+    FClient.TlsOptions.KeyFile := '';
+    Log('TLS: sem certificado de cliente; servidor com mTLS vai recusar');
+  end;
+end;
+
 procedure TfrmEchoAndroid.btnConectarClick(Sender: TObject);
 var
   LEndereco: string;
@@ -181,13 +232,7 @@ begin
   if swTls.IsChecked then
   begin
     FClient.Transport := ptTls;
-    // CaFile vazio = valida contra o trust store do sistema (no Android a lib
-    // aponta sozinha para /system/etc/security/cacerts — o default do OpenSSL
-    // nao serve la). Com PKI propria, que e' o caso tipico de frota, aponte
-    // para o PEM da sua CA, copiado para a pasta de documentos do app pelo
-    // Deployment do projeto:
-    //   FClient.TlsOptions.CaFile :=
-    //     TPath.Combine(TPath.GetDocumentsPath, 'ca.pem');
+    ConfiguraTls;
     Log('conectando a ' + LEndereco + ' (ptTls)...');
   end
   else
