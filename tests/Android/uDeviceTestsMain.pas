@@ -1,4 +1,4 @@
-unit uDeviceTestsMain;
+﻿unit uDeviceTestsMain;
 
 { Harness de testes em DEVICE para o backend Android (milestone A3).
 

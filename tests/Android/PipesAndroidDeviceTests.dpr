@@ -1,4 +1,4 @@
-program PipesAndroidDeviceTests;
+﻿program PipesAndroidDeviceTests;
 
 { Suite de device do backend Android (milestone A3).
 

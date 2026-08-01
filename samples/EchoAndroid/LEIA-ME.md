@@ -231,8 +231,42 @@ Para usar `ptTls`:
    `libssl.so.3` nunca chegaria ao aparelho. A lista de candidatos em
    `Pipes.Transport.OpenSSL.pas` já tem um par só no Android por essa razão.
 
-3. Adicione-as em `Project > Deployment`, com *Remote Path* `library\lib\arm64-v8a\`
-   (ou `armeabi-v7a`), plataforma Android64 e a configuração desejada.
+3. Adicione-as em `Project > Deployment`, plataforma Android64. **Duas colunas
+   precisam ser corrigidas depois de adicionar** — o padrão do IDE não serve:
+
+   | Coluna | Padrão do IDE | O que tem que ficar |
+   |---|---|---|
+   | **Type** | `File` | `ProjectFile` |
+   | **Remote Path** | `.\` | `library\lib\arm64-v8a\` |
+
+   O `Type` é a armadilha silenciosa. A classe `File` está declarada no `.dproj`
+   com `<Operation>0</Operation>` para `Android` e `Android64` e **sem**
+   `RemoteDir` — ou seja, no Android ela não faz nada. O arquivo aparece
+   marcadinho na lista do Deployment, o build passa, o deploy passa, e a `.so`
+   simplesmente não entra no APK. O sintoma é o erro do carregador na primeira
+   conexão `ptTls`:
+
+   ```
+   EPipeTls: OpenSSL não encontrado (tentados: libssl.so)
+   ```
+
+   `ProjectFile` deploya e respeita o `RemoteDir` explícito — é a mesma classe
+   que leva os PEMs para `assets\internal\`.
+
+   O destino `library\lib\arm64-v8a\` não é chute: é o `APK_LibraryDir` que o
+   `$(BDS)\bin\CodeGear.Deployment.Targets` define para a plataforma Android64
+   (para Android 32 bits seria `library\lib\armeabi-v7a`).
+
+   Para conferir sem depender do aparelho, o APK é um zip:
+
+   ```powershell
+   Add-Type -A System.IO.Compression.FileSystem
+   $apk = "Android64\Debug\EchoAndroid\bin\EchoAndroid.apk"
+   [IO.Compression.ZipFile]::OpenRead((Resolve-Path $apk)).Entries |
+     Where-Object FullName -like "lib/*" | Select-Object FullName, Length
+   ```
+
+   Tem que aparecer `lib/arm64-v8a/libcrypto.so` e `lib/arm64-v8a/libssl.so`.
 
 ## A PKI: por que ela não está versionada aqui
 
