@@ -14,6 +14,11 @@ unit Pipes.Transport.Tls;
                                  OpenSSL e' problema operacional)
     POSIX (e Windows opt-in) ... Pipes.Transport.OpenSSL (libssl/libcrypto
                                  carregadas dinamicamente)
+    Android .................... Pipes.Transport.OpenSSL tambem, mas sem
+                                 opt-in: SChannel e' Windows-only, entao o
+                                 pipes.inc ja liga PIPES_OPENSSL la. As libs
+                                 vao no Deployment do app, por ABI
+                                 (docs/ARQUITETURA.md secao 13.5)
 
   A adaptacao existe porque os dois lados falam linguas diferentes:
 

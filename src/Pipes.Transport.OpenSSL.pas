@@ -4,11 +4,17 @@
 
 { Backend TLS do ptTls via OpenSSL (libssl/libcrypto), multiplataforma.
 
-  Compilado apenas sob a diretiva PIPES_OPENSSL (opt-in, definida pelo projeto
-  consumidor — nunca automática): diferente do SChannel, que é garantido existir
-  no Windows, o OpenSSL depende de libssl/libcrypto presentes na máquina. Sem a
-  diretiva esta unit compila vazia e nada muda no build. Com ela, o OpenSSL é
-  usado em QUALQUER plataforma (inclusive Windows, no lugar do SChannel).
+  Compilado apenas sob a diretiva PIPES_OPENSSL (opt-in no Windows e no POSIX,
+  definida pelo projeto consumidor): diferente do SChannel, que é garantido
+  existir no Windows, o OpenSSL depende de libssl/libcrypto presentes na
+  máquina. Sem a diretiva esta unit compila vazia e nada muda no build. Com ela,
+  o OpenSSL é usado em QUALQUER plataforma (inclusive Windows, no lugar do
+  SChannel).
+
+  ÚNICA exceção ao opt-in: no Android o pipes.inc liga PIPES_OPENSSL sozinho,
+  porque lá não há segunda opção (SChannel é Windows-only) e deixar opt-in só
+  renderia um "build sem backend TLS" em runtime. Como o carregamento é
+  preguiçoso, um app Android que use apenas ptTcp não paga nada por isso.
 
   Mesma receita de Pipes.Transport.Tls (SChannel): bindings próprios contra a
   API pública (nada de código de terceiros — só as assinaturas da ABI), uma
@@ -186,10 +192,25 @@ const
     ('libcrypto-1_1-x64.dll', 'libssl-1_1-x64.dll'),
     ('libcrypto-1_1.dll', 'libssl-1_1.dll'));
   {$ELSE}
+    {$IFDEF PIPES_ANDROID}
+  // Um par só, e sem sufixo de versão: o instalador do Android extrai do APK
+  // apenas arquivos que casem com 'lib*.so' — 'libssl.so.3' nem chega ao
+  // dispositivo, então tentar os sonames versionados seria dlopen perdido.
+  // As libs precisam ser adicionadas ao Deployment por ABI (armeabi-v7a e
+  // arm64-v8a); ver docs/ARQUITETURA.md seção 13.5.
+  //
+  // O Android tem um /system/lib*/libcrypto.so próprio (BoringSSL, ABI
+  // incompatível), mas desde o Android 7 ele está fora do namespace público de
+  // apps: o dlopen resolve a cópia empacotada no APK ou falha — não silencia
+  // num BoringSSL do sistema.
+  SSL_LIB_PAIRS: array[0..0, 0..1] of string = (
+    ('libcrypto.so', 'libssl.so'));
+    {$ELSE}
   SSL_LIB_PAIRS: array[0..2, 0..1] of string = (
     ('libcrypto.so.3', 'libssl.so.3'),
     ('libcrypto.so.1.1', 'libssl.so.1.1'),
     ('libcrypto.so', 'libssl.so'));
+    {$ENDIF}
   {$ENDIF}
 
   // SSL_get_error
@@ -480,6 +501,54 @@ begin
     Result := Format('SSL_get_error=%d', [AErr]);
 end;
 
+// Aponta o contexto para o trust store do SISTEMA (usado quando CaFile esta
+// vazio). False = nao ha trust store utilizavel; o chamador levanta.
+//
+// No Android o SSL_CTX_set_default_verify_paths sozinho NAO serve: ele usa o
+// OPENSSLDIR compilado dentro do .so (algo como /usr/local/ssl), diretorio que
+// simplesmente nao existe no aparelho — a validacao de cadeia falharia com um
+// erro generico de "unable to get local issuer certificate", como se o
+// certificado fosse invalido. As CAs do Android vivem em outro lugar, ja no
+// formato de diretorio com hash que o OpenSSL espera como CApath:
+//
+//   /apex/com.android.conscrypt/cacerts   Android 14+ (atualizavel via APEX)
+//   /system/etc/security/cacerts          caminho classico, ainda presente
+//
+// Tenta os dois em ordem e so' entao cai no default do proprio OpenSSL.
+//
+// Isto vale para a validacao contra CAs PUBLICAS. O caso de uso alvo desta lib
+// (frota com PKI interna) passa CaFile e nem chega aqui, e as CAs que o usuario
+// instala pelo Android nao entram: desde o Android 7 elas ficam num store
+// separado que so' vale para quem usa a API de rede do proprio sistema.
+function ApplyDefaultTrustStore(ACtx: Pointer): Boolean;
+{$IFDEF PIPES_ANDROID}
+const
+  ANDROID_CA_DIRS: array[0..1] of string = (
+    '/apex/com.android.conscrypt/cacerts',
+    '/system/etc/security/cacerts');
+var
+  I: Integer;
+  LDir: AnsiString;
+{$ENDIF}
+begin
+  {$IFDEF PIPES_ANDROID}
+  for I := Low(ANDROID_CA_DIRS) to High(ANDROID_CA_DIRS) do
+  begin
+    // O DirectoryExists NAO e' redundante: o X509_LOOKUP de diretorio so
+    // registra o caminho e devolve 1 mesmo para um diretorio inexistente. Sem
+    // esta checagem o primeiro candidato "daria certo" sempre e o segundo
+    // nunca seria tentado — em Android anterior ao 14, onde o caminho do APEX
+    // nao existe, isso deixaria o contexto sem CA nenhuma.
+    if not DirectoryExists(ANDROID_CA_DIRS[I]) then
+      Continue;
+    LDir := AnsiString(ANDROID_CA_DIRS[I]);
+    if p_SSL_CTX_load_verify_locations(ACtx, nil, PAnsiChar(LDir)) = 1 then
+      Exit(True);
+  end;
+  {$ENDIF}
+  Result := p_SSL_CTX_set_default_verify_paths(ACtx) = 1;
+end;
+
 { TPipeOpenSslStream }
 
 // (declaracao adiantada: usada por SetupSsl do cliente, definida adiante)
@@ -557,9 +626,9 @@ begin
           [FOptions.CaFile, LastSslErrorText]);
     end
     // Trust store do sistema (ex.: /etc/ssl/certs no Linux).
-    else if p_SSL_CTX_set_default_verify_paths(FCtx) <> 1 then
-      raise EPipeTls.CreateFmt('SSL_CTX_set_default_verify_paths falhou (%s)',
-        [LastSslErrorText]);
+    else if not ApplyDefaultTrustStore(FCtx) then
+      raise EPipeTls.CreateFmt('nao foi possivel abrir o trust store do ' +
+        'sistema (%s)', [LastSslErrorText]);
   end
   else
     p_SSL_CTX_set_verify(FCtx, SSL_VERIFY_NONE, nil);
