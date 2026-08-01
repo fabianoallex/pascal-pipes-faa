@@ -736,3 +736,94 @@ todo o resto da lib por um dado que a property já resolve sem quebrar nada em u
 | F1 | `Connect` | `ConnectAnyAddress` (volta pela lista, orçamento dividido por `ATimeoutMs`) | concluído |
 | F2 | `TryReopenSession` | avança um endereço por tentativa falha; reseta ao primário em sessão DURÁVEL | concluído |
 | F3 | Testes | primário vivo/morto em `Connect`, migração na reconexão, reset ao primário após sessão durável, `MaxReconnectAttempts` compartilhado entre endereços | concluído |
+
+## 13. Delphi Android — avaliação de viabilidade (`ptTcp`/`ptTls` cliente)
+
+> **Status: AVALIADO, NÃO DECIDIDO.** Diferente das seções anteriores, isto NÃO é
+> trabalho concluído — é o racional de uma investigação de viabilidade (spike descartável,
+> fora do repo) que respondeu a maior dúvida arquitetural em aberto. Se/quando a
+> implementação for autorizada, esta seção vira o histórico de "por quê"; até lá, a tabela
+> de milestones em §13.6 fica com status "proposto".
+
+Delphi Android seria um **terceiro eixo de plataforma**, ao lado de Delphi/Win64 e
+FPC/POSIX — não uma extensão de nenhum dos dois. A dúvida que motivou a investigação: o
+invariante de interrupção de leitura bloqueante (§5) depende de mecanismos específicos
+por plataforma (`CancelIoEx` no Windows, self-pipe+`fpPoll` no Linux); não havia garantia
+de que existisse um equivalente viável no Android sem cair em polling.
+
+### 13.1 Escopo: só `ptTcp`/`ptTls` cliente — `ptLocal` fica de fora
+
+Apps Android são single-process por padrão — não existe o cenário de "duas partes do
+mesmo app trocando IPC local" que justifica Named Pipe/UDS no Windows/Linux. Expor um UDS
+para outro processo/app esbarra em sandboxing (SELinux, scoped storage). O caso de uso
+real em mobile é cliente de rede falando com o mesmo servidor Windows/Linux já existente
+(mesmo racional do PDV de loja sobre VPN que motivou `ptTcp`, §7 "Milestones
+posteriores"), não IPC local. Servidor Android também não faz sentido no caso de uso alvo.
+
+### 13.2 Não é uma extensão de `PIPES_POSIX`
+
+`PIPES_POSIX` hoje é código **exclusivo do FPC**: `Pipes.Transport.Posix.pas` usa
+`BaseUnix`, `Sockets`, `UnixType` — units que não existem no Delphi, em nenhuma
+plataforma. `pipes.inc` (§ cabeçalho do arquivo) define `PIPES_POSIX` sempre que
+`PIPES_WINDOWS` não está definido, o que hoje INCLUI Android por acidente — sem tratamento
+próprio, um build Android tentaria puxar esse backend FPC-only e falharia a compilar.
+Precisaria de um define novo (`PIPES_ANDROID`) para não herdar esse caminho.
+
+### 13.3 Backend de transporte: `System.Net.Socket.TSocket`, não `Posix.*` na mão
+
+Lendo o fonte de `System.Net.Socket.pas` (RAD Studio 12, `...\source\rtl\net\`):
+`TSocket` só tem branches `MSWINDOWS`/`POSIX` — sem um terceiro caminho para Android — ou
+seja, **Android implica `POSIX` nos defines do compilador Delphi**, e `TSocket` usa
+`Posix.SysSocket`/`recv`/`shutdown`/`Posix.Unistd.__close` de verdade por baixo, não é
+wrapper JNI/Java. Construir o backend Android sobre `TSocket` evita reescrever bind/
+connect/accept na mão contra `Posix.*`, cujo suporte a sockets no alvo Android é irregular.
+
+Achado colateral que quase mascarou o teste real: `TSocket.Receive`/`Send` têm um overload
+tipado (`array of Byte; Offset; Count`) que sombreia o overload untyped
+(`var Buf; Count`) quando se passa um array estático ou até um elemento dele — o Delphi
+prioriza o overload tipado. A correção é atribuir o método a uma variável de procedimento
+com assinatura explícita antes de chamar (`function(var Buf; Count: Integer; Flags:
+TSocketFlags): Integer of object`), o que elimina a ambiguidade por construção. Vale a
+pena documentar isso no cabeçalho de `Pipes.Transport.Android.pas` quando a unit existir,
+para quem for implementar não perder tempo redescobrindo.
+
+### 13.4 Invariante de interrupção de leitura bloqueante: `Close(False)` já resolve
+
+`TSocket.Close(ForceClosed=False)` já implementa exatamente `shutdown(BOTH)` → drena
+`recv` residual → `closesocket` — o MESMO mecanismo que `Pipes.Transport.Posix.pas` usa
+hoje (`fpShutdown`+`fpClose`) para o invariante #4. Testado num device Android real (não
+emulador): uma thread bloqueada em `Receive` sem nenhum dado chegando, e a thread da
+"UI" chamando `Close(False)` depois de alguns segundos — o `Receive` destravou em ~1-2ms,
+retornando EOF (0 bytes), sem exceção. Repetido passando o app pelo background durante a
+espera: mesmo resultado, sem diferença de comportamento.
+
+Isso bate o melhor cenário do critério de aceite combinado antes da investigação: o
+mecanismo **forte** (acordar por evento, sem polling) é portável quase como está — **não
+é necessária** a variante mais fraca (timeout de recv) como regra geral. Essa variante
+(`TSocket.ReceiveTimeout`, que seta `SO_RCVTIMEO`) também foi testada e confirmada
+funcional (~205ms de latência para um timeout configurado de 200ms), e fica disponível
+como fallback documentado SÓ PARA ANDROID caso algum caso de borda futuro mostre o
+contrário — sem tocar no invariante de `PIPES_WINDOWS`/`PIPES_POSIX` (FPC), que continuam
+sem polling.
+
+### 13.5 TLS: só OpenSSL, e o loader já tem o ramo certo
+
+Schannel é Windows-only (SSPI nativo); Android só teria OpenSSL como backend de TLS. O
+loader dinâmico em `Pipes.Transport.OpenSSL.pas` já tem um ramo "Delphi fora do Windows"
+via `SysUtils.LoadLibrary`/`GetProcAddress`, compatível com `dlopen` no Android — essa
+parte está mais perto de reaproveitável do que o transporte TCP em si. Falta empacotar
+`libssl.so`/`libcrypto.so` por ABI (`armeabi-v7a`/`arm64-v8a`) no deployment do app.
+
+### 13.6 Milestones (propostos — nenhum iniciado)
+
+| # | Milestone | Conteúdo | Status |
+|---|-----------|----------|--------|
+| A0 | `pipes.inc` | novo define `PIPES_ANDROID`, sem herdar `PIPES_POSIX` (FPC-only) | proposto |
+| A1 | `Pipes.Transport.Android.pas` | backend `ptTcp` sobre `System.Net.Socket.TSocket`; interrupção de leitura via `Close(False)` (§13.4) | proposto |
+| A2 | `ptTls` | backend OpenSSL (§13.5), libs `.so` por ABI empacotadas no deployment | proposto |
+| A3 | Sample + testes | sample FMX Android; testes de integração em device/emulador real (sem par dual-compiler tradicional — FPC não compila para Android neste projeto) | proposto |
+
+Dependências: T5 (já concluído) → A0 → A1 → A2 → A3. Eixo independente de P0-P5/H0-H4/
+S0-S4/F0-F3 (pub/sub, heartbeat, stats, failover) — nada ali muda; se algum dia
+implementado, o backend Android herda tudo isso de graça via `Pipes.Client`/
+`Pipes.Server` compartilhados.

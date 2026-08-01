@@ -172,6 +172,15 @@ P0-P4 (pub/sub por tópico), os dois últimos grupos detalhados em `docs/ARQUITE
 §9 — estão **concluídos**. A tabela fica como referência de sequenciamento e alocação de
 agente para o próximo milestone que surgir, não como trabalho pendente.
 
+Exceção: **A0-A3 (Delphi Android) estão só PROPOSTOS, não decididos nem iniciados** — é
+um eixo de plataforma novo (Delphi Android, cliente `ptTcp`/`ptTls`), avaliado via spike
+descartável fora do repo. A maior dúvida arquitetural (invariante de interrupção de
+leitura bloqueante, item 4 abaixo) foi respondida — mecanismo forte é portável usando
+`TSocket.Close(False)`, testado em device real — mas nada foi implementado na lib ainda.
+Racional completo em `docs/ARQUITETURA.md` §13. Não tratar essa linha da tabela como
+trabalho concluído nem começar a implementação sem confirmar com o usuário que o milestone
+foi de fato autorizado.
+
 | # | Milestone | Agente | Status |
 |---|-----------|--------|--------|
 | M0 | Bootstrap (git, pastas, pipes.inc, projetos de teste compilando) | haiku | concluído |
@@ -188,8 +197,11 @@ agente para o próximo milestone que surgir, não como trabalho pendente.
 | H0-H4 | Heartbeat de aplicação (`ptTcp`/`ptTls`): `TPipeFrame.Ping`, `TPipeHeartbeatThread`, `HeartbeatIntervalMs`, detecção de zumbi nos dois sentidos — ver `docs/ARQUITETURA.md` §10 | sonnet | concluído |
 | S0-S4 | Métricas/observabilidade: `Stats`/`ConnectionStats`, `PipeAtomicAdd64`, latência de Request — ver `docs/ARQUITETURA.md` §11 | sonnet | concluído |
 | F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
+| A0-A3 | Delphi Android (só `ptTcp`/`ptTls` cliente, `ptLocal` fora de escopo): novo define `PIPES_ANDROID`, backend sobre `System.Net.Socket.TSocket`, TLS via OpenSSL (Schannel é Windows-only), sample + testes em device/emulador real — ver `docs/ARQUITETURA.md` §13 | opus | **proposto, não iniciado** |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
+A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
+S0-S4/F0-F3.
 
 ## Verificação por milestone
 
@@ -212,3 +224,10 @@ alternativo quando o primário cai em definitivo, uma sessão DURÁVEL num alter
 PRÓXIMA falha voltar a preferir o primário (não só avançar para o próximo da lista), e
 `MaxReconnectAttempts` conta tentativas contra QUALQUER endereço num teto só, não um por
 endereço.
+
+A0-A3 (se/quando autorizados) não têm par dual-compiler tradicional — FPC não compila para
+Android neste projeto. Verificação é em device/emulador real: `Close(False)` destrava um
+`Receive` bloqueado em outra thread em latência de milissegundos (não segundos), inclusive
+com o app tendo passado por background; certificado de CA desconhecida/auto-assinado sob
+mTLS têm veredito correto no backend OpenSSL (mesmo critério de T4/T5); e `Stop`/
+`Disconnect` concluem em < 2s mesmo com conexão idle — mesmo teto usado por M7/H0-H4.
