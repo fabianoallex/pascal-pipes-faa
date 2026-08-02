@@ -100,6 +100,17 @@ aparelho. A mensagem imprime o caminho exato onde procurou; confira em
 `Project > Deployment` se as oito linhas estão marcadas para a plataforma e a
 configuração que você está usando.
 
+
+> **Trocou um certificado e o app de teste continua usando o antigo?** O
+> `System.StartUpCopy` copia `assets/internal` para a pasta de documentos
+> **sem sobrescrever** (`System.StartUpCopy.pas:83`, `if not FileExists(...)
+> //do not overwrite files`) — por design, para não destruir dados do usuário
+> numa atualização. Consequência: um PEM trocado no Deployment entra no APK
+> novo mas **não** substitui o que já está no aparelho, e o veredito de TLS
+> passa a mentir. Desinstale o app de teste (ou limpe os dados) e faça o deploy de novo.
+> Foi assim que um `X509 err 20` sobreviveu à correção do arquivo: o APK já
+> estava certo, o aparelho não.
+
 **Falta ainda o OpenSSL.** Sem `libcrypto.so`/`libssl.so` empacotadas por ABI,
 os **três** casos de `ptTls` falham (não pulam), com a mensagem
 `backend TLS ausente, este caso nao provou nada` — que é o comportamento

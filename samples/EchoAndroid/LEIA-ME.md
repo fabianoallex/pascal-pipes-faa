@@ -335,6 +335,17 @@ TLS: apresentando cli_cert.pem (mTLS)
 Se aparecer `sem ca_cert.pem` ou `sem certificado de cliente`, os arquivos não
 chegaram — reveja o Remote Path.
 
+
+> **Trocou um certificado e o app continua usando o antigo?** O
+> `System.StartUpCopy` copia `assets/internal` para a pasta de documentos
+> **sem sobrescrever** (`System.StartUpCopy.pas:83`, `if not FileExists(...)
+> //do not overwrite files`) — por design, para não destruir dados do usuário
+> numa atualização. Consequência: um PEM trocado no Deployment entra no APK
+> novo mas **não** substitui o que já está no aparelho, e o veredito de TLS
+> passa a mentir. Desinstale o app (ou limpe os dados) e faça o deploy de novo.
+> Foi assim que um `X509 err 20` sobreviveu à correção do arquivo: o APK já
+> estava certo, o aparelho não.
+
 ### Do lado do servidor (PC)
 
 `samples/EchoSeguro/EchoSeguroServer.exe` usa a PKI de `tests/pki`, que não tem
