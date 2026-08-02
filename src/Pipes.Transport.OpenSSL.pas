@@ -55,10 +55,17 @@
   (SSL_get1_peer_certificate — ver a nota de compatibilidade 1.1/3.x adiante).
   Há ainda o modo inseguro opt-in por SkipServerVerification (laboratório).
 
-  Endereço por IP funciona: SSL_set1_host aceita '127.0.0.1' e o certificado de
-  teste, que traz IP:127.0.0.1 no SAN, valida — medido, não presumido. (Uma
-  versão anterior deste cabeçalho dizia que IP-SAN estava fora de escopo; era
-  descrição do estado inicial da unit, não do comportamento atual.) }
+  Endereço por IP funciona, mas NÃO por SSL_set1_host: IP mora em SAN do tipo
+  iPAddress, que só X509_VERIFY_PARAM_set1_ip_asc consulta; set1_host olha os
+  SANs de DNS. Na 3.x a distinção não aparece (o set1_host aceita um literal de
+  IP), e por isso o desktop sempre passou com uma versão anterior deste código
+  que só chamava set1_host. Na 1.1.1 não passa: dava
+  X509_V_ERR_HOSTNAME_MISMATCH (err 62) mesmo com IP:127.0.0.1 no SAN. O bug só
+  apareceu na primeira rodada de ptTls em aparelho Android, onde o OpenSSL
+  disponível é 1.1.1 — é o tipo de divergência que nenhum dos dois compiladores
+  do desktop teria exposto. Hoje SetupSsl tenta o IP primeiro e cai para
+  hostname, o que cobre as duas versões e ainda serve de detector de literal
+  (set1_ip_asc devolve 0 se a string não for IP), sem parser próprio. }
 
 interface
 
@@ -262,6 +269,11 @@ var
   p_SSL_ctrl: function(ASsl: Pointer; ACmd: Integer; ALarg: TSslLong;
     AParg: Pointer): TSslLong; cdecl;
   p_SSL_set1_host: function(ASsl: Pointer; AHost: PAnsiChar): Integer; cdecl;
+  // Verificação por ENDEREÇO IP. Existem desde a 1.0.2, com a mesma assinatura
+  // na 1.1.1 e na 3.x — dentro da regra de bindings desta unit.
+  p_SSL_get0_param: function(ASsl: Pointer): Pointer; cdecl;
+  p_X509_VERIFY_PARAM_set1_ip_asc: function(AParam: Pointer;
+    AIpAsc: PAnsiChar): Integer; cdecl;
   p_SSL_set_bio: procedure(ASsl: Pointer; ARbio, AWbio: Pointer); cdecl;
   p_SSL_set_connect_state: procedure(ASsl: Pointer); cdecl;
   p_SSL_set_accept_state: procedure(ASsl: Pointer); cdecl;
@@ -409,6 +421,9 @@ begin
       p_SSL_free := SslMustGet(LSsl, 'SSL_free', LSslName);
       p_SSL_ctrl := SslMustGet(LSsl, 'SSL_ctrl', LSslName);
       p_SSL_set1_host := SslMustGet(LSsl, 'SSL_set1_host', LSslName);
+      p_SSL_get0_param := SslMustGet(LSsl, 'SSL_get0_param', LSslName);
+      p_X509_VERIFY_PARAM_set1_ip_asc :=
+        SslMustGet(LCrypto, 'X509_VERIFY_PARAM_set1_ip_asc', LCryptoName);
       p_SSL_set_bio := SslMustGet(LSsl, 'SSL_set_bio', LSslName);
       p_SSL_set_connect_state := SslMustGet(LSsl, 'SSL_set_connect_state', LSslName);
       p_SSL_set_accept_state := SslMustGet(LSsl, 'SSL_set_accept_state', LSslName);
@@ -605,6 +620,8 @@ end;
 procedure TPipeOpenSslStream.SetupSsl;
 var
   LTmp: AnsiString;
+  LParam: Pointer;
+  LIsIp: Boolean;
 begin
   FCtx := p_SSL_CTX_new(p_TLS_client_method());
   if FCtx = nil then
@@ -654,9 +671,28 @@ begin
     // SNI (SSL_set_tlsext_host_name é macro sobre SSL_ctrl).
     p_SSL_ctrl(FSsl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_HOST_NAME,
       PAnsiChar(FTargetName));
-    // Validação de hostname contra o cert (só faz sentido com verify).
-    if FVerifyPeer and (p_SSL_set1_host(FSsl, PAnsiChar(FTargetName)) <> 1) then
-      raise EPipeTls.Create('SSL_set1_host falhou');
+    // Validação da identidade do servidor contra o cert (só com verify).
+    //
+    // IP e hostname são verificações DIFERENTES no OpenSSL: SSL_set1_host
+    // compara com os SANs de DNS, e endereço IP mora em SAN de tipo iPAddress,
+    // que só X509_VERIFY_PARAM_set1_ip_asc consulta. Na 3.x o set1_host aceita
+    // um literal de IP e a distinção não aparece — foi por isso que o desktop
+    // (OpenSSL 3.x) sempre passou. Na 1.1.1 não: conectar por IP dava
+    // X509_V_ERR_HOSTNAME_MISMATCH (err 62) mesmo com IP:127.0.0.1 no SAN.
+    // Achado na primeira rodada de ptTls em aparelho Android, que usa 1.1.1.
+    //
+    // set1_ip_asc devolve 0 quando a string não é um IP válido, o que serve de
+    // detector: tenta IP primeiro e cai para hostname. Evita escrever um
+    // parser de IP aqui e funciona igual para IPv4 e IPv6.
+    if FVerifyPeer then
+    begin
+      LParam := p_SSL_get0_param(FSsl);
+      LIsIp := (LParam <> nil)
+        and (p_X509_VERIFY_PARAM_set1_ip_asc(LParam, PAnsiChar(FTargetName)) = 1);
+      if not LIsIp then
+        if p_SSL_set1_host(FSsl, PAnsiChar(FTargetName)) <> 1 then
+          raise EPipeTls.Create('SSL_set1_host falhou');
+    end;
   end;
 
   p_SSL_set_connect_state(FSsl);

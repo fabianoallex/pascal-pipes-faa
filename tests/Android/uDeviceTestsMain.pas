@@ -853,6 +853,15 @@ begin
     // nenhuma mensagem chega, e o "nao trafegou" seria satisfeito pelo motivo
     // errado.
     ExigeVeredictoDeTls(LErro);
+    // Terceiro vetor de verde falso, e o mais sutil: aqui quem tem que recusar
+    // e' o SERVIDOR (o cliente apresenta um certificado auto-assinado sob
+    // mTLS). Se o CLIENTE recusar o servidor antes disso, o mTLS nunca foi
+    // exercitado e o silencio da fila nao prova nada. Foi o que aconteceu
+    // enquanto a validacao por IP estava quebrada na 1.1.1: o cliente abortava
+    // com "validacao do certificado do servidor falhou" e o caso passava.
+    Verdadeiro(Pos('certificado do servidor', LErro) = 0,
+      'quem recusou foi o CLIENTE, nao o servidor — o mTLS nao foi exercitado: '
+      + LErro);
     Verdadeiro(not LG.Mensagens.Espera(1, 1500),
       'GRAVE: cliente auto-assinado trafegou sob mTLS');
     Avisa('         (veredito: ' + LErro + ')');
