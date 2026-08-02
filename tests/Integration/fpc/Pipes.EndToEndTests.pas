@@ -38,8 +38,17 @@ type
     // Quantos OnClientConnected ja haviam disparado quando a PRIMEIRA
     // mensagem chegou; -1 = nenhuma mensagem chegou ainda.
     FConnCountAtFirstMsg: Integer;
+    // Usados so' pelos testes de AGroupKey (SendBytes): CAS num flag
+    // compartilhado detecta duas mensagens da MESMA chave rodando ao mesmo
+    // tempo mesmo em pdmPool.
+    FGroupBusy: Integer;
+    FGroupViolation: Integer;
     // Handlers ('of object'):
     procedure OnSrvMessage(Sender: TObject; AConnId: TPipeConnectionId;
+      const AData: TBytes);
+    procedure OnSrvMessageGrouped(Sender: TObject; AConnId: TPipeConnectionId;
+      const AData: TBytes);
+    procedure OnSrvMessageSlow(Sender: TObject; AConnId: TPipeConnectionId;
       const AData: TBytes);
     procedure OnCliMessage(Sender: TObject; AConnId: TPipeConnectionId;
       const AData: TBytes);
@@ -80,6 +89,8 @@ type
     procedure SendBytesBatch_ClienteParaServidor_ChegamNaOrdem;
     procedure SendBytesBatch_ServidorParaCliente_ChegamNaOrdem;
     procedure SendBytesBatch_Vazio_NaoEnviaNada;
+    procedure SendBytesComGrupo_MesmaChave_PreservaOrdemSobPdmPool;
+    procedure SendBytesComGrupo_ChavesDiferentes_NaoBloqueiamEntreSi;
   end;
 
 implementation
@@ -108,6 +119,8 @@ begin
   FConnectedCount := 0;
   FSrvDiscCount := 0;
   FCliDiscCount := 0;
+  FGroupBusy := 0;
+  FGroupViolation := 0;
 end;
 
 procedure TPipeEndToEndTests.TearDown;
@@ -138,6 +151,38 @@ begin
   try
     if FServerTexts.Count = 0 then
       FConnCountAtFirstMsg := PipeAtomicGet(FConnectedCount);
+    FServerTexts.Add(PipeUtf8Decode(AData));
+  finally
+    FLock.Leave;
+  end;
+  PipeAtomicInc(FSrvMsgCount);
+end;
+
+procedure TPipeEndToEndTests.OnSrvMessageGrouped(Sender: TObject;
+  AConnId: TPipeConnectionId; const AData: TBytes);
+begin
+  if PipeAtomicCompareExchange(FGroupBusy, 1, 0) <> 0 then
+    PipeAtomicSet(FGroupViolation, 1); // outra msg da MESMA chave ja rodando
+  try
+    Sleep(3); // alarga a janela: dispatch quebrado sobreporia aqui
+    FLock.Enter;
+    try
+      FServerTexts.Add(PipeUtf8Decode(AData));
+    finally
+      FLock.Leave;
+    end;
+  finally
+    PipeAtomicSet(FGroupBusy, 0);
+  end;
+  PipeAtomicInc(FSrvMsgCount);
+end;
+
+procedure TPipeEndToEndTests.OnSrvMessageSlow(Sender: TObject;
+  AConnId: TPipeConnectionId; const AData: TBytes);
+begin
+  Sleep(200); // fixo: mede se duas chaves diferentes correm em paralelo
+  FLock.Enter;
+  try
     FServerTexts.Add(PipeUtf8Decode(AData));
   finally
     FLock.Leave;
@@ -624,6 +669,48 @@ begin
   finally
     FLock.Leave;
   end;
+end;
+
+procedure TPipeEndToEndTests.SendBytesComGrupo_MesmaChave_PreservaOrdemSobPdmPool;
+const
+  N = 25;
+var
+  I: Integer;
+begin
+  // pdmPool e' o padrao (nao serializado) - e' exatamente onde a garantia de
+  // AGroupKey precisa aparecer, ja' que sem ela pdmPool nao ordena a entrega.
+  OpenPair;
+  FServer.OnMessage := OnSrvMessageGrouped;
+  for I := 1 to N do
+    FClient.SendBytes(PipeUtf8Encode(IntToStr(I)), 'caixa-3');
+  AssertTrue('nem todas as mensagens do grupo chegaram',
+    WaitCount(FSrvMsgCount, N, 5000));
+  AssertEquals('duas mensagens do MESMO grupo rodaram sobrepostas em pdmPool',
+    0, PipeAtomicGet(FGroupViolation));
+  FLock.Enter;
+  try
+    AssertEquals(N, FServerTexts.Count);
+    for I := 1 to N do
+      AssertEquals('ordem do grupo nao preservada na entrega (pdmPool)',
+        IntToStr(I), FServerTexts[I - 1]);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TPipeEndToEndTests.SendBytesComGrupo_ChavesDiferentes_NaoBloqueiamEntreSi;
+var
+  T0: UInt64;
+begin
+  OpenPair;
+  FServer.OnMessage := OnSrvMessageSlow;
+  T0 := PipeTickMs;
+  FClient.SendBytes(PipeUtf8Encode('a'), 'grupoA');
+  FClient.SendBytes(PipeUtf8Encode('b'), 'grupoB');
+  AssertTrue('as duas mensagens nao chegaram', WaitCount(FSrvMsgCount, 2, 3000));
+  // Serializado (bug) levaria ~400ms; em paralelo, ~200ms — folga generosa.
+  AssertTrue('chaves diferentes nao processaram em paralelo (parece serializado)',
+    PipeTickMs - T0 < 350);
 end;
 
 initialization

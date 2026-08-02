@@ -255,12 +255,24 @@ type
     procedure Listen;
     /// Sincrono e idempotente: para tudo e espera callbacks em voo.
     procedure Stop;
-    procedure SendBytes(AConnId: TPipeConnectionId; const AData: TBytes);
-    procedure SendText(AConnId: TPipeConnectionId; const AText: string);
+    /// AGroupKey opcional: mensagens da MESMA chave, mandadas por QUALQUER
+    /// lado (cliente ou servidor), sao entregues ao OnMessage do RECEPTOR em
+    /// ordem entre si mesmo em pdmPool (o padrao) — sem isso, pdmPool nao
+    /// garante ordem de entrega entre mensagens distintas (so' a ordem no
+    /// fio, que ja' e' sempre preservada). Chaves diferentes continuam
+    /// paralelas. Vazio (padrao) e' o comportamento de sempre, sem custo. So'
+    /// afeta o DispatchMode do lado que RECEBE (ver Pipes.Threading.
+    /// TPipeKeyedDispatcher); em pdmSerialized/pdmMainThread a' ordem ja' e'
+    /// total e a chave e' ignorada.
+    procedure SendBytes(AConnId: TPipeConnectionId; const AData: TBytes;
+      const AGroupKey: string = '');
+    procedure SendText(AConnId: TPipeConnectionId; const AText: string;
+      const AGroupKey: string = '');
     /// Mesma coisa que SendBytes, para N mensagens num unico Write no stream
     /// da conexao — pensado para rajadas (um app que tem varias mensagens
     /// prontas de uma vez) em vez de N locks/syscalls separados. Ordem
-    /// preservada; lista vazia e' no-op. Mesmos erros de SendBytes.
+    /// preservada; lista vazia e' no-op. Mesmos erros de SendBytes. Sem
+    /// AGroupKey (cada item sai como mensagem comum, sem chave).
     procedure SendBytesBatch(AConnId: TPipeConnectionId; const AItems: TArray<TBytes>);
     /// Envia a todos os clientes conectados. Falha de envio a UM cliente e'
     /// ignorada (a desconexao dele sera notificada pelo proprio reader).
@@ -857,7 +869,7 @@ procedure TPipeServer.HandleFrame(AConn: TPipeServerConnection;
 begin
   case AFrame.Kind of
     pfkMessage:
-      DispatchMessage(AConn.FId, AFrame.Payload);
+      DispatchMessage(AConn.FId, AFrame.Payload, AFrame.CorrId);
     pfkRequest:
       DispatchRequest(AConn, AFrame.CorrId, AFrame.Payload);
     // Pub/sub tratado AQUI, na reader thread: e' decisao de roteamento, nao
@@ -1339,7 +1351,7 @@ begin
 end;
 
 procedure TPipeServer.SendBytes(AConnId: TPipeConnectionId;
-  const AData: TBytes);
+  const AData: TBytes; const AGroupKey: string);
 var
   LConn: TPipeServerConnection;
 begin
@@ -1360,16 +1372,16 @@ begin
     raise EPipeError.Create('cliente ' + IntToStr(Int64(AConnId)) +
       ' nao esta conectado');
   try
-    LConn.SendFrame(TPipeFrame.Msg(AData));
+    LConn.SendFrame(TPipeFrame.Msg(AData, PipeGroupKeyHash(AGroupKey)));
   finally
     LConn.Release;
   end;
 end;
 
 procedure TPipeServer.SendText(AConnId: TPipeConnectionId;
-  const AText: string);
+  const AText: string; const AGroupKey: string);
 begin
-  SendBytes(AConnId, PipeUtf8Encode(AText));
+  SendBytes(AConnId, PipeUtf8Encode(AText), AGroupKey);
 end;
 
 procedure TPipeServer.SendBytesBatch(AConnId: TPipeConnectionId;

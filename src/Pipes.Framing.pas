@@ -63,7 +63,12 @@ type
     function PayloadAsText: string;
     function IsError: Boolean;
     function IsRetain: Boolean;
-    class function Msg(const APayload: TBytes): TPipeFrame; static;
+    /// ACorrId = 0 (padrao) e' o msg comum de sempre. Um CorrId != 0 aqui
+    /// carrega a chave de agrupamento de despacho (ver PipeGroupKeyHash) —
+    /// nao e' correlacao de request/reply, so' reaproveita o mesmo campo do
+    /// header, ja' inerte neste kind ate' agora (nunca chega ao app: ver
+    /// TPipeMessageEvent).
+    class function Msg(const APayload: TBytes; ACorrId: UInt64 = 0): TPipeFrame; static;
     class function Request(ACorrId: UInt64; const APayload: TBytes): TPipeFrame; static;
     class function Reply(ACorrId: UInt64; const APayload: TBytes): TPipeFrame; static;
     /// Reply de erro (request-reply): PIPE_FLAG_ERROR + mensagem no payload.
@@ -84,6 +89,17 @@ type
 
 function PipeUtf8Encode(const AValue: string): TBytes;
 function PipeUtf8Decode(const ABytes: TBytes): string;
+
+/// Hash (FNV-1a 64 bits) de uma chave de agrupamento de despacho para o
+/// CorrId de um frame pfkMessage — ver TPipeFrame.Msg e
+/// Pipes.Threading.TPipeKeyedDispatcher. '' devolve 0 (sem grupo, o
+/// comportamento de sempre); qualquer outra entrada nunca devolve 0 (o hash
+/// e' deslocado para 1 no caso astronomicamente raro de bater em 0), para que
+/// 0 continue significando exclusivamente "sem grupo" no fio. Colisao entre
+/// duas chaves diferentes e' inofensiva (so' um hotspot de paralelismo, nunca
+/// incorretude — mensagens de grupos diferentes que colidem so' passam a
+/// serializar entre si).
+function PipeGroupKeyHash(const AGroupKey: string): UInt64;
 
 /// Serializa o frame (header + payload) num TBytes unico.
 function PipeEncodeFrame(const AFrame: TPipeFrame): TBytes;
@@ -155,6 +171,33 @@ begin
 end;
 {$ENDIF}
 
+{ --- hash de chave de agrupamento --- }
+
+{$Q-} // FNV-1a depende do estouro (wraparound mod 2^64) ser SILENCIOSO; com
+       // overflow checking ligado (comum em Debug no Delphi) a multiplicacao
+       // levantaria EIntOverflow num calculo correto por definicao.
+function PipeGroupKeyHash(const AGroupKey: string): UInt64;
+const
+  FNV_OFFSET = UInt64($CBF29CE484222325);
+  FNV_PRIME  = UInt64($100000001B3);
+var
+  LBytes: TBytes;
+  I: Integer;
+begin
+  if AGroupKey = '' then
+    Exit(0);
+  LBytes := PipeUtf8Encode(AGroupKey);
+  Result := FNV_OFFSET;
+  for I := 0 to High(LBytes) do
+  begin
+    Result := Result xor LBytes[I];
+    Result := Result * FNV_PRIME;
+  end;
+  if Result = 0 then
+    Result := 1; // 0 e' reservado para "sem grupo" (ver comentario da interface)
+end;
+{$Q+}
+
 { --- little-endian --- }
 
 procedure PutU32LE(var ABuf: TBytes; AOffset: Integer; AValue: Cardinal);
@@ -207,11 +250,11 @@ begin
   Result := (Flags and PIPE_FLAG_RETAIN) <> 0;
 end;
 
-class function TPipeFrame.Msg(const APayload: TBytes): TPipeFrame;
+class function TPipeFrame.Msg(const APayload: TBytes; ACorrId: UInt64): TPipeFrame;
 begin
   Result.Kind := pfkMessage;
   Result.Flags := 0;
-  Result.CorrId := 0;
+  Result.CorrId := ACorrId;
   Result.Payload := APayload;
 end;
 

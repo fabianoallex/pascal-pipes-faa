@@ -315,6 +315,31 @@ WriteLn('latencia media de request: ', LCliStats.AvgRequestLatencyMs, ' ms');
   chegaram a ter reply (timeout e erro ficam de fora: são "o servidor não respondeu", uma
   pergunta diferente de "quanto tempo levou").
 
+### Ordem por grupo em `pdmPool` (`AGroupKey` de `SendBytes`/`SendText`)
+
+`pdmPool` (o `DispatchMode` padrão) despacha cada mensagem recebida a um pool de workers —
+rápido, mas sem ordem garantida de entrega entre mensagens distintas ao `OnMessage` (só a
+ordem no fio, que já é sempre preservada). Para a maioria dos apps isso nunca importa; para
+quem precisa que um SUBCONJUNTO das mensagens processe na ordem em que foi mandado (ex.: os
+eventos de um caixa específico numa loja), sem abrir mão do paralelismo entre os demais:
+
+```pascal
+Client.SendBytes(AData, 'caixa.3');   // toda mensagem de 'caixa.3' processa em ordem...
+Client.SendBytes(AData2, 'caixa.4');  // ...e em PARALELO com 'caixa.4', nao atras dela
+```
+
+- Sem `AGroupKey` (padrão, `''`): comportamento de sempre, sem custo nenhum.
+- A garantia é sobre a ENTREGA ao `OnMessage` do lado que RECEBE, não sobre quem manda — tanto
+  `TPipeClient.SendBytes` quanto `TPipeServer.SendBytes` aceitam o parâmetro, e é o
+  `DispatchMode` de quem RECEBE que decide se a chave faz diferença.
+- Só se aplica a `pdmPool`: em `pdmSerialized`/`pdmMainThread` a ordem já é total, a chave é
+  ignorada (não muda nada, não é erro usar).
+- Chaves são efêmeras — não há limite de chaves distintas nem custo residual: a estrutura
+  interna nasce com a primeira mensagem pendente daquela chave e morre quando não há mais
+  nenhuma. Reaproveitar uma chave depois de esvaziar começa do zero.
+- Sem mudança de wire format: a chave viaja no próprio `CorrId` do header NPF1 (hash de 64
+  bits), campo que já existia e que mensagens avulsas nunca usavam.
+
 ### Failover de endereço (`FailoverAddresses`)
 
 Só em `TPipeClient` (`TPipeServer` escuta um único `Address`; não há o que "falhar para" do
@@ -507,7 +532,10 @@ TPipeBase (abstrata)
 
 TPipeServer
   Listen; Stop;                          // Listen não-blocante; Stop síncrono
-  SendBytes/SendText(ConnId, ...)        // EPipeError se ConnId não existe
+  SendBytes/SendText(ConnId, ..., AGroupKey = '')  // EPipeError se ConnId não existe
+                                          // AGroupKey: ordem entre chamadas preservada no
+                                          // OnMessage do RECEPTOR mesmo em pdmPool (o
+                                          // padrão); chaves diferentes continuam paralelas
   SendBytesBatch(ConnId, TArray<TBytes>) // N mensagens, um Write só; ordem preservada
   Broadcast/BroadcastText(...)           // snapshot; falha por conexão é engolida
   Publish/PublishText(Topico, ..., Retain = False)  // só quem assinou o tópico
@@ -531,7 +559,7 @@ TPipeServer
 
 TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect re-tenta até o prazo
-  SendBytes/SendText(...)                // fire-and-forget
+  SendBytes/SendText(..., AGroupKey = '')  // fire-and-forget; AGroupKey ver TPipeServer acima
   SendBytesBatch(TArray<TBytes>)         // N mensagens, um Write só; ordem preservada
   Request/RequestText(..., TimeoutMs)    // RPC síncrono; EPipeTimeout no prazo
   Subscribe/Unsubscribe(Filtro)          // funciona desconectado; refeito na reconexão

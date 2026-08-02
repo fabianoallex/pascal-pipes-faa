@@ -135,7 +135,14 @@ type
     procedure DecInFlight;
     // Despacho (chamado pelas threads internas). Cada Dispatch* incrementa
     // FInFlight se ha handler; o work item decrementa no finally do Execute.
-    procedure DispatchMessage(AConnId: TPipeConnectionId; const AData: TBytes);
+    /// AGroupKey = 0 (padrao) e' o despacho de sempre. != 0 (ver
+    /// Pipes.Framing.PipeGroupKeyHash) so' muda alguma coisa em pdmPool: o
+    /// item vai para PipeGroupDispatcher em vez do pool direto, o que
+    /// preserva ordem entre mensagens da MESMA chave sem perder paralelismo
+    /// entre chaves diferentes. Em pdmSerialized/pdmMainThread a ordem ja' e'
+    /// total, entao a chave e' ignorada (nao muda nada).
+    procedure DispatchMessage(AConnId: TPipeConnectionId; const AData: TBytes;
+      AGroupKey: UInt64 = 0);
     procedure DispatchConnEvent(AEvent: TPipeConnectionEvent;
       AConnId: TPipeConnectionId);
     procedure DispatchError(AConnId: TPipeConnectionId; const AMsg: string);
@@ -620,10 +627,11 @@ begin
 end;
 
 procedure TPipeBase.DispatchMessage(AConnId: TPipeConnectionId;
-  const AData: TBytes);
+  const AData: TBytes; AGroupKey: UInt64);
 var
   LCallback: TPipeMessageEvent;
   LQueued: TPipeQueuedEvent;
+  LWork: TPipeMessageWork;
 begin
   LCallback := FOnMessage;
   if not Assigned(LCallback) then
@@ -637,7 +645,14 @@ begin
     Exit;
   end;
   IncInFlight;
-  EventPool.Queue(TPipeMessageWork.Create(Self, LCallback, AConnId, AData));
+  LWork := TPipeMessageWork.Create(Self, LCallback, AConnId, AData);
+  if (AGroupKey <> 0) and (FDispatchMode = pdmPool) then
+    // So' em pdmPool: pdmSerialized ja' e' 1 worker/ordem total, a chave
+    // seria redundante (e o pool privado dele nao e' o mesmo que o
+    // PipeGroupDispatcher, que so' conhece o pool GLOBAL).
+    PipeGroupDispatcher.Enqueue(AGroupKey, LWork)
+  else
+    EventPool.Queue(LWork);
 end;
 
 procedure TPipeBase.DispatchConnEvent(AEvent: TPipeConnectionEvent;

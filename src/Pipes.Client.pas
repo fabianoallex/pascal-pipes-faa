@@ -214,12 +214,22 @@ type
     procedure Connect(ATimeoutMs: Cardinal = 5000);
     /// Sincrono e idempotente.
     procedure Disconnect;
-    procedure SendBytes(const AData: TBytes);
-    procedure SendText(const AText: string);
+    /// AGroupKey opcional: mensagens da MESMA chave, mandadas por QUALQUER
+    /// lado (cliente ou servidor), sao entregues ao OnMessage do RECEPTOR em
+    /// ordem entre si mesmo em pdmPool (o padrao) — sem isso, pdmPool nao
+    /// garante ordem de entrega entre mensagens distintas (so' a ordem no
+    /// fio, que ja' e' sempre preservada). Chaves diferentes continuam
+    /// paralelas. Vazio (padrao) e' o comportamento de sempre, sem custo. So'
+    /// afeta o DispatchMode do lado que RECEBE (ver Pipes.Threading.
+    /// TPipeKeyedDispatcher); em pdmSerialized/pdmMainThread a' ordem ja' e'
+    /// total e a chave e' ignorada.
+    procedure SendBytes(const AData: TBytes; const AGroupKey: string = '');
+    procedure SendText(const AText: string; const AGroupKey: string = '');
     /// Mesma coisa que SendBytes, para N mensagens num unico Write no stream
     /// — pensado para rajadas (varias mensagens prontas de uma vez) em vez de
     /// N locks/syscalls separados. Ordem preservada; lista vazia e' no-op.
-    /// Mesmos erros de SendBytes (EPipeClosed se nao ha sessao).
+    /// Mesmos erros de SendBytes (EPipeClosed se nao ha sessao). Sem
+    /// AGroupKey (cada item sai como mensagem comum, sem chave).
     procedure SendBytesBatch(const AItems: TArray<TBytes>);
     /// Request-reply sincrono: bloqueia o CHAMADOR (nunca a thread de
     /// leitura) ate o reply, EPipeTimeout no prazo, EPipeError se o servidor
@@ -850,7 +860,7 @@ var
 begin
   case AFrame.Kind of
     pfkMessage:
-      DispatchMessage(0, AFrame.Payload);
+      DispatchMessage(0, AFrame.Payload, AFrame.CorrId);
     pfkReply:
       // corrId 0 nunca pertence a um Request (a sequencia comeca em 1): e' uma
       // recusa assincrona do servidor — assinatura invalida, teto de
@@ -1172,13 +1182,14 @@ begin
   Result.MaxRequestLatencyMs := Cardinal(PipeAtomicRead64(FReqMaxMs));
 end;
 
-procedure TPipeClient.SendBytes(const AData: TBytes);
+procedure TPipeClient.SendBytes(const AData: TBytes; const AGroupKey: string);
 begin
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
-    PipeWriteFrame(FStream, TPipeFrame.Msg(AData), MaxMessageSize);
+    PipeWriteFrame(FStream, TPipeFrame.Msg(AData, PipeGroupKeyHash(AGroupKey)),
+      MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
     PipeAtomicAdd64(FMessagesSent, 1);
@@ -1187,9 +1198,9 @@ begin
   end;
 end;
 
-procedure TPipeClient.SendText(const AText: string);
+procedure TPipeClient.SendText(const AText: string; const AGroupKey: string);
 begin
-  SendBytes(PipeUtf8Encode(AText));
+  SendBytes(PipeUtf8Encode(AText), AGroupKey);
 end;
 
 procedure TPipeClient.SendBytesBatch(const AItems: TArray<TBytes>);

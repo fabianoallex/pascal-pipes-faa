@@ -1078,3 +1078,120 @@ Pipelining de verdade em request-reply (disparar N requests sem esperar cada res
 da próxima) foi considerado e descartado desta rodada: `Request` é síncrono por chamada, e
 paralelizar isso exigiria uma API assíncrona nova (`... of object`, sem `reference to`) — um
 projeto por si, não uma extensão do batch de mensagens avulsas/publicações.
+
+## 15. Ordem por grupo em `pdmPool` (`AGroupKey` de `SendBytes`/`SendText`)
+
+Motivação: `pdmPool` (o `DispatchMode` padrão) despacha cada `OnMessage` recebido a um pool
+de workers — rápido, mas sem ordem garantida de entrega entre mensagens distintas (só a
+ordem NO FIO, que já é sempre preservada, inclusive por `SendBytesBatch`; ver §14.5). Para o
+caso de uso alvo da lib (PDV de loja, §7 "Milestones posteriores"), isso importa quando um
+SUBCONJUNTO de mensagens — os eventos de UM caixa específico — precisa processar na ordem em
+que foi mandado, sem que isso trave os eventos de outros caixas atrás na fila.
+
+### 15.1 Por que não virou um `TPipeDispatchMode` novo
+
+A primeira ideia (`hash(chave) mod K` para K workers fixos, num pool PRIVADO por instância —
+generalização de `pdmSerialized`, que já é exatamente esse padrão com K=1, ver
+`Pipes.Base.FDispatchPool`) foi descartada por dois motivos: precisaria de uma property nova
+só para calibrar K, e colisão de hash serializaria dois grupos SEM RELAÇÃO nenhuma entre si
+só por caírem no mesmo balde — pior ainda considerando que `pdmPool` já é um pool GLOBAL
+compartilhado por toda a aplicação (`Pipes.Threading.PipePool`), então grupos de componentes
+DIFERENTES poderiam colidir por acaso.
+
+O desenho que ficou é mais simples de usar e mais correto: mailbox por chave com dono
+cooperativo (mesmo padrão de mailbox de ator, ex. Akka) — cada chave tem sua própria fila, só
+UM worker por vez a drena, e o paralelismo entre chaves se autorregula pelo próprio teto de
+workers do pool, sem property nova. `AGroupKey` é só um parâmetro a mais em `SendBytes`; não
+existe modo de despacho novo pra aprender.
+
+### 15.2 `TPipeKeyedDispatcher` (`Pipes.Threading.pas`): aditivo, não mexe no `TPipeThreadPool`
+
+`TPipeThreadPool`/`TPipeWorkItem` (a engine copiada/adaptada do `pascal-amqp-faa`, ver o
+cabeçalho da unit) não precisaram mudar NADA. `TPipeKeyedDispatcher` é uma camada por cima:
+
+- `Enqueue(AKey, AItem)`: sob `FLock`, anexa `AItem` na mailbox de `AKey` (cria se não
+  existe). Se a mailbox ACABOU de nascer (ninguém a estava drenando), dispara UM
+  `TPipeMailboxDrainWork` no pool.
+- `TPipeMailboxDrainWork.Execute`: laço que chama `Fetch(AKey)` — tira o próximo item da
+  mailbox e executa, ou (mailbox vazia) remove a chave do dicionário e termina.
+
+Como `TPipeMailboxDrainWork` é só mais um `TPipeWorkItem` comum, ele ocupa um worker do pool
+como qualquer outro trabalho — nenhuma API nova no `TPipeThreadPool`, nenhum worker
+dedicado. `TPipeMessageWork` (o item que já existia para mensagem avulsa) é reaproveitado
+tal e qual como o item que viaja dentro da mailbox — `DispatchMessage` só decide para ONDE
+mandar essa mesma instância (`EventPool.Queue` direto, ou `PipeGroupDispatcher.Enqueue`).
+
+### 15.3 Chave efêmera: nasce com a primeira mensagem pendente, morre ao esvaziar
+
+A entrada de uma chave no dicionário não é gerenciada por quem usa — nasce no primeiro
+`Enqueue` daquela chave e morre quando `Fetch` encontra a mailbox vazia. Reaproveitar uma
+chave depois de esvaziar começa do zero, sem estado residual. Isso significa que o custo de
+memória é proporcional a quantas chaves têm trabalho PENDENTE agora, nunca ao total de
+chaves distintas já usadas — um app pode gerar uma chave nova a cada transação (um id
+qualquer) sem acumular nada depois que cada uma termina.
+
+**A corrida clássica de mailbox** (e o motivo de `Enqueue`/`Fetch` serem a MESMA seção
+crítica): uma mensagem nova podendo chegar exatamente no instante em que o drenador decide
+"mailbox vazia, vou desistir" ficaria órfã — apendada a uma fila que ninguém mais vai olhar,
+já que ninguém está lendo `FMailboxes` naquele exato momento a não ser sob o `FLock`. Com
+`Fetch` (que decide "tem próximo item" OU "remove a chave") e `Enqueue` (que decide "anexa"
+OU "cria e dispara") presos ao mesmo lock, essa janela não existe: as duas decisões são
+serializadas, uma sempre vê o resultado da outra.
+
+### 15.4 Ciclo de vida: o dispatcher NÃO é dono do pool — ordem de Destroy importa
+
+`TPipeKeyedDispatcher.Create(APool)` só referencia o pool, não o possui. `TPipeThreadPool.
+Destroy` já junta (`WaitFor`) cada worker antes de retornar — o que, por transitividade,
+drena qualquer `TPipeMailboxDrainWork` em voo (seu `Execute` só devolve quando a MAILBOX
+INTEIRA esvaziou, não só o item atual). Por isso a ordem de finalização do dispatcher GLOBAL
+(`PipeGroupDispatcher`, pareado com `PipePool`) é **sempre pool primeiro**:
+
+```pascal
+finalization
+  GPool.Free;             // junta workers; drena TPipeMailboxDrainWork em voo
+  GGroupDispatcher.Free;  // so' agora nenhuma thread pode tocar FMailboxes
+```
+
+A ordem inversa seria use-after-free: uma thread do pool ainda executando
+`TPipeMailboxDrainWork.Execute` (chamando `FDispatcher.Fetch`) enquanto o dispatcher já foi
+liberado. `TPipeKeyedDispatcher.Destroy` limpa qualquer mailbox residual como rede de
+segurança, mas no ciclo de vida documentado ela já chega vazia (o `GPool.Free` anterior já
+drenou tudo).
+
+### 15.5 Fio: reaproveita `CorrId`, zero mudança de formato
+
+A chave viaja no `CorrId` do header NPF1 — campo que já existia em TODO frame e que
+`pfkMessage` nunca usava (sempre 0, e nunca chegava ao app: `TPipeMessageEvent` não tem
+parâmetro de `CorrId`). `PipeGroupKeyHash` (FNV-1a 64 bits, `Pipes.Framing.pas`) reduz a
+string a um `UInt64`: `''` sempre vira 0 ("sem grupo", o comportamento de sempre e sem
+custo); qualquer outra entrada nunca bate em 0 (deslocada para 1 no caso astronomicamente
+raro de colidir). O hash roda uma vez só, no remetente — quem recebe usa `AFrame.CorrId`
+direto como chave, sem re-hashear nada. Colisão entre duas chaves DIFERENTES é inofensiva
+(vira só um hotspot de paralelismo — as duas passam a serializar entre si —, nunca
+incorretude), o mesmo raciocínio de `PoolQueueDepth` já ser compartilhado entre componentes
+em `pdmPool`.
+
+Nenhuma versão de protocolo nova, nenhum peer quebra: um peer antigo que não conhece o
+conceito de grupo já ignorava `CorrId` em `pfkMessage` antes desta feature, e continua
+ignorando — o campo estava lá, só inerte.
+
+### 15.6 Só em `pdmPool`; `pdmSerialized`/`pdmMainThread` ignoram a chave
+
+`pdmSerialized` já é 1 worker/ordem TOTAL (`FDispatchPool`, pool privado por instância — ver
+§5); `pdmMainThread` também já é ordem total (fila única da `TThread.Queue`). Nos dois, uma
+chave de agrupamento seria redundante — `DispatchMessage` simplesmente cai no caminho de
+sempre (`EventPool.Queue`) quando `FDispatchMode <> pdmPool`, mesmo com `AGroupKey`
+preenchido. Não é erro usar a chave nesses modos, só não muda nada.
+
+### 15.7 Testes: prova de mútua-exclusão, não só timing
+
+O jeito errado de testar "ordem preservada" é só medir tempo (flaky) ou só checar a lista
+final sem provar que NUNCA houve sobreposição real. Os testes de `TPipeKeyedDispatcher`
+(`tests/Unit/{,fpc/}Pipes.ThreadingTests.pas`) usam um CAS num flag compartilhado por chave
+(0↔1 na entrada/saída de cada item, com um `Sleep` deliberado no meio pra alargar a janela)
+— qualquer sobreposição de duas mensagens da MESMA chave é capturada determinística e
+diretamente, não inferida por ausência de evidência. O teste de paralelismo entre chaves
+DIFERENTES aí sim usa timing (2 chaves × 200 ms cada; serializado por engano daria ~400 ms,
+paralelo dá ~200 ms), com folga generosa pra não ficar flaky. Os testes fim-a-fim
+(`tests/Integration/{,fpc/}Pipes.EndToEndTests.pas`) repetem as duas provas através do fio
+completo (`SendBytes` → `AFrame.CorrId` → `DispatchMessage`), não só na unit pura.

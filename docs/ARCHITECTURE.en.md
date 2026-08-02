@@ -768,15 +768,15 @@ breaking anything in use.
 > relative to the original proposal; §13.9, the portability bug that verifying `ptTls` on
 > the device revealed and that neither of the two desktop compilers would have exposed.
 
-Delphi Android is a **third platform axis**, alongside Delphi/Win64 and FPC/POSIX â€” not an
+Delphi Android is a **third platform axis**, alongside Delphi/Win64 and FPC/POSIX — not an
 extension of either. The doubt that motivated the investigation: the blocking-read
 interruption invariant (§5) depends on platform-specific mechanisms (`CancelIoEx` on
 Windows, self-pipe+`fpPoll` on Linux); there was no guarantee a viable equivalent existed
 on Android without falling back to polling.
 
-### 13.1 Scope: `ptTcp`/`ptTls` only â€” `ptLocal` is out
+### 13.1 Scope: `ptTcp`/`ptTls` only — `ptLocal` is out
 
-Android apps are single-process by default â€” there is no "two parts of the same app
+Android apps are single-process by default — there is no "two parts of the same app
 exchanging local IPC" scenario to justify a Named Pipe/UDS the way there is on
 Windows/Linux. Exposing a UDS to another process/app runs into sandboxing (SELinux, scoped
 storage). The real mobile use case is a network client talking to the same existing
@@ -785,7 +785,7 @@ Windows/Linux server (the same rationale as the store POS over VPN that motivate
 
 `ptLocal` does not fall through to any backend on Android: `PipeValidateAddress` refuses
 with a message that says what to do ("use `ptTcp` or `ptTls`"). That beats the silent
-alternative â€” someone porting a Windows app and forgetting to change `Transport` would see
+alternative — someone porting a Windows app and forgetting to change `Transport` would see
 an obscure name-resolution error much further down the line.
 
 **The listener does exist, contrary to what this section said while it was a proposal.**
@@ -793,7 +793,7 @@ The reasoning that "an Android server makes no sense in the target use case" sti
 for *applications*, but it led to a consequence that only surfaced at implementation time:
 without `Accept` there is no **loopback** test (server and client in the same app), and
 without loopback, verifying this backend would depend on an external server being up and a
-working network â€” an infrastructure test disguised as a transport test. Since `Accept`
+working network — an infrastructure test disguised as a transport test. Since `Accept`
 costs ~40 lines on top of the same `poll`+self-pipe the endpoint already uses, the cost of
 having it is far lower than the cost of not being able to test. See
 `tests/Android/LEIA-ME.md`.
@@ -801,9 +801,9 @@ having it is far lower than the cost of not being able to test. See
 ### 13.2 It is not an extension of `PIPES_POSIX`
 
 `PIPES_POSIX` is **FPC-exclusive** code: `Pipes.Transport.Posix.pas` uses `BaseUnix`,
-`Sockets`, `UnixType` â€” units that do not exist in Delphi, on any platform. `pipes.inc`
+`Sockets`, `UnixType` — units that do not exist in Delphi, on any platform. `pipes.inc`
 used to define `PIPES_POSIX` whenever `PIPES_WINDOWS` was not defined, which INCLUDED
-Android by accident â€” with no handling of its own, an Android build would pull in that
+Android by accident — with no handling of its own, an Android build would pull in that
 FPC-only backend and fail to compile at all.
 
 A0 fixed this by testing `ANDROID` **first**: in the Delphi compiler, Android also defines
@@ -813,7 +813,7 @@ mutually exclusive by construction.
 ### 13.3 Transport backend: the RTL's `Posix.*`, not `System.Net.Socket.TSocket`
 
 Reading the source of `System.Net.Socket.pas` (RAD Studio 12, `...\source\rtl\net\`):
-`TSocket` only has `MSWINDOWS`/`POSIX` branches â€” no third path for Android â€” meaning
+`TSocket` only has `MSWINDOWS`/`POSIX` branches — no third path for Android — meaning
 **Android implies `POSIX` in the Delphi compiler's defines**, and `TSocket` really does use
 `Posix.SysSocket`/`recv`/`shutdown`/`Posix.Unistd.__close` underneath; it is not a JNI/Java
 wrapper. That finding is what unblocked feasibility.
@@ -823,42 +823,42 @@ bind/connect/accept against `Posix.*`. At implementation time that was inverted,
 concrete reasons:
 
 1. **The interruption mechanism comes out weaker** (§13.4). `TSocket.Close` closes the fd
-   immediately, from another thread, with the reader possibly still inside `recv` â€” the
+   immediately, from another thread, with the reader possibly still inside `recv` — the
    recycled-fd race the rest of the library deliberately avoids by deferring the `close` to
    the destructor (`Pipes.Transport.Posix.pas`, header invariants).
-2. **All the `Posix.*` units exist for Android** â€” checked in `lib\Android64\release`: all
+2. **All the `Posix.*` units exist for Android** — checked in `lib\Android64\release`: all
    100 of them, including `Posix.SysSocket` (with `MSG_NOSIGNAL`, `SHUT_RDWR`,
    `SO_KEEPALIVE`, `SO_ERROR`), `Posix.NetDB`, `Posix.Unistd`, `Posix.Fcntl`, `Posix.Errno`,
    `Posix.NetinetTCP`. The premise that "socket support in `Posix.*` on Android is patchy"
    did not hold up. There is no `Posix.Poll`, but `poll()` is declared locally against the
-   same `libc` as `Posix.Base` â€” an idiom the library already used for `getaddrinfo`
+   same `libc` as `Posix.Base` — an idiom the library already used for `getaddrinfo`
    (`Pipes.Transport.Tcp.pas`) and `CancelIoEx` (`Pipes.Transport.Windows.pas`).
 3. **One fewer model to maintain.** With `Posix.*` the Android backend is the Linux backend
    with different function names; with `TSocket` it would be a third design.
 
 Two platform traps are recorded in the header of `Pipes.Transport.Android.pas`:
 
-- **bionic's `addrinfo` has `ai_canonname` BEFORE `ai_addr`** â€” BSD order, unlike glibc.
+- **bionic's `addrinfo` has `ai_canonname` BEFORE `ai_addr`** — BSD order, unlike glibc.
   The local `TPipeAddrInfo` in `Pipes.Transport.Tcp.pas` follows the glibc layout in the
   non-Windows branch; reusing it on Android would pass a `char*` to `connect()` as if it
   were the `sockaddr`, with no compile error. That is why the Android backend uses
-  `Posix.NetDB`'s own `addrinfo` and is self-contained â€” `Pipes.Transport.Tcp.pas` merely
+  `Posix.NetDB`'s own `addrinfo` and is self-contained — `Pipes.Transport.Tcp.pas` merely
   delegates.
 - **`TSocket.Receive`/`Send` have a typed overload** (`array of Byte; Offset; Count`) that
   shadows the untyped one (`var Buf; Count`) when an array is passed: Delphi prefers the
   typed one and reads the 2nd argument as `Offset`. This is what almost masked the spike's
   test. The library does not use `TSocket`, so it is not exposed; the note is for whoever
-  writes a sample/test with it â€” the fix is to assign the method to a procedural variable
+  writes a sample/test with it — the fix is to assign the method to a procedural variable
   with an explicit signature before calling.
 
 ### 13.4 Blocking-read interruption invariant: self-pipe + `poll`, same as Linux
 
 The spike answered the question that was blocking everything:
-`TSocket.Close(ForceClosed=False)` does `shutdown(BOTH)` â†’ drains residual `recv` â†’
+`TSocket.Close(ForceClosed=False)` does `shutdown(BOTH)` → drains residual `recv` →
 `closesocket`, and on a real Android device (not an emulator) it unblocked a thread stuck in
 `Receive` in **~1-2 ms**, returning EOF with no exception. Repeated with the app going
 through the background during the wait: same result. That matched the best case of the
-acceptance criterion â€” the **strong** mechanism (wake by event, no polling) is portable.
+acceptance criterion — the **strong** mechanism (wake by event, no polling) is portable.
 
 The implementation went one step beyond what the spike measured. It does not use
 `TSocket.Close`; it uses the same design as `Pipes.Transport.Posix.pas`: every
@@ -868,7 +868,7 @@ self-pipe (never drained, so future waits also wake immediately) plus `shutdown(
 **The fd is only closed in the destructor**, after the join.
 
 The difference matters: with `TSocket.Close`, unblocking depends on closing the fd out from
-under a thread that may still be inside `recv` â€” it works, but it bets against descriptor
+under a thread that may still be inside `recv` — it works, but it bets against descriptor
 recycling. With the self-pipe, `poll` wakes on the *other* fd and `recv` is never called
 again; unblocking does not depend on the kernel doing anything to the socket. Same
 observable result, without the bet, and with the Android backend being the Linux backend
@@ -876,7 +876,7 @@ under different names.
 
 The weak variant (`TSocket.ReceiveTimeout`, which sets `SO_RCVTIMEO`) was also tested in the
 spike and works (~205 ms for a 200 ms timeout). It is **not** in use and stands as a plan B
-documented FOR ANDROID ONLY, should some future edge case prove otherwise â€” without touching
+documented FOR ANDROID ONLY, should some future edge case prove otherwise — without touching
 the invariant on `PIPES_WINDOWS`/`PIPES_POSIX` (FPC), which remain polling-free. The
 `CloseAbort destrava Read em ms` case in `tests/Android/` exists precisely to catch a
 regression in that direction: it fails above 250 ms.
@@ -886,7 +886,7 @@ regression in that direction: it fails above 250 ms.
 Schannel is Windows-only (native SSPI); Android has only OpenSSL as a TLS backend. The
 dynamic loader in `Pipes.Transport.OpenSSL.pas` already had the "Delphi outside Windows"
 branch via `SysUtils.LoadLibrary`/`GetProcAddress`, which on POSIX maps to `dlopen`/`dlsym`
-â€” that part was reused as-is.
+— that part was reused as-is.
 
 Three adjustments were needed:
 
@@ -895,23 +895,23 @@ Three adjustments were needed:
   no TLS backend" at runtime. Loading is lazy, so an app that only uses `ptTcp` pays
   nothing.
 - **A single soname pair, with no version suffix** (`libcrypto.so`/`libssl.so`). The Android
-  installer only extracts files matching `lib*.so` from the APK â€” `libssl.so.3` would never
+  installer only extracts files matching `lib*.so` from the APK — `libssl.so.3` would never
   reach the device, and trying it would be a wasted `dlopen`. Android's own
   `/system/lib*/libcrypto.so` (BoringSSL, incompatible ABI) is not a hazard: since Android 7
   it is outside the public namespace for apps.
 - **The system trust store.** `SSL_CTX_set_default_verify_paths` uses the `OPENSSLDIR`
   compiled into the `.so` (something like `/usr/local/ssl`), a directory that does not exist
-  on the device â€” chain validation would fail with a generic "unable to get local issuer
+  on the device — chain validation would fail with a generic "unable to get local issuer
   certificate", as though the certificate were invalid. Android's CAs live in
   `/apex/com.android.conscrypt/cacerts` (14+) or `/system/etc/security/cacerts`, already in
   the hashed-directory format OpenSSL expects as `CApath`. `ApplyDefaultTrustStore` tries
-  both, **checking that the directory exists** â€” a directory `X509_LOOKUP` returns success
+  both, **checking that the directory exists** — a directory `X509_LOOKUP` returns success
   even for a nonexistent path, so without that check the first candidate would always
   "succeed". CAs the user installs through Android's settings do not count: since Android 7
   they live in a separate store.
 
 Packaging `libssl.so`/`libcrypto.so` per ABI (`armeabi-v7a`/`arm64-v8a`) in the app's
-Deployment remains the job of whoever builds the APK â€” see `samples/EchoAndroid/LEIA-ME.md`.
+Deployment remains the job of whoever builds the APK — see `samples/EchoAndroid/LEIA-ME.md`.
 
 ### 13.6 Milestones
 
@@ -922,14 +922,14 @@ Deployment remains the job of whoever builds the APK â€” see `samples/EchoA
 | A2 | `ptTls` | OpenSSL with no opt-in, Android sonames, system trust store (§13.5) | done, verified on device (§13.9) |
 | A3 | Sample + tests | `samples/EchoAndroid` (FMX) and `tests/Android` (device suite, loopback) | done; suite runs 11/11 |
 
-Dependencies: T5 (done) â†’ A0 â†’ A1 â†’ A2 â†’ A3. An axis independent of P0-P5/H0-H4/S0-S4/
-F0-F3 (pub/sub, heartbeat, stats, failover) â€” nothing there changes, and the Android backend
+Dependencies: T5 (done) → A0 → A1 → A2 → A3. An axis independent of P0-P5/H0-H4/S0-S4/
+F0-F3 (pub/sub, heartbeat, stats, failover) — nothing there changes, and the Android backend
 inherits all of it for free through the shared `Pipes.Client`/`Pipes.Server`.
 
 ### 13.7 What the implementation changed relative to the proposal
 
 Three decisions in this section were inverted when the code was written. They are recorded
-because the original proposal came from a spike, not from an implementation â€” and a reader
+because the original proposal came from a spike, not from an implementation — and a reader
 who only knows the previous version of this section would think the code diverged from the
 plan by carelessness.
 
@@ -947,20 +947,20 @@ forms of "yes" made it into the code.
 ### 13.8 Verification: there is no dual-compiler pair
 
 The other milestones are verified by compiling on both compilers and running the suite on
-both. Here that pair does not exist â€” FPC does not compile for Android in this project, and
+both. Here that pair does not exist — FPC does not compile for Android in this project, and
 an APK has no console runner. On top of that, the Delphi CE on this machine refuses
 command-line compilation (including `dccaarm64`), so **the Android build and the device run
 are manual, through the IDE**.
 
 What the development machine can guarantee on its own, and did:
 
-- FPC/Win64 and FPC/Linux stay green (unit and integration suites) â€” A0 touched `pipes.inc`,
+- FPC/Win64 and FPC/Linux stay green (unit and integration suites) — A0 touched `pipes.inc`,
   which everything includes, so this is not a formality.
 - `Pipes.Transport.Tls.pas` compiles under FPC with `-dPIPES_OPENSSL` (the branch A2
   changed).
 
 What only the device can answer is in `tests/Android/LEIA-ME.md`, with the numeric limits
-for each case â€” in particular the 250 ms on the read unblock, which is the number that
+for each case — in particular the 250 ms on the read unblock, which is the number that
 separates "woke on an event" from "woke on a timeout".
 
 **Reference run (real device, 2026-08-01): 11 ok, 0 failures, 0 skipped.**
@@ -1044,3 +1044,190 @@ not that one did. A TLS case that passes because TLS does not exist is worse tha
 serious. The corollary, which cost a full session: wherever there is a negative case, there
 must be the matching **positive** one, or a breakage that makes everything refuse stays
 green.
+
+## 14. Send/publish batching (`SendBytesBatch`/`PublishBatch`)
+
+Motivation: a burst of N plain messages paid the lock+write-syscall pair N times
+(`FWriteLock.Enter/Leave` + `Write` on the stream), even though each individual frame was
+already a single `Write` call (`PipeWriteFrame` had emitted header+payload together since
+M2). The mechanical gain of batching was never about saving `Write` calls per frame — that
+was already one — but about not paying the lock/syscall N times when the app already has N
+messages ready at once.
+
+### 14.1 `PipeWriteFrames`: the same guarantee as `PipeWriteFrame`, for a list
+
+`Pipes.Framing.PipeWriteFrames(AStream, AFrames, AMaxPayload)` validates ALL frames before
+writing a single byte (the same all-or-nothing rule `PipeWriteFrame` applies per frame), then
+concatenates the encoded frames into one buffer and issues ONE `Write` call. Zero wire-format
+change: the reader (`PipeReadFrame`) never knew and never needs to know whether the bytes
+arrived in a single `recv()`/`ReadFile` or several — an old peer without `SendBytesBatch`
+keeps understanding the stream with no change at all.
+
+### 14.2 `TPipePublishItem`: why a record in `Pipes.Topics`, not `Pipes.Framing`
+
+The Topic/Payload/Retain trio mirrors the three arguments of `Publish`/`PipePublishFrame` —
+it lives in `Pipes.Topics` (a pure unit, no IO) for the same reason `PipePublishFrame` lives
+there: that unit builds the publish frame, not `Pipes.Framing`, which knows nothing about
+topics.
+
+### 14.3 `PublishBatch`: topic matching still runs UNDER `FConnLock`, one Write per connection
+
+`TPipeServer.PublishBatch` follows the same mechanics as `FanOut` (§9.3): `MatchesTopic`
+matching runs inside `FConnLock`, because that is where each connection's filter list can be
+read safely — not afterward. The difference from `FanOut` is that here the per-connection
+result is not a single frame's "goes or doesn't go," but a SUBSET of the batch (only the
+items whose topic some filter of that connection reaches), assembled still under the lock and
+sent with a single `SendFrames` outside it. A connection matching nothing in the batch
+triggers no `Write` at all — it isn't an empty batch being sent, the whole connection is
+skipped.
+
+An invalid topic in ANY item of the batch refuses the entire batch (`EPipeError`, before
+publishing/retaining any item) — the same all-or-nothing rule as `PipeWriteFrames`, so a typo
+in the middle of a batch cannot leave retention half-done.
+
+### 14.4 Internal use: retained replay on reconnect got atomicity for free
+
+`SendRetained` (delivering retained values to a fresh subscriber — §9.6) swapped its
+`for ... SendFrame ... except Break` loop for a single `SendFrames`. Good side effect:
+previously, a client dying MID-REPLAY received an arbitrary PREFIX of the retained values (the
+`Break` only stopped the loop, without signaling anything); now the whole replay is one write
+unit — either everything arrives, or the exception falls into the same `except` as before and
+nothing arrives. That wasn't the reason to build the batch (the motivation was the app's own
+burst, §14 above), but it's the kind of correction that only shows up once a sequence of
+writes becomes one.
+
+### 14.5 Wire order ≠ callback delivery order
+
+The trap that caught this feature's first test: `SendBytesBatch`/`PublishBatch` guarantee
+order ON THE WIRE (the same sequence as the array, one `Write`). The order in which the app
+SEES that in `OnMessage`/`OnTopicMessage` depends on `DispatchMode` — under `pdmPool` (the
+default), each frame read becomes a work item dispatched to a worker pool, with no order
+guarantee between them, exactly as already held for any sequence of plain `SendBytes` calls
+before this milestone (which is why `OrdemPreservadaComSerialized`, from M6, already existed
+using `pdmSerialized`). The batch neither changes nor loosens that rule; `SendBytesBatch`'s
+order tests use `pdmSerialized` for the same reason.
+
+### 14.6 Scope of what did NOT go in
+
+True request-reply pipelining (firing N requests without waiting for each reply before the
+next) was considered and dropped this round: `Request` is synchronous per call, and
+parallelizing that would need a brand-new async API (`... of object`, no `reference to`) — a
+project of its own, not an extension of the plain-message/publish batch.
+
+## 15. Ordering by group under `pdmPool` (`AGroupKey` in `SendBytes`/`SendText`)
+
+Motivation: `pdmPool` (the default `DispatchMode`) dispatches every incoming `OnMessage` to a
+worker pool — fast, but with no delivery-order guarantee between distinct messages (only
+order ON THE WIRE, which is always preserved, including by `SendBytesBatch`; see §14.5). For
+the library's target use case (store PDV, §7 "Later milestones"), that matters when a SUBSET
+of messages — the events for ONE specific register — needs to process in the order it was
+sent, without that stalling the events of other registers behind it in the queue.
+
+### 15.1 Why this did not become a new `TPipeDispatchMode`
+
+The first idea (`hash(key) mod K` for K fixed workers, in a PRIVATE per-instance pool —
+generalizing `pdmSerialized`, which is already exactly this pattern with K=1, see
+`Pipes.Base.FDispatchPool`) was dropped for two reasons: it would need a new property just to
+tune K, and hash collisions would serialize two UNRELATED groups against each other just for
+landing in the same bucket — worse still considering `pdmPool` is already a GLOBAL pool shared
+by the whole application (`Pipes.Threading.PipePool`), so groups from DIFFERENT components
+could collide by chance.
+
+The design that stuck is simpler to use and more correct: a per-key mailbox with a
+cooperative owner (the same pattern actor mailboxes use, e.g. Akka) — each key gets its own
+queue, only ONE worker drains it at a time, and parallelism across keys self-regulates
+against the pool's own worker cap, with no new property. `AGroupKey` is just one more
+parameter on `SendBytes`; there is no new dispatch mode to learn.
+
+### 15.2 `TPipeKeyedDispatcher` (`Pipes.Threading.pas`): additive, does not touch `TPipeThreadPool`
+
+`TPipeThreadPool`/`TPipeWorkItem` (the engine copied/adapted from `pascal-amqp-faa`, see the
+unit header) needed NO changes at all. `TPipeKeyedDispatcher` is a layer on top:
+
+- `Enqueue(AKey, AItem)`: under `FLock`, appends `AItem` to `AKey`'s mailbox (creating it if
+  absent). If the mailbox JUST got created (nobody was draining it), it fires ONE
+  `TPipeMailboxDrainWork` into the pool.
+- `TPipeMailboxDrainWork.Execute`: a loop that calls `Fetch(AKey)` — takes the next item from
+  the mailbox and executes it, or (mailbox empty) removes the key from the dictionary and
+  ends.
+
+Since `TPipeMailboxDrainWork` is just another regular `TPipeWorkItem`, it occupies a pool
+worker like any other job — no new API on `TPipeThreadPool`, no dedicated worker.
+`TPipeMessageWork` (the item that already existed for plain messages) is reused as-is as the
+item that travels inside the mailbox — `DispatchMessage` only decides WHERE to send that same
+instance (`EventPool.Queue` directly, or `PipeGroupDispatcher.Enqueue`).
+
+### 15.3 Ephemeral key: born with the first pending message, dies once it drains
+
+A key's dictionary entry is not managed by the caller — it is born on that key's first
+`Enqueue` and dies once `Fetch` finds the mailbox empty. Reusing a key after it drains starts
+from scratch, with no residual state. That means memory cost is proportional to how many keys
+have PENDING work right now, never to the total number of distinct keys ever used — an app
+can mint a fresh key per transaction (any id) without accumulating anything once each one
+finishes.
+
+**The classic mailbox race** (and the reason `Enqueue`/`Fetch` are the SAME critical section):
+a new message could arrive at the exact instant the drainer decides "mailbox empty, I'm done"
+and end up orphaned — appended to a queue nobody is watching anymore, since nothing reads
+`FMailboxes` at that exact moment except under `FLock`. With `Fetch` (deciding "there's a next
+item" OR "remove the key") and `Enqueue` (deciding "append" OR "create and fire") pinned to
+the same lock, that window doesn't exist: the two decisions are serialized, one always sees
+the other's outcome.
+
+### 15.4 Lifecycle: the dispatcher does NOT own the pool — Destroy order matters
+
+`TPipeKeyedDispatcher.Create(APool)` only references the pool, it does not own it.
+`TPipeThreadPool.Destroy` already joins (`WaitFor`) each worker before returning — which, by
+transitivity, drains any `TPipeMailboxDrainWork` in flight (its `Execute` only returns once
+the WHOLE MAILBOX has drained, not just the current item). That's why the GLOBAL dispatcher's
+(`PipeGroupDispatcher`, paired with `PipePool`) finalization order is **always pool first**:
+
+```pascal
+finalization
+  GPool.Free;             // joins workers; drains any TPipeMailboxDrainWork in flight
+  GGroupDispatcher.Free;  // only now can no thread still touch FMailboxes
+```
+
+The reverse order would be a use-after-free: a pool thread still running
+`TPipeMailboxDrainWork.Execute` (calling `FDispatcher.Fetch`) while the dispatcher has already
+been freed. `TPipeKeyedDispatcher.Destroy` cleans up any leftover mailbox as a safety net, but
+under the documented lifecycle it already arrives empty (the preceding `GPool.Free` already
+drained everything).
+
+### 15.5 Wire: reuses `CorrId`, zero format change
+
+The key travels in the NPF1 header's `CorrId` — a field that already existed in EVERY frame
+and that `pfkMessage` never used (always 0, and never reached the app: `TPipeMessageEvent` has
+no `CorrId` parameter). `PipeGroupKeyHash` (64-bit FNV-1a, `Pipes.Framing.pas`) reduces the
+string to a `UInt64`: `''` always becomes 0 ("no group," the usual behavior, at zero cost);
+any other input never lands on 0 (bumped to 1 in the astronomically rare case of a collision).
+The hash runs exactly once, on the sender — the receiver uses `AFrame.CorrId` directly as the
+key, with no re-hashing. A collision between two DIFFERENT keys is harmless (just a
+parallelism hotspot — the two start serializing against each other —, never incorrectness),
+the same reasoning behind `PoolQueueDepth` already being shared across components under
+`pdmPool`.
+
+No new protocol version, no peer breaks: an old peer that knows nothing about groups already
+ignored `CorrId` in `pfkMessage` before this feature, and keeps ignoring it — the field was
+there, just inert.
+
+### 15.6 Only under `pdmPool`; `pdmSerialized`/`pdmMainThread` ignore the key
+
+`pdmSerialized` is already 1 worker/TOTAL order (`FDispatchPool`, a private per-instance pool
+— see §5); `pdmMainThread` is also already total order (the single `TThread.Queue` queue). In
+both, a grouping key would be redundant — `DispatchMessage` simply falls through to the usual
+path (`EventPool.Queue`) whenever `FDispatchMode <> pdmPool`, even with `AGroupKey` set. It is
+not an error to use the key in those modes, it just changes nothing.
+
+### 15.7 Tests: proof of mutual exclusion, not just timing
+
+The wrong way to test "order preserved" is to only measure time (flaky) or only check the
+final list without proving there was NEVER any real overlap. The `TPipeKeyedDispatcher` tests
+(`tests/Unit/{,fpc/}Pipes.ThreadingTests.pas`) use a CAS on a flag shared per key (0↔1 on each
+item's entry/exit, with a deliberate `Sleep` in between to widen the window) — any overlap
+between two messages of the SAME key is caught deterministically and directly, not inferred
+from an absence of evidence. The test for parallelism across DIFFERENT keys does use timing
+(2 keys × 200 ms each; accidentally-serialized would take ~400 ms, parallel takes ~200 ms),
+with a generous margin to avoid flakiness. The end-to-end tests
+(`tests/Integration/{,fpc/}Pipes.EndToEndTests.pas`) repeat both proofs through the full wire
+path (`SendBytes` → `AFrame.CorrId` → `DispatchMessage`), not just in the pure unit.

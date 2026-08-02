@@ -316,6 +316,33 @@ WriteLn('avg request latency: ', LCliStats.AvgRequestLatencyMs, ' ms');
   that actually got a reply (timeout and error are excluded: "the server didn't respond"
   is a different question from "how long did it take").
 
+### Ordering by group under `pdmPool` (`AGroupKey` in `SendBytes`/`SendText`)
+
+`pdmPool` (the default `DispatchMode`) dispatches each received message to a pool of
+workers — fast, but with no delivery-order guarantee between distinct messages reaching
+`OnMessage` (only the order on the wire, which is always preserved). Most apps never need
+more than that; for the ones that need a SUBSET of messages to process in the order they
+were sent (e.g. the events from one specific register in a store), without giving up
+parallelism for everything else:
+
+```pascal
+Client.SendBytes(AData, 'register.3');   // every message tagged 'register.3' processes in
+                                          // order...
+Client.SendBytes(AData2, 'register.4');  // ...and in PARALLEL with 'register.4', never behind it
+```
+
+- No `AGroupKey` (default, `''`): the usual behavior, at zero cost.
+- The guarantee is about DELIVERY to the RECEIVING side's `OnMessage`, not about the sender —
+  both `TPipeClient.SendBytes` and `TPipeServer.SendBytes` accept the parameter, and it is the
+  RECEIVER's `DispatchMode` that decides whether the key makes any difference.
+- Only applies under `pdmPool`: in `pdmSerialized`/`pdmMainThread` the order is already total,
+  so the key is ignored (harmless, not an error to pass one).
+- Keys are ephemeral — there is no cap on distinct keys and no residual cost: the internal
+  structure is born with the first pending message for that key and dies once none remain.
+  Reusing a key after it drains starts from scratch.
+- No wire format change: the key travels inside the NPF1 header's own `CorrId` (a 64-bit
+  hash), a field that already existed and that plain messages never used.
+
 ### Address failover (`FailoverAddresses`)
 
 `TPipeClient` only (`TPipeServer` listens on a single `Address`; there is nothing to "fail
@@ -511,9 +538,14 @@ TPipeBase (abstract)
 
 TPipeServer
   Listen; Stop;                          // Listen non-blocking; Stop synchronous
-  SendBytes/SendText(ConnId, ...)        // EPipeError if ConnId does not exist
+  SendBytes/SendText(ConnId, ..., AGroupKey = '')  // EPipeError if ConnId does not exist
+                                          // AGroupKey: order between calls preserved in the
+                                          // RECEIVER's OnMessage even under pdmPool (the
+                                          // default); different keys stay parallel
+  SendBytesBatch(ConnId, TArray<TBytes>) // N messages, a single Write; order preserved
   Broadcast/BroadcastText(...)           // snapshot; per-connection failure is swallowed
   Publish/PublishText(Topic, ..., Retain = False)  // only topic subscribers
+  PublishBatch(TArray<TPipePublishItem>) // N items (Topic/Payload/Retain); one Write per connection
   SubscriberCount(Topic)                 // how many would receive a publication
   ClientSubscriptions(ConnId)            // filters that client subscribed to
   ClearRetained                          // retained values do not die on Stop
@@ -533,11 +565,13 @@ TPipeServer
 
 TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect retries until the deadline
-  SendBytes/SendText(...)                // fire-and-forget
+  SendBytes/SendText(..., AGroupKey = '')  // fire-and-forget; AGroupKey see TPipeServer above
+  SendBytesBatch(TArray<TBytes>)         // N messages, a single Write; order preserved
   Request/RequestText(..., TimeoutMs)    // synchronous RPC; EPipeTimeout at the deadline
   Subscribe/Unsubscribe(Filter)          // works while disconnected; redone on reconnect
   Subscriptions                          // subscribed filters (desired state)
   Publish/PublishText(Topic, ...)        // EPipeClosed without a session
+  PublishBatch(TArray<TPipePublishItem>) // N items (Topic/Payload/Retain), a single Write
   OnTopicMessage: TPipeTopicEvent        // (...; ATopic; AData; ARetained)
                                          // ARetained: True only on subscription catch-up
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
@@ -548,6 +582,7 @@ TPipeClient
 
 Pipes.Topics (pure unit, also useful outside the lib)
   PipeTopicMatches(Filter, Topic); PipeIsValidTopic; PipeIsValidTopicFilter
+  TPipePublishItem = record Topic; Payload: TBytes; Retain: Boolean; end  // see PublishBatch
 
 Exceptions: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls
 ```

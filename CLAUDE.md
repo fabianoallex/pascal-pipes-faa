@@ -110,15 +110,27 @@ implementar qualquer milestone novo.
 `TPipeBase` (abstrata: Address, Transport, TlsOptions, KeepAliveSeconds,
 HeartbeatIntervalMs, Active, DispatchMode, MaxMessageSize, OnMessage, OnError) →
 `TPipeServer` (Listen, Stop,
-SendBytes/SendText por ConnId, SendBytesBatch (N mensagens, um Write só, ordem
-preservada), Broadcast, DisconnectClient, ClientCount/ClientIds
+SendBytes/SendText por ConnId (com `AGroupKey` opcional — ordem de entrega entre
+mensagens da mesma chave em `pdmPool`, ver abaixo), SendBytesBatch (N mensagens, um
+Write só, ordem preservada), Broadcast, DisconnectClient, ClientCount/ClientIds
 (só conexões estabelecidas), TryClientIdentity (identidade do par mTLS), MaxClients,
 OnClientConnected/Disconnected, OnRequest, Stats/ConnectionStats — métricas, ver abaixo)
-e `TPipeClient` (Connect, Disconnect, SendBytes/SendText, SendBytesBatch, Request/RequestText
-síncrono com timeout, AutoReconnect, MaxReconnectAttempts, FailoverAddresses/ActiveAddress —
-failover, ver abaixo —, OnConnected/OnDisconnected, Stats).
+e `TPipeClient` (Connect, Disconnect, SendBytes/SendText (idem `AGroupKey`), SendBytesBatch,
+Request/RequestText síncrono com timeout, AutoReconnect, MaxReconnectAttempts,
+FailoverAddresses/ActiveAddress — failover, ver abaixo —, OnConnected/OnDisconnected, Stats).
 Assinaturas completas e exemplos em `README.md`; racional de design em
 `docs/ARQUITETURA.md`.
+
+Ordem por grupo em `pdmPool` (milestone informal, `docs/ARQUITETURA.md` §15):
+`SendBytes`/`SendText` aceitam `AGroupKey: string = ''` — mensagens da mesma chave chegam
+ao `OnMessage` do RECEPTOR em ordem entre si mesmo em `pdmPool` (que por padrão não
+garante ordem de entrega entre mensagens distintas, só no fio), sem perder paralelismo
+entre chaves diferentes. Mecanismo: `Pipes.Threading.TPipeKeyedDispatcher` — mailbox por
+chave com dono cooperativo (nenhum worker fixo, nenhum teto de chaves para configurar),
+por cima do `TPipeThreadPool` já existente, sem mexer nele. A chave viaja no `CorrId` do
+header NPF1 (hash de 64 bits via `PipeGroupKeyHash`) — campo que já existia e que
+`pfkMessage` nunca usava, então zero mudança de wire format. Só afeta `pdmPool`;
+`pdmSerialized`/`pdmMainThread` já dão ordem total e ignoram a chave.
 
 Failover de endereço (milestones F0-F3, `docs/ARQUITETURA.md` §12): `Client.FailoverAddresses:
 TArray<string>` — endereços tentados em ordem DEPOIS de `Address` (o primário), com o mesmo

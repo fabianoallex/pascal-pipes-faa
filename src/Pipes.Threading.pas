@@ -150,6 +150,72 @@ type
 /// Pool global compartilhado (criado sob demanda, liberado na finalizacao).
 function PipePool: TPipeThreadPool;
 
+// --- Despacho por chave (ordem preservada por chave, paralelo entre chaves) -
+
+type
+  TPipeKeyedDispatcher = class;
+
+  { Work item que drena a mailbox de UMA chave ate esvaziar, um item por vez,
+    e so' entao libera a chave (ver TPipeKeyedDispatcher). Roda como qualquer
+    outro TPipeWorkItem no pool que o dispatcher usa como motor. }
+  TPipeMailboxDrainWork = class(TPipeWorkItem)
+  private
+    FDispatcher: TPipeKeyedDispatcher;
+    FKey: UInt64;
+  public
+    constructor Create(ADispatcher: TPipeKeyedDispatcher; AKey: UInt64);
+    procedure Execute; override;
+  end;
+
+  { Roteamento por chave sobre um TPipeThreadPool: itens da MESMA chave nunca
+    executam ao mesmo tempo (ordem preservada, FIFO por chave); chaves
+    diferentes correm em paralelo no MESMO pool. Mailbox por ator, dono
+    cooperativo — nao ha' worker fixo por chave, nem teto de chaves para
+    configurar; o paralelismo se autorregula pelo numero de chaves com
+    trabalho pendente, ate o teto de workers que o pool ja tem.
+
+    A entrada de uma chave no dicionario e' EFEMERA: nasce no primeiro Enqueue
+    daquela chave, morre quando a mailbox esvazia (Fetch devolve False). Uma
+    chave reaproveitada depois de esvaziar comeca do zero, sem estado
+    residual — quem usa nao precisa "gerenciar" chaves, so' escolher qual usar
+    por envio.
+
+    Concorrencia: "esvaziou, libero a chave" (Fetch) e "esta ocupada? so'
+    anexo, ou crio e disparo drenagem" (Enqueue) sao a MESMA secao critica
+    (FLock) dos dois lados — sem isso existe uma corrida classica de mailbox:
+    um item novo podendo chegar exatamente no instante em que o drenador
+    desiste ficaria orfao, sem ninguem para consumi-lo.
+
+    Ciclo de vida: o dispatcher NAO E' DONO do pool (so' referencia, ver
+    Create) — destrua sempre o POOL primeiro. TPipeThreadPool.Destroy junta
+    (WaitFor) cada worker antes de retornar, o que drena qualquer
+    TPipeMailboxDrainWork em voo; so' depois disso e' seguro liberar o
+    dispatcher (nenhuma thread pode mais tocar FMailboxes). A ordem inversa
+    e' use-after-free. }
+  TPipeKeyedDispatcher = class
+  private
+    FLock: TCriticalSection;
+    FMailboxes: TDictionary<UInt64, TQueue<TPipeWorkItem>>;
+    FPool: TPipeThreadPool;
+    // Chamado SO' pelo TPipeMailboxDrainWork da propria chave.
+    function Fetch(AKey: UInt64; out AItem: TPipeWorkItem): Boolean;
+  public
+    /// APool nao e' possuido por este objeto (ver ciclo de vida no cabecalho
+    /// da classe) — normalmente PipePool (o global).
+    constructor Create(APool: TPipeThreadPool);
+    destructor Destroy; override;
+    /// Enfileira; assume a posse do item. Se a chave nao esta sendo drenada
+    /// agora, dispara UM TPipeMailboxDrainWork no pool para drena-la.
+    procedure Enqueue(AKey: UInt64; AItem: TPipeWorkItem);
+  end;
+
+/// Dispatcher de chave global (criado sob demanda, liberado na finalizacao),
+/// pareado com PipePool — mesma natureza compartilhada de pdmPool: chaves de
+/// componentes diferentes coexistem no mesmo dicionario (colisao de hash e'
+/// so' um hotspot raro e inofensivo, nunca incorretude — ver PipeGroupKeyHash
+/// em Pipes.Framing).
+function PipeGroupDispatcher: TPipeKeyedDispatcher;
+
 // --- Heartbeat de aplicacao (ptTcp/ptTls; ver Pipes.Base.HeartbeatIntervalMs) -
 
 type
@@ -532,11 +598,147 @@ begin
   Result := GPool;
 end;
 
+{ TPipeMailboxDrainWork }
+
+constructor TPipeMailboxDrainWork.Create(ADispatcher: TPipeKeyedDispatcher;
+  AKey: UInt64);
+begin
+  inherited Create;
+  FDispatcher := ADispatcher;
+  FKey := AKey;
+end;
+
+procedure TPipeMailboxDrainWork.Execute;
+var
+  LItem: TPipeWorkItem;
+begin
+  while FDispatcher.Fetch(FKey, LItem) do
+  begin
+    try
+      LItem.Execute;
+    except
+      // Mesma regra do worker do pool (TPipePoolWorker.Execute): excecao de
+      // usuario nao pode derrubar quem drena as demais mensagens da chave.
+    end;
+    LItem.Free;
+  end;
+end;
+
+{ TPipeKeyedDispatcher }
+
+constructor TPipeKeyedDispatcher.Create(APool: TPipeThreadPool);
+begin
+  inherited Create;
+  FLock := TCriticalSection.Create;
+  FMailboxes := TDictionary<UInt64, TQueue<TPipeWorkItem>>.Create;
+  FPool := APool;
+end;
+
+destructor TPipeKeyedDispatcher.Destroy;
+var
+  LQueue: TQueue<TPipeWorkItem>;
+begin
+  // Defensivo (ver o cabecalho da classe: no ciclo de vida normal, o pool ja
+  // foi destruido antes e drenou tudo — isto so' pega sobra de um shutdown
+  // fora do padrao documentado).
+  FLock.Enter;
+  try
+    for LQueue in FMailboxes.Values do
+    begin
+      while LQueue.Count > 0 do
+        LQueue.Dequeue.Free;
+      LQueue.Free;
+    end;
+    FMailboxes.Free;
+  finally
+    FLock.Leave;
+  end;
+  FLock.Free;
+  inherited;
+end;
+
+function TPipeKeyedDispatcher.Fetch(AKey: UInt64;
+  out AItem: TPipeWorkItem): Boolean;
+var
+  LQueue: TQueue<TPipeWorkItem>;
+begin
+  AItem := nil;
+  FLock.Enter;
+  try
+    if not FMailboxes.TryGetValue(AKey, LQueue) then
+      Exit(False); // nao deveria acontecer: so' o proprio drenador chama Fetch
+    if LQueue.Count = 0 then
+    begin
+      FMailboxes.Remove(AKey); // efemera: sem estado residual pra proxima vez
+      LQueue.Free;
+      Exit(False);
+    end;
+    AItem := LQueue.Dequeue;
+    Result := True;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TPipeKeyedDispatcher.Enqueue(AKey: UInt64; AItem: TPipeWorkItem);
+var
+  LQueue: TQueue<TPipeWorkItem>;
+  LMustSpawn: Boolean;
+begin
+  FLock.Enter;
+  try
+    if FMailboxes.TryGetValue(AKey, LQueue) then
+    begin
+      LQueue.Enqueue(AItem); // ja' tem quem drena: ele vai ver este item
+      LMustSpawn := False;
+    end
+    else
+    begin
+      LQueue := TQueue<TPipeWorkItem>.Create;
+      LQueue.Enqueue(AItem);
+      FMailboxes.Add(AKey, LQueue);
+      LMustSpawn := True;
+    end;
+  finally
+    FLock.Leave;
+  end;
+  if LMustSpawn then
+    FPool.Queue(TPipeMailboxDrainWork.Create(Self, AKey));
+end;
+
+{ --- Dispatcher de chave global --- }
+
+var
+  GGroupDispatcherLock: TCriticalSection;
+  GGroupDispatcher: TPipeKeyedDispatcher;
+
+function PipeGroupDispatcher: TPipeKeyedDispatcher;
+begin
+  if GGroupDispatcher = nil then
+  begin
+    GGroupDispatcherLock.Enter;
+    try
+      if GGroupDispatcher = nil then
+        GGroupDispatcher := TPipeKeyedDispatcher.Create(PipePool);
+    finally
+      GGroupDispatcherLock.Leave;
+    end;
+  end;
+  Result := GGroupDispatcher;
+end;
+
 initialization
   GPoolLock := TCriticalSection.Create;
+  GGroupDispatcherLock := TCriticalSection.Create;
 
 finalization
+  // Ordem obrigatoria (ver o cabecalho de TPipeKeyedDispatcher): GPool.Free
+  // junta cada worker e so' retorna depois de drenar qualquer
+  // TPipeMailboxDrainWork em voo — so' DEPOIS disso e' seguro liberar o
+  // dispatcher, que pode estar em uso por uma dessas threads ate esse ponto.
   GPool.Free;
   GPoolLock.Free;
+  GGroupDispatcher.Free;
+  GGroupDispatcherLock.Free;
 
 end.
