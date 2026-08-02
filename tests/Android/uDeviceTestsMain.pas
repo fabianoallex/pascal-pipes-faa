@@ -130,6 +130,10 @@ type
     function PkiDir: string;
     function Pki(const AFile: string): string;
     procedure ExigePki;
+    /// PULA o caso se QUALQUER um dos arquivos nao estiver no aparelho. Cada
+    /// teste declara o que usa; ver o corpo para o porque de nao bastar o
+    /// ExigePki generico.
+    procedure ExigePkiArquivos(const ANomes: array of string);
     /// Levanta se AErro for a falha do CARREGADOR do OpenSSL, e nao um
     /// veredito de certificado. Ver o corpo para o porque disto existir.
     procedure ExigeVeredictoDeTls(const AErro: string);
@@ -386,6 +390,29 @@ begin
   if not FileExists(Pki('ca_cert.pem')) then
     raise ETestePulado.Create('PKI ausente em ' + PkiDir +
       ' (ver LEIA-ME.md)');
+end;
+
+procedure TExecutorDeTestes.ExigePkiArquivos(const ANomes: array of string);
+var
+  I: Integer;
+  LFaltando: string;
+begin
+  // ExigePki so' confere ca_cert.pem, o que nao basta: cada caso usa um
+  // conjunto diferente, e um PEM que faltou no Deployment vira uma falha de
+  // CARREGAMENTO ("nao foi possivel carregar a CA"), nao um veredito de
+  // certificado. Nos casos negativos isso satisfaria o "houve excecao" e
+  // passaria em VERDE sem ter validado nada — a mesma classe de mentira que o
+  // ExigeVeredictoDeTls fecha para o backend ausente.
+  //
+  // Aconteceu de verdade: uma lista de Deployment montada a mao trocou
+  // gemea_ca_cert.pem (o certificado) por gemea_ca_key.pem (a chave privada).
+  LFaltando := '';
+  for I := Low(ANomes) to High(ANomes) do
+    if not FileExists(Pki(ANomes[I])) then
+      LFaltando := LFaltando + ANomes[I] + ' ';
+  if LFaltando <> '' then
+    raise ETestePulado.Create('faltam no aparelho: ' + Trim(LFaltando) +
+      ' (confira o Deployment; ver LEIA-ME.md)');
 end;
 
 procedure TExecutorDeTestes.ExigeVeredictoDeTls(const AErro: string);
@@ -718,6 +745,8 @@ var
   LEndereco: string;
 begin
   ExigePki;
+  ExigePkiArquivos(['srv_cert.pem', 'srv_key.pem', 'ca_cert.pem',
+    'cli_cert.pem', 'cli_key.pem']);
   LEndereco := ProximoEndereco;
   LG := TGanchos.Create;
   LServer := TPipeServer.Create(LEndereco);
@@ -752,6 +781,7 @@ var
   LEndereco, LErro: string;
 begin
   ExigePki;
+  ExigePkiArquivos(['srv_cert.pem', 'srv_key.pem', 'gemea_ca_cert.pem']);
   LEndereco := ProximoEndereco;
   LServer := TPipeServer.Create(LEndereco);
   LClient := TPipeClient.Create(LEndereco);
@@ -790,8 +820,8 @@ var
   LEndereco, LErro: string;
 begin
   ExigePki;
-  if not FileExists(Pki('selfsigned_cert.pem')) then
-    raise ETestePulado.Create('selfsigned_cert.pem ausente');
+  ExigePkiArquivos(['srv_cert.pem', 'srv_key.pem', 'ca_cert.pem',
+    'selfsigned_cert.pem', 'selfsigned_key.pem']);
   LEndereco := ProximoEndereco;
   LG := TGanchos.Create;
   LServer := TPipeServer.Create(LEndereco);

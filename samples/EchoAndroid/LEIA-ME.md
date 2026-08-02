@@ -231,27 +231,23 @@ Para usar `ptTls`:
    `libssl.so.3` nunca chegaria ao aparelho. A lista de candidatos em
    `Pipes.Transport.OpenSSL.pas` já tem um par só no Android por essa razão.
 
-3. Adicione-as em `Project > Deployment`, plataforma Android64. **Duas colunas
-   precisam ser corrigidas depois de adicionar** — o padrão do IDE não serve:
+3. Adicione-as em `Project > Deployment`, plataforma Android64, e **corrija o
+   *Remote Path***. É a única coluna que precisa de ajuste — e a que o IDE
+   preenche errado para este caso:
 
    | Coluna | Padrão do IDE | O que tem que ficar |
    |---|---|---|
-   | **Type** | `File` | `ProjectFile` |
+   | Type | `File` | `File` (não é editável, e está certo) |
    | **Remote Path** | `.\` | `library\lib\arm64-v8a\` |
 
-   O `Type` é a armadilha silenciosa. A classe `File` está declarada no `.dproj`
-   com `<Operation>0</Operation>` para `Android` e `Android64` e **sem**
-   `RemoteDir` — ou seja, no Android ela não faz nada. O arquivo aparece
-   marcadinho na lista do Deployment, o build passa, o deploy passa, e a `.so`
-   simplesmente não entra no APK. O sintoma é o erro do carregador na primeira
-   conexão `ptTls`:
+   Com `.\` a biblioteca vai para a raiz do APK, onde o `dlopen` não a enxerga:
+   o linker do Android só procura no diretório de bibliotecas nativas do app.
+   E o sintoma é mudo — o arquivo aparece marcado na lista, o build passa, o
+   deploy passa, e o erro só surge na primeira conexão `ptTls`:
 
    ```
    EPipeTls: OpenSSL não encontrado (tentados: libssl.so)
    ```
-
-   `ProjectFile` deploya e respeita o `RemoteDir` explícito — é a mesma classe
-   que leva os PEMs para `assets\internal\`.
 
    O destino `library\lib\arm64-v8a\` não é chute: é o `APK_LibraryDir` que o
    `$(BDS)\bin\CodeGear.Deployment.Targets` define para a plataforma Android64
