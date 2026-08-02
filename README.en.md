@@ -841,11 +841,28 @@ marked `deprecated` only after samples and tests migrate.
   the build has.)
 
 - OpenSSL **1.1** (the other supported branch): swap the image for `debian:bullseye`, which
-  ships `libssl 1.1.1` and does **not** have 3.x. It is not redundant with the previous one
-  — it is the only way to exercise the symbol fallback of the peer-certificate getter,
-  which 3.x renamed (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). With both
-  versions installed the loader would pick 3.x and the old branch would never run; in an
-  image where only 1.1 exists, it is mandatory.
+  ships `libssl 1.1.1` and does **not** have 3.x, and compile with `-dPIPES_OPENSSL`
+  (without the directive there is no TLS backend and the `ptTls` suite does not run). It is
+  not redundant with the previous one — it is the only way to exercise the 1.1/3.x
+  divergences, and **two have already bitten for real**:
+
+  ```bash
+  docker run --rm -v "$PWD:/work" debian:bullseye bash -c '
+    apt-get update -qq && apt-get install -y -qq fpc libssl1.1 >/dev/null
+    cd /work/tests/Integration/fpc
+    fpc -MDelphi -Sh -B -dPIPES_OPENSSL -Fu../../../src -Fi../../../src \
+      -FU/tmp -o/tmp/t PipesIntegrationTestsFpc.lpr
+    /tmp/t --all --format=plain'
+  ```
+
+  1. The **symbol fallback** of the peer-certificate getter, which 3.x renamed
+     (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). With both versions
+     installed the loader would pick 3.x and the old branch would never run.
+  2. **Validation by IP address** (`Tls_ValidaServidorPorIp_Aceita`). An IP address lives in
+     a SAN of type `iPAddress` and requires `X509_VERIFY_PARAM_set1_ip_asc`; on 3.x
+     `SSL_set1_host` accepts an IP literal and masks the difference. That test **passes on
+     3.x with or without the fix** — only the 1.1 image makes it a real guard. History in
+     [`docs/ARCHITECTURE.en.md`](docs/ARCHITECTURE.en.md) §13.9.
 
 The integration suite includes shutdown stress (Stop under flood < 2 s), a handle/fd leak
 detector under repeated abrupt drops, and RPC correlation under concurrency.

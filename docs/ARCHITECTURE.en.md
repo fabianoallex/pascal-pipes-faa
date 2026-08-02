@@ -759,18 +759,16 @@ breaking anything in use.
 
 ## 13. Delphi Android (`ptTcp`/`ptTls`)
 
-> **Status: A0/A1/A3 VERIFIED on a device; A2 (TLS) implemented but NOT verified.**
-> This section began as the rationale of a feasibility investigation (a throwaway spike,
-> outside the repo) and became the "why" history of the implementation. The
-> `tests/Android/` suite ran on a real device with **8 ok, 0 failures** â€” numbers in Â§13.8.
-> The three `ptTls` cases were SKIPPED for lack of the PKI and the OpenSSL libraries on the
-> device, so **nothing about A2 is confirmed at runtime**: all that is known is that the
-> branch compiles. Â§13.7 records what the implementation changed relative to the original
-> proposal.
+> **Status: A0-A3 VERIFIED on a real device.** This section began as the rationale of a
+> feasibility investigation (a throwaway spike, outside the repo) and became the "why"
+> history of the implementation. The `tests/Android/` suite runs **11 ok, 0 failures, 0
+> skipped** on a device — numbers in §13.8. §13.7 records what the implementation changed
+> relative to the original proposal; §13.9, the portability bug that verifying `ptTls` on
+> the device revealed and that neither of the two desktop compilers would have exposed.
 
 Delphi Android is a **third platform axis**, alongside Delphi/Win64 and FPC/POSIX â€” not an
 extension of either. The doubt that motivated the investigation: the blocking-read
-interruption invariant (Â§5) depends on platform-specific mechanisms (`CancelIoEx` on
+interruption invariant (§5) depends on platform-specific mechanisms (`CancelIoEx` on
 Windows, self-pipe+`fpPoll` on Linux); there was no guarantee a viable equivalent existed
 on Android without falling back to polling.
 
@@ -781,7 +779,7 @@ exchanging local IPC" scenario to justify a Named Pipe/UDS the way there is on
 Windows/Linux. Exposing a UDS to another process/app runs into sandboxing (SELinux, scoped
 storage). The real mobile use case is a network client talking to the same existing
 Windows/Linux server (the same rationale as the store POS over VPN that motivated `ptTcp`,
-Â§7 "Later milestones"), not local IPC.
+§7 "Later milestones"), not local IPC.
 
 `ptLocal` does not fall through to any backend on Android: `PipeValidateAddress` refuses
 with a message that says what to do ("use `ptTcp` or `ptTls`"). That beats the silent
@@ -822,7 +820,7 @@ The original proposal was to build the backend **on top of** `TSocket`, to avoid
 bind/connect/accept against `Posix.*`. At implementation time that was inverted, for three
 concrete reasons:
 
-1. **The interruption mechanism comes out weaker** (Â§13.4). `TSocket.Close` closes the fd
+1. **The interruption mechanism comes out weaker** (§13.4). `TSocket.Close` closes the fd
    immediately, from another thread, with the reader possibly still inside `recv` â€” the
    recycled-fd race the rest of the library deliberately avoids by deferring the `close` to
    the destructor (`Pipes.Transport.Posix.pas`, header invariants).
@@ -918,9 +916,9 @@ Deployment remains the job of whoever builds the APK â€” see `samples/EchoA
 | # | Milestone | Content | Status |
 |---|-----------|---------|--------|
 | A0 | `pipes.inc` | `PIPES_ANDROID` define tested before `POSIX`; automatic `PIPES_OPENSSL` | done, verified on device |
-| A1 | `Pipes.Transport.Android.pas` | `ptTcp` backend over `Posix.*` + local `poll`; self-pipe interruption (Â§13.4); endpoint AND listener; `ptLocal` refused with its own message | done, verified on device |
-| A2 | `ptTls` | OpenSSL with no opt-in, Android sonames, system trust store (Â§13.5) | implemented; **NOT verified** (see Â§13.9) |
-| A3 | Sample + tests | `samples/EchoAndroid` (FMX) and `tests/Android` (device suite, loopback) | done; suite runs 8/8 on `ptTcp` |
+| A1 | `Pipes.Transport.Android.pas` | `ptTcp` backend over `Posix.*` + local `poll`; self-pipe interruption (§13.4); endpoint AND listener; `ptLocal` refused with its own message | done, verified on device |
+| A2 | `ptTls` | OpenSSL with no opt-in, Android sonames, system trust store (§13.5) | done, verified on device (§13.9) |
+| A3 | Sample + tests | `samples/EchoAndroid` (FMX) and `tests/Android` (device suite, loopback) | done; suite runs 11/11 |
 
 Dependencies: T5 (done) â†’ A0 â†’ A1 â†’ A2 â†’ A3. An axis independent of P0-P5/H0-H4/S0-S4/
 F0-F3 (pub/sub, heartbeat, stats, failover) â€” nothing there changes, and the Android backend
@@ -935,9 +933,9 @@ plan by carelessness.
 
 | Item | Proposal (spike) | Implementation | Why |
 |------|------------------|----------------|-----|
-| Backend | `System.Net.Socket.TSocket` | `Posix.*` units + local `poll()` | Â§13.3 |
-| Interruption | `TSocket.Close(False)` | self-pipe + `poll`, fd closed only in the destructor | Â§13.4 |
-| Listener | out of scope | implemented | Â§13.1 (enables the loopback test) |
+| Backend | `System.Net.Socket.TSocket` | `Posix.*` units + local `poll()` | §13.3 |
+| Interruption | `TSocket.Close(False)` | self-pipe + `poll`, fd closed only in the destructor | §13.4 |
+| Listener | out of scope | implemented | §13.1 (enables the loopback test) |
 
 None of this weakens what the spike concluded: the answer to the central question ("is there
 a viable equivalent to `CancelIoEx`/`fpPoll` on Android without falling back to polling?")
@@ -963,43 +961,84 @@ What only the device can answer is in `tests/Android/LEIA-ME.md`, with the numer
 for each case â€” in particular the 250 ms on the read unblock, which is the number that
 separates "woke on an event" from "woke on a timeout".
 
-**Reference run (real device, 2026-08-01): 8 ok, 0 failures, 3 skipped.**
+**Reference run (real device, 2026-08-01): 11 ok, 0 failures, 0 skipped.**
 
 | Case | Measured | Ceiling |
 |------|----------|---------|
-| `CloseAbort` unblocks `Read` | **1 ms** | 250 ms |
-| `Disconnect` on an idle connection | 2 ms | 2000 ms |
+| `CloseAbort` unblocks `Read` | **0-2 ms** | 250 ms |
+| `Disconnect` on an idle connection | 1 ms | 2000 ms |
 | `Stop` on an idle connection | 6 ms | 2000 ms |
-| `Stop` under heavy traffic (1043 msgs seen) | 1 ms | 2000 ms |
+| `Stop` under heavy traffic | 3 ms | 2000 ms |
 
-The first is the result that backs Â§13.4: **1 ms** is the signature of waking on an event.
-Had the mechanism regressed to `SO_RCVTIMEO`, the number would be on the order of the
-configured timeout (the spike measured ~205 ms for a 200 ms timeout) and the case would
-fail. The other three confirm that shutdown does not depend on draining anything â€” `Stop`
-under load cut the flow with 1043 of the 2000 messages seen, which is the correct behaviour.
+The first is the result that backs §13.4: **single-digit milliseconds** is the signature of
+waking on an event. Had the mechanism regressed to `SO_RCVTIMEO`, the number would be on the
+order of the configured timeout (the spike measured ~205 ms for a 200 ms timeout) and the
+case would fail. The other three confirm that shutdown does not depend on draining anything
+— `Stop` under load cuts the flow mid-stream, with a fraction of the 2000 messages seen,
+which is the correct behaviour.
+
+The `ptTls` cases closed with the right and **distinct** verdicts: an unknown CA yields
+`X509 err 20` (`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`) on the client; a self-signed client
+under mTLS is refused by the SERVER, and on the client side that raises nothing — under
+TLS 1.3 the client completes its handshake before the server evaluates its certificate, so
+the refusal shows up as the message never arriving. It is the same asymmetry already
+documented for Schannel in §7.
 
 The remaining cases (`ptLocal` refusal, loopback echo, request/reply, abrupt drop notifying
 the server) passed with no number worth recording.
 
-### 13.9 What has not been verified yet: `ptTls` on the device
+### 13.9 What device verification found: IP-SAN broken on 1.1.1
 
-The suite's three `ptTls` cases came out **SKIPPED**, not green. They look for the PEMs in
-`TPath.GetDocumentsPath` and did not find them. So of A2 all that is known is that the
-branch compiles; no claim about TLS on Android is confirmed at runtime â€” not the library
-loading, not the unknown-CA verdict, not `ApplyDefaultTrustStore`.
+Closing A2 on the device was not paperwork — it exposed a **real portability bug** in the
+OpenSSL backend, one that also affects Linux and Windows with OpenSSL 1.1.1 and that neither
+of the two desktop compilers would have revealed.
 
-A manual attempt with `ptTls` from `EchoAndroid` showed the expected failure mode and is
-worth recording: the server logged `connected`/`disconnected` **with no protocol error at
-all**. That pinpoints the failure â€” `TlsPipeConnect` does the TCP first and only then builds
-the TLS on top, so the client died loading OpenSSL, before sending the ClientHello. Had the
-ClientHello gone out, the server would have read `0x16 0x03 0x01â€¦` instead of the `NPF1`
-magic and logged a protocol error.
+Connecting over `ptTls` by **IP address** failed with `X509_V_ERR_HOSTNAME_MISMATCH`
+(err 62) even with `IP:127.0.0.1` in the certificate's SAN. The cause: `SetupSsl` only
+called `SSL_set1_host`, which compares against **DNS** SANs. An IP address lives in a SAN of
+type `iPAddress`, and only `X509_VERIFY_PARAM_set1_ip_asc` consults it.
 
-Closing A2 needs four things, none of them library code:
+Why nobody had seen it: **on 3.x the distinction does not appear** — `set1_host` accepts an
+IP literal. The desktop uses 3.x, and the IP-SAN test passed there; the unit header even
+recorded that as "measured, not presumed". Android is the only platform in the project where
+the available OpenSSL is 1.1.1, and it is the one that brought the defect to light.
 
-1. `libcrypto.so` and `libssl.so` for the device's ABI, in the project's Deployment;
-2. the test PKI copied into the app's documents folder;
-3. a server certificate whose SAN covers the address in use â€” the versioned
-   `tests/pki/srv_cert.pem` has `DNS:localhost, IP:127.0.0.1`, so connecting by LAN IP fails
-   validation (correctly). The device suite does not suffer from this because it is loopback;
-4. a client certificate configured, if the server on the other side turns on mTLS.
+`SetupSsl` now tries the IP first and falls back to hostname. `set1_ip_asc` returns 0 when
+the string is not a valid IP, which doubles as the detector and avoids writing an IP parser
+— working the same for IPv4 and IPv6. Both new symbols have existed since 1.0.2 with the
+same signature in 1.1.1 and 3.x, within the unit's binding rule.
+
+**A lesson about method.** The question the device suite answered was not "does Android
+work?" but "what can only Android ask?". A new platform axis is worth less for what it adds
+than for what it **disproves** — here, an assumption about the OpenSSL API that two
+compilers and two green suites had been confirming by accident.
+
+The regression guard now lives on the desktop, but it took a second finding to get there:
+running the suite on `debian:bullseye` (1.1.1) with the fix reverted still passed 96/96. The
+TLS harness turns `SkipServerVerification` on for nearly every case, and the only case with
+verification active asserts **refusal**. There was no case requiring **success** with a
+correct `CaFile` — so validation that started refusing *everything* would stay green.
+`Tls_ValidaServidorPorIp_Aceita` and `Tls_ValidaServidorPorNome_Aceita` cover both branches
+of the fix; the IP one only bites under 1.1.1, which makes the bullseye run part of its
+contract rather than an extra.
+
+### 13.10 Negative TLS tests: four ways to pass without proving anything
+
+The device suite was written from scratch and reintroduced, in four variants, the trap §7
+already recorded for the desktop TLS tests: a negative case that asserts only "an exception
+happened" is satisfied by ANY failure, including the ones that mean the test never ran. Each
+one surfaced only because something else broke first and the case stayed green:
+
+| Actual failure | What the case "proved" | Guard |
+|---|---|---|
+| `libssl.so` missing | certificate refusal | `ExigeVeredictoDeTls` |
+| PEM not deployed (`gemea_ca_cert.pem`) | unknown-CA refusal | `ExigePkiArquivos` |
+| IP validation broken | server refusing the client | verdict must come from the right side |
+| no message arrives | mTLS refused | only valid if the handshake happened |
+
+The pattern that closes all four: **a negative test must assert WHICH refusal happened**,
+not that one did. A TLS case that passes because TLS does not exist is worse than a red one
+— it lies about coverage, and it disappears from view exactly when the regression is most
+serious. The corollary, which cost a full session: wherever there is a negative case, there
+must be the matching **positive** one, or a breakage that makes everything refuse stays
+green.
