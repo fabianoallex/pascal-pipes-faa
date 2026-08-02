@@ -311,17 +311,27 @@ openssl x509 -in tools/pki-android/srv_cert.pem -noout -ext subjectAltName
 
 ### Levando os PEMs para o aparelho
 
-Este `.dproj` **não** traz entradas de Deployment para a PKI, de propósito:
-elas apontariam para um diretório que não existe num clone novo, e quebrariam o
-deploy de quem só quer ver o `ptTcp` funcionando. São quatro cliques no IDE:
+O `.dproj` **já traz** as entradas de Deployment de `ca_cert.pem` e das duas
+bibliotecas do OpenSSL, apontando para `tools/pki-android/` e
+`tools/openssl-android/`. Esses diretórios são ignorados pelo git (`/tools/*/`),
+então num clone novo eles não existem — e isso **não quebra o deploy**: arquivo
+de Deployment ausente gera apenas `Local file ... not found. Skipping
+deployment` (`$(BDS)\bin\CodeGear.Deployment.Targets`, alvo `_DeployFiles`),
+porque as entradas não são `Required`. Quem só quer ver o `ptTcp` funcionando
+ignora os avisos; quem quer `ptTls` gera os pré-requisitos e eles passam a ser
+encontrados.
 
-1. `Project > Deployment`, plataforma **Android64**, configuração **Debug**.
-2. *Add Files*: `tools\pki-android\ca_cert.pem`,
-   `tools\pki-android\android-001_cert.pem`,
-   `tools\pki-android\android-001_key.pem`.
-3. Em cada um, *Remote Path* = `assets\internal\`.
-4. Renomeie o *Remote Name* dos dois últimos para `cli_cert.pem` e
-   `cli_key.pem` — são os nomes que `ConfiguraTls` procura.
+Falta apenas o certificado de CLIENTE, para mTLS. Adicione no IDE
+(`Project > Deployment`, **Android64**, **Debug**), com *Remote Path*
+`assets\internal\`:
+
+- `..\..\tools\pki-android\cli_cert.pem`
+- `..\..\tools\pki-android\cli_key.pem`
+
+`cli_*` são os nomes que o `ConfiguraTls` procura. O `gerar-pki.sh` batiza os
+certificados de cliente pelo CN (`android-001_cert.pem`), então copie-os com
+esses nomes — é mais simples que editar a coluna *Remote Name*, e mantém o
+sample funcionando com qualquer PKI.
 
 O `System.StartUpCopy` do `.dpr` copia `assets/internal` para a pasta de
 documentos do app no primeiro start; é de lá que o sample lê. O log da tela diz
