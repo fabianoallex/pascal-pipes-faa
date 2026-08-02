@@ -371,6 +371,28 @@ OpenSSL aponta para um `OPENSSLDIR` que não existe no Android, então
 do Android **não** entram — desde o Android 7 elas ficam num store separado,
 válido só para quem usa a API de rede do próprio sistema.
 
+## Verificado em aparelho e rede reais (2026-08-02)
+
+Celular Android (OpenSSL 1.1.1) contra `EchoServer` no Windows (SChannel), pelo
+IP da LAN — backends diferentes nas duas pontas:
+
+| Cenário | Resultado |
+|---|---|
+| `ptTcp` | mensagens trafegam |
+| `ptTls`, validando o servidor pelo **IP** do SAN | conecta e ecoa |
+| `ptTls` + mTLS, cliente **com** certificado | aceito, eco de volta |
+| `ptTls` + mTLS, cliente **sem** certificado | recusado — `mTLS: o cliente nao apresentou certificado` |
+
+O caso negativo veio de graça: o app antigo (ainda sem `cli_cert.pem`) ficou
+tentando reconectar e o servidor recusou as 12 tentativas, todas com o veredito
+correto. E elas **não viraram laço quente** — ficaram espaçadas pelo
+`ReconnectDelayMs` mesmo com recusa imediata, que é o que o teste
+`Mtls_AutoReconnectRecusado_NaoViraLacoQuente` protege no desktop.
+
+A validação por IP é o caminho que estava quebrado no OpenSSL 1.1.1 até
+`docs/ARQUITETURA.md` §13.9 — sem aquela correção, este cenário daria
+`X509_V_ERR_HOSTNAME_MISMATCH`.
+
 ## Segundo plano derruba a conexão — projete para isso
 
 Observado em aparelho real (Samsung, Android 15): basta trocar de app — abrir o

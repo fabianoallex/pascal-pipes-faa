@@ -762,7 +762,9 @@ breaking anything in use.
 > **Status: A0-A3 VERIFIED on a real device.** This section began as the rationale of a
 > feasibility investigation (a throwaway spike, outside the repo) and became the "why"
 > history of the implementation. The `tests/Android/` suite runs **11 ok, 0 failures, 0
-> skipped** on a device — numbers in §13.8. §13.7 records what the implementation changed
+> skipped** on a device — numbers in §13.8 —, and the `EchoAndroid` sample closes the real
+> use case: phone against a Windows server over the LAN IP, with `ptTls` and mTLS, accepting
+> the legitimate client and refusing the one with no certificate. §13.7 records what the implementation changed
 > relative to the original proposal; §13.9, the portability bug that verifying `ptTls` on
 > the device revealed and that neither of the two desktop compilers would have exposed.
 
