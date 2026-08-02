@@ -1,6 +1,6 @@
 program EchoServer;
 
-{ Servidor de eco console: escuta no pipe dado (padrao 'pipes_faa_echo'),
+{ Servidor de eco console: escuta no endereco dado (padrao 'pipes_faa_echo'),
   devolve cada mensagem recebida com o prefixo 'eco:' e responde requests
   sincronos (Request/RequestText do cliente) da mesma forma. Loga conexoes,
   desconexoes e erros. Enter encerra.
@@ -12,7 +12,17 @@ program EchoServer;
     FPC:    fpc -MDelphi -Sh -Fu..\..\src EchoServer.dpr   (ou lazbuild EchoServer.lpi)
     Delphi: abrir EchoServer.dproj no IDE
 
-  Uso: EchoServer [nome-do-pipe] }
+  Uso: EchoServer [endereco] [tcp]
+
+    EchoServer                    ptLocal em 'pipes_faa_echo' (padrao)
+    EchoServer meu_pipe           ptLocal em 'meu_pipe'
+    EchoServer *:5300 tcp         ptTcp em todas as interfaces, porta 5300
+
+  O segundo parametro e' opcional e mantem o comportamento antigo intacto: sem
+  ele, ptLocal como sempre. Ele existe para o sample EchoAndroid, que so' fala
+  ptTcp/ptTls — um celular nao alcanca Named Pipe nem Unix Domain Socket.
+  '*' e' atalho de '0.0.0.0'; '127.0.0.1:5300' escutaria SO' na propria maquina
+  e o celular nao chegaria. }
 
 {$IFDEF FPC}
   {$MODE DELPHI}
@@ -52,7 +62,7 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    procedure Run(const APipeName: string);
+    procedure Run(const AAddress: string; ATransport: TPipeTransport);
   end;
 
 constructor TEchoServerApp.Create;
@@ -119,16 +129,25 @@ begin
   Log(Format('[conn %d] erro: %s', [AConnId, AError]));
 end;
 
-procedure TEchoServerApp.Run(const APipeName: string);
+procedure TEchoServerApp.Run(const AAddress: string;
+  ATransport: TPipeTransport);
 begin
-  FServer := TNamedPipeServer.Create(APipeName);
+  FServer := TNamedPipeServer.Create(AAddress);
+  FServer.Transport := ATransport;
+  if ATransport = ptTcp then
+    // Rede movel/Wi-Fi que dorme derruba conexao ociosa em silencio; sem isto o
+    // servidor acumularia conexao zumbi de celular que saiu de alcance.
+    FServer.HeartbeatIntervalMs := 15000;
   FServer.OnMessage := OnMsg;
   FServer.OnRequest := OnReq;
   FServer.OnClientConnected := OnConn;
   FServer.OnClientDisconnected := OnDisc;
   FServer.OnError := OnErr;
   FServer.Listen; // nao-blocante: acceptor + readers em threads proprias
-  Log('escutando em "' + APipeName + '" - Enter encerra');
+  if ATransport = ptTcp then
+    Log('escutando em "' + AAddress + '" (ptTcp) - Enter encerra')
+  else
+    Log('escutando em "' + AAddress + '" (ptLocal) - Enter encerra');
   Readln;
   FServer.Stop; // sincrono: join de tudo, drena callbacks em voo
   Log('encerrado.');
@@ -136,18 +155,22 @@ end;
 
 var
   App: TEchoServerApp;
-  PipeName: string;
+  Address: string;
+  Transport: TPipeTransport;
 begin
   {$IFNDEF FPC}
   ReportMemoryLeaksOnShutdown := True;
   {$ENDIF}
   if ParamCount >= 1 then
-    PipeName := ParamStr(1)
+    Address := ParamStr(1)
   else
-    PipeName := 'pipes_faa_echo';
+    Address := 'pipes_faa_echo';
+  Transport := ptLocal;
+  if (ParamCount >= 2) and SameText(ParamStr(2), 'tcp') then
+    Transport := ptTcp;
   App := TEchoServerApp.Create;
   try
-    App.Run(PipeName);
+    App.Run(Address, Transport);
   finally
     App.Free;
   end;

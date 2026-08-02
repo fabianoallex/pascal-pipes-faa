@@ -4,8 +4,8 @@
 > único transporte — ver `Transport` abaixo e `README.md`, seção "Compatibilidade com a API
 > anterior".
 
-Biblioteca multiplataforma de comunicação entre processos para **Delphi 12+ (Win64)** e
-**FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**. API de alto nível (`TPipeServer`/
+Biblioteca multiplataforma de comunicação entre processos para **Delphi 12+ (Win64 e
+Android)** e **FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**. API de alto nível (`TPipeServer`/
 `TPipeClient`) que abstrai totalmente as chamadas nativas do SO, com três alcances
 selecionados pela property `Transport`: `ptLocal` (Named Pipe/UDS, padrão), `ptTcp`
 (rede) e `ptTls` (rede não confiável, com mTLS opcional). Racional de design completo em
@@ -39,8 +39,18 @@ implementar qualquer milestone novo.
   inventada. Racional completo em `docs/ARQUITETURA.md` §10.
 - **Backend `ptTls`:** TCP + TLS via `Pipes.Transport.Tls.pas`, fachada neutra que delega
   a `Pipes.Transport.Schannel.pas` (Windows, SSPI nativo) ou `Pipes.Transport.OpenSSL.pas`
-  (POSIX e Windows opt-in), com mTLS suportado nos dois backends. Milestones T0-T5 em
-  `docs/ARQUITETURA.md`.
+  (POSIX e Windows opt-in; **Android sem opt-in** — não há Schannel lá), com mTLS
+  suportado nos dois backends. Milestones T0-T5 em `docs/ARQUITETURA.md`.
+- **Backend Android (`PIPES_ANDROID`, milestones A0-A3):** terceiro eixo de plataforma, só
+  `ptTcp`/`ptTls` (`ptLocal` é recusado com mensagem própria). `Pipes.Transport.Android.pas`
+  usa as units `Posix.*` da RTL do Delphi + `poll()` declarado localmente, e a interrupção
+  de leitura é **self-pipe + poll, idêntica ao backend Linux** — NÃO `TSocket.Close`, que
+  fecharia o fd de outra thread. `pipes.inc` testa `ANDROID` ANTES de cair em
+  `PIPES_POSIX` (que é FPC-only). Duas armadilhas registradas: o `addrinfo` do bionic tem
+  `ai_canonname` antes de `ai_addr` (ao contrário do glibc — por isso o backend usa o
+  `Posix.NetDB` e não o `TPipeAddrInfo` de `Tcp.pas`), e o trust store padrão do OpenSSL
+  não existe no Android. Racional completo em `docs/ARQUITETURA.md` §13, incluindo §13.7
+  com o que a implementação inverteu em relação à proposta do spike.
 - **Pub/sub (`Pipes.Topics.pas`, milestones P0-P4):** roteamento por tópico sobre a conexão
   viva — NÃO é broker (sem durabilidade, ack, QoS ou fila; isso é o `pascal-amqp-faa`).
   Kinds 4-6 do NPF1, tópico no INÍCIO DO PAYLOAD (nunca nos bytes Reserved, senão `Length`
@@ -150,6 +160,7 @@ src/pipes.inc                    src/Pipes.Threading.pas       src/Pipes.Types.p
 src/Pipes.Base.pas                src/Pipes.Framing.pas         src/Pipes.Transport.pas
 src/Pipes.Topics.pas             (pub/sub: nomes, curingas, envelope — unit PURA)
 src/Pipes.Transport.Windows.pas  src/Pipes.Transport.Posix.pas
+src/Pipes.Transport.Android.pas  (Delphi/Android: ptTcp/ptTls sobre Posix.* + poll)
 src/Pipes.Transport.Tcp.pas      src/Pipes.Transport.Tls.pas
 src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
 src/Pipes.Client.pas             src/Pipes.Server.pas
@@ -157,13 +168,18 @@ src/Pipes.Json.pas                (bytes<->JSON OPCIONAL: System.JSON/fpjson —
 tests/Unit (Threading/Framing/Topics/Address)
   + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
-samples/ (16 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
+samples/ (17 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 
 Todo `.dproj`/`.lpi` novo (teste, sample) deve ser registrado nos DOIS grupos da
 raiz: `Pipes.groupproj` (Projects + Targets + CallTarget de Build/Clean/Make) e
-`Pipes.lpg` (Target com BuildModes), como no pascal-amqp-faa.
+`Pipes.lpg` (Target com BuildModes), como no pascal-amqp-faa. **Exceção: projetos
+Android** (`tests/Android`, `samples/EchoAndroid`) entram no `Pipes.groupproj` com alvo
+próprio mas FORA dos CallTarget agregados — são os únicos que não compilam para Win64, e
+um grupo inteiro não deve falhar em quem não tem o SDK do Android. Não têm `.lpi`: o FPC
+não compila para Android neste projeto.
 
 ## Milestones e agente recomendado (economia de tokens)
 
@@ -171,6 +187,17 @@ Todos os milestones abaixo — M0-M8 (escopo original, `ptLocal`), T0-T5 (`ptTcp
 P0-P4 (pub/sub por tópico), os dois últimos grupos detalhados em `docs/ARQUITETURA.md` §7 e
 §9 — estão **concluídos**. A tabela fica como referência de sequenciamento e alocação de
 agente para o próximo milestone que surgir, não como trabalho pendente.
+
+**A0-A3 (Delphi Android) estão verificados em aparelho real**: `tests/Android` roda
+11 ok / 0 falhas / 0 pulados. O desbloqueio de leitura mede milissegundos de um dígito
+(teto 250 ms), confirmando que o self-pipe + `poll` acorda por evento também no Android.
+Fechar A2 revelou um bug de portabilidade real — validação por IP-SAN quebrada no OpenSSL
+1.1.1, que o desktop (3.x) mascarava; ver `docs/ARQUITETURA.md` §13.9. Números da rodada
+em §13.8, e §13.10 registra as quatro formas de um teste negativo de TLS passar sem provar
+nada, todas encontradas nessa verificação.
+
+O Delphi CE desta máquina recusa build por linha de comando (inclusive `dccaarm64`), então
+qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 
 | # | Milestone | Agente | Status |
 |---|-----------|--------|--------|
@@ -188,8 +215,11 @@ agente para o próximo milestone que surgir, não como trabalho pendente.
 | H0-H4 | Heartbeat de aplicação (`ptTcp`/`ptTls`): `TPipeFrame.Ping`, `TPipeHeartbeatThread`, `HeartbeatIntervalMs`, detecção de zumbi nos dois sentidos — ver `docs/ARQUITETURA.md` §10 | sonnet | concluído |
 | S0-S4 | Métricas/observabilidade: `Stats`/`ConnectionStats`, `PipeAtomicAdd64`, latência de Request — ver `docs/ARQUITETURA.md` §11 | sonnet | concluído |
 | F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
+| A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | concluído, verificado em device (11/11) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
+A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
+S0-S4/F0-F3.
 
 ## Verificação por milestone
 
@@ -212,3 +242,16 @@ alternativo quando o primário cai em definitivo, uma sessão DURÁVEL num alter
 PRÓXIMA falha voltar a preferir o primário (não só avançar para o próximo da lista), e
 `MaxReconnectAttempts` conta tentativas contra QUALQUER endereço num teto só, não um por
 endereço.
+
+A0-A3 não têm par dual-compiler tradicional — FPC não compila para Android neste projeto,
+e o Delphi CE desta máquina não compila por linha de comando. O que a máquina de
+desenvolvimento garante: FPC/Win64 e FPC/Linux verdes (A0 mexeu no `pipes.inc`, que todo
+mundo inclui) e `Pipes.Transport.Tls.pas` compilando no FPC com `-dPIPES_OPENSSL` (o ramo
+que A2 alterou). O resto é em device/emulador real, rodando `tests/Android` — que já
+implementa cada critério e imprime os números medidos: `CloseAbort` destrava um `Read`
+bloqueado em outra thread em **milissegundos** (o caso reprova acima de 250ms, que é o que
+separa "acordou por evento" de "acordou por timeout de recv"), inclusive com o app tendo
+passado por segundo plano; certificado de CA desconhecida/auto-assinado sob mTLS têm
+veredito correto e distinto no backend OpenSSL (mesmo critério de T4/T5); e `Stop`/
+`Disconnect` concluem em < 2s com conexão ociosa e sob tráfego intenso — mesmo teto usado
+por M7/H0-H4.

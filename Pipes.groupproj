@@ -9,6 +9,19 @@
         <Projects Include="tests\Integration\Pipes.IntegrationTests.dproj">
             <Dependencies/>
         </Projects>
+        <!-- Projetos Android (milestone A3). Aparecem no grupo e tem alvo
+             proprio, mas ficam FORA dos CallTarget de Build/Clean/Make: sao os
+             unicos que nao compilam para Win64, e um grupo inteiro nao deve
+             falhar em quem nao tem o SDK do Android configurado. Para
+             construi-los, use o alvo individual (ou o Build do proprio projeto
+             no IDE). Nao ha .lpi correspondente em Pipes.lpg — o FPC nao
+             compila para Android neste projeto. -->
+        <Projects Include="tests\Android\PipesAndroidDeviceTests.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="samples\EchoAndroid\EchoAndroid.dproj">
+            <Dependencies/>
+        </Projects>
         <Projects Include="samples\EchoServer\EchoServer.dproj">
             <Dependencies/>
         </Projects>
@@ -359,6 +372,26 @@
     <Target Name="ClienteRemoto:Make">
         <MSBuild Projects="samples\GatewaySeguro\ClienteRemoto.dproj" Targets="Make"/>
     </Target>
+    <Target Name="PipesAndroidDeviceTests">
+        <MSBuild Projects="tests\Android\PipesAndroidDeviceTests.dproj"/>
+    </Target>
+    <Target Name="PipesAndroidDeviceTests:Clean">
+        <MSBuild Projects="tests\Android\PipesAndroidDeviceTests.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="PipesAndroidDeviceTests:Make">
+        <MSBuild Projects="tests\Android\PipesAndroidDeviceTests.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="EchoAndroid">
+        <MSBuild Projects="samples\EchoAndroid\EchoAndroid.dproj"/>
+    </Target>
+    <Target Name="EchoAndroid:Clean">
+        <MSBuild Projects="samples\EchoAndroid\EchoAndroid.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EchoAndroid:Make">
+        <MSBuild Projects="samples\EchoAndroid\EchoAndroid.dproj" Targets="Make"/>
+    </Target>
+    <!-- PipesAndroidDeviceTests e EchoAndroid ficam fora dos tres alvos
+         agregados abaixo de proposito (ver o comentario no ItemGroup). -->
     <Target Name="Build">
         <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoJsonServer;EchoJsonClient;EchoFailoverClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PingPong;PongCheck;PainelLoja;MonitorTopicos;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente;ServicoLocal;GatewaySeguro;ClienteRemoto"/>
     </Target>

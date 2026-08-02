@@ -6,15 +6,15 @@
 > apenas um dos transportes suportados — a API antiga segue funcionando (ver
 > [Compatibilidade](#compatibilidade-com-a-api-anterior)).
 
-Biblioteca multiplataforma de **comunicação entre processos** para **Delphi 12+ (Win64)** e
-**FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**, com uma única base de código e uma API de
-alto nível que abstrai completamente as chamadas nativas do sistema operacional.
+Biblioteca multiplataforma de **comunicação entre processos** para **Delphi 12+ (Win64 e
+Android)** e **FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**, com uma única base de código e
+uma API de alto nível que abstrai completamente as chamadas nativas do sistema operacional.
 
 A mesma API atende três alcances, trocando uma property:
 
 | `Transport` | Alcance | Por baixo |
 |---|---|---|
-| `ptLocal` (padrão) | mesma máquina | Named Pipe (Windows) / Unix Domain Socket (Linux) |
+| `ptLocal` (padrão) | mesma máquina | Named Pipe (Windows) / Unix Domain Socket (Linux) — **não existe no Android** |
 | `ptTcp` | rede | socket TCP, com keepalive ligado por padrão |
 | `ptTls` | rede não confiável | o mesmo TCP com TLS, e mTLS opcional por certificado |
 
@@ -76,6 +76,27 @@ funcionam. `TCP_NODELAY` é ligado (o atraso do Nagle penalizaria muito `Request
 > (ACL do Windows, permissão de arquivo do UDS). Um listener em `0.0.0.0` aceita qualquer
 > um que alcance a porta — autenticar é responsabilidade da aplicação. É esse buraco que
 > `ptTls` fecha.
+
+#### Android
+
+Android é um terceiro eixo de plataforma (Delphi, `Android64`/`Android32`), ao lado de
+Delphi/Win64 e FPC/POSIX. A API é a mesma; muda o que está disponível:
+
+- **`ptTcp` e `ptTls` funcionam**, cliente e servidor. `ptLocal` **não existe** — app
+  Android é single-process e expor um Unix Domain Socket esbarra em sandboxing. Usá-lo
+  levanta `EPipeError` dizendo o que fazer, em vez de falhar obscuramente adiante.
+- **`ptTls` é sempre OpenSSL** (Schannel é Windows-only), e por isso é o único alvo onde
+  `PIPES_OPENSSL` é ligado automaticamente. Você precisa empacotar `libcrypto.so` e
+  `libssl.so` por ABI no Deployment do app — ver `samples/EchoAndroid/LEIA-ME.md`.
+- **Permissão `INTERNET` no manifesto** é obrigatória, e `ptTcp` (texto claro) ainda exige
+  `usesCleartextTraffic` do Android 9 em diante. Mais um motivo para preferir `ptTls`.
+- Recomendado num celular: `DispatchMode := pdmMainThread` (eventos chegam pela thread
+  principal, dá para mexer na UI direto) e `Connect` fora da thread principal, já que ele
+  bloqueia até o prazo.
+
+Verificação é em aparelho: não há par dual-compiler (o FPC não compila para Android neste
+projeto). A suíte de device fica em `tests/Android/`. Racional completo em
+[`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §13.
 
 ### TLS (`ptTls`)
 
@@ -592,7 +613,10 @@ marcados `deprecated` só depois que samples e testes migrarem.
 
 - **EchoServer / EchoClient** — console, mesmo fonte nos dois compiladores. Rode o servidor,
   depois o cliente: texto simples usa `SendText` (eco assíncrono via `OnMessage`); linhas
-  começando com `?` usam `RequestText` (RPC).
+  começando com `?` usam `RequestText` (RPC). Os dois aceitam um segundo parâmetro opcional
+  `tcp` (`EchoServer.exe *:5300 tcp`, `EchoClient.exe 192.168.0.10:5300 tcp`) para trocar
+  `ptLocal` por `ptTcp` — é como o **EchoAndroid** fala com eles, já que celular não alcança
+  Named Pipe nem Unix Domain Socket. Sem o parâmetro, o comportamento é o de sempre.
 - **EchoJson** (`EchoJsonServer` + `EchoJsonClient`) — o mesmo eco, mas com payload JSON via
   `Pipes.Json.pas` em vez de texto cru (ver seção "JSON" acima). Digite `item quantidade`
   (ex.: `cafe 2`) para `PipeSendJSON` fire-and-forget — a
@@ -614,6 +638,12 @@ marcados `deprecated` só depois que samples e testes migrarem.
   tráfego cifrado ponta a ponta. Usa a PKI de teste versionada em `tests/pki`; um cliente sem
   certificado (ou um `TPipeClient` comum) é recusado antes de `OnClientConnected` disparar —
   prova de que o mTLS não é decorativo.
+- **EchoAndroid** — cliente **Android** (FMX, só Delphi) do `EchoServer`: conecta por
+  `ptTcp` ou `ptTls`, manda texto e mostra a resposta. Vitrine do que muda num celular —
+  `pdmMainThread`, `Connect` fora da thread principal, `HeartbeatIntervalMs` ligado (Wi-Fi
+  que dorme e NAT de operadora derrubam conexão ociosa em silêncio). O `LEIA-ME.md` do
+  sample tem os passos de IDE que não dá para versionar no `.dproj`: permissão `INTERNET`,
+  `usesCleartextTraffic` e o empacotamento do OpenSSL por ABI.
 - **ChatVcl** — chat com UI (VCL no Delphi, LCL no Lazarus, mesmo fonte): uma instância é o
   servidor-hub (retransmite via `Broadcast`), as outras são clientes. Vitrine do
   `pdmMainThread` (handlers mexem na UI direto) e do `AutoReconnect`.
@@ -803,14 +833,34 @@ marcados `deprecated` só depois que samples e testes migrarem.
   quais backends o build tem.)
 
 - OpenSSL **1.1** (o outro ramo suportado): trocar a imagem por `debian:bullseye`, que traz
-  `libssl 1.1.1` e **não** tem a 3.x. Não é redundante com a anterior — é a única forma de
-  exercitar o fallback de símbolo do getter do certificado do par, que o 3.x renomeou
-  (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). Com as duas versões instaladas
-  o loader escolheria a 3.x e o ramo antigo nunca rodaria; numa imagem onde só existe a 1.1,
-  ele é obrigatório.
+  `libssl 1.1.1` e **não** tem a 3.x, e compilar com `-dPIPES_OPENSSL` (sem a diretiva não
+  há backend TLS e a suíte de `ptTls` não roda). Não é redundante com a anterior — é a
+  única forma de exercitar as divergências 1.1/3.x, e **duas já morderam de verdade**:
+
+  ```bash
+  docker run --rm -v "$PWD:/work" debian:bullseye bash -c '
+    apt-get update -qq && apt-get install -y -qq fpc libssl1.1 >/dev/null
+    cd /work/tests/Integration/fpc
+    fpc -MDelphi -Sh -B -dPIPES_OPENSSL -Fu../../../src -Fi../../../src       -FU/tmp -o/tmp/t PipesIntegrationTestsFpc.lpr
+    /tmp/t --all --format=plain'
+  ```
+
+  1. O **fallback de símbolo** do getter do certificado do par, que o 3.x renomeou
+     (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). Com as duas versões
+     instaladas o loader escolheria a 3.x e o ramo antigo nunca rodaria.
+  2. A **validação por endereço IP** (`Tls_ValidaServidorPorIp_Aceita`). Endereço IP mora em
+     SAN do tipo `iPAddress` e exige `X509_VERIFY_PARAM_set1_ip_asc`; na 3.x o
+     `SSL_set1_host` aceita um literal de IP e mascara a diferença. Esse teste **passa na
+     3.x com ou sem a correção** — só a imagem 1.1 o torna um guarda de verdade. Histórico
+     em [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §13.9.
 
 A suíte de integração inclui stress de encerramento (Stop sob flood < 2 s), detector de
 vazamento de handle/fd em quedas abruptas repetidas e correlação RPC sob concorrência.
+
+**Android não entra nessa suíte**: o FPC não compila para Android neste projeto e um APK não
+tem runner de console, então o backend Android se verifica em aparelho, com a suíte FMX de
+`tests/Android` (loopback: servidor e cliente no mesmo app). Ver `tests/Android/LEIA-ME.md`
+para os limites numéricos de cada caso e a rodada de referência.
 
 ### Testes de TLS
 
@@ -829,7 +879,8 @@ ausente. A ausência da PKI **falha**, não pula.
 ## Estrutura
 
 ```
-src/                 biblioteca (Pipes.Types, Pipes.Framing, Pipes.Transport[.Windows|.Posix],
+src/                 biblioteca (Pipes.Types, Pipes.Framing,
+                     Pipes.Transport[.Windows|.Posix|.Android],
                      Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
                      pub/sub: Pipes.Topics (nomes, curingas e envelope; unit pura)
                      rede: Pipes.Transport.Tcp
@@ -844,8 +895,10 @@ samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional)
                      MonitorTopicos (explorador de pub/sub com UI VCL/LCL),
                      PdvDualScreen (Operador + Cliente),
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
-                     GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo)
+                     GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo),
+                     EchoAndroid (FMX/Android, so Delphi)
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
+tests/Android/       suite de DEVICE do backend Android (loopback; sem par dual-compiler)
 tests/pki/           PKI de TESTE versionada, sem valor de seguranca (ver LEIA-ME)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)
 Pipes.groupproj      grupo de projetos Delphi    Pipes.lpg  grupo Lazarus

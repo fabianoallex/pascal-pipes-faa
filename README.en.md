@@ -7,15 +7,15 @@
 > just one of the supported transports — the old API still works (see
 > [Compatibility](#compatibility-with-the-previous-api)).
 
-Cross-platform **inter-process communication** library for **Delphi 12+ (Win64)** and
-**FPC 3.2.2 / Lazarus (Linux x86_64 and ARM64)**, with a single codebase and a high-level
-API that completely abstracts the native operating system calls.
+Cross-platform **inter-process communication** library for **Delphi 12+ (Win64 and
+Android)** and **FPC 3.2.2 / Lazarus (Linux x86_64 and ARM64)**, with a single codebase and
+a high-level API that completely abstracts the native operating system calls.
 
 The same API covers three reaches, switched by a single property:
 
 | `Transport` | Reach | Under the hood |
 |---|---|---|
-| `ptLocal` (default) | same machine | Named Pipe (Windows) / Unix Domain Socket (Linux) |
+| `ptLocal` (default) | same machine | Named Pipe (Windows) / Unix Domain Socket (Linux) — **does not exist on Android** |
 | `ptTcp` | network | TCP socket, keepalive on by default |
 | `ptTls` | untrusted network | the same TCP with TLS, plus optional certificate-based mTLS |
 
@@ -77,6 +77,28 @@ shortcut for `0.0.0.0`. Resolution goes through `getaddrinfo`, so hostnames and 
 > (Windows ACLs, UDS file permissions). A listener on `0.0.0.0` accepts anyone who can
 > reach the port — authentication is the application's responsibility. That is the hole
 > `ptTls` closes.
+
+#### Android
+
+Android is a third platform axis (Delphi, `Android64`/`Android32`), alongside Delphi/Win64
+and FPC/POSIX. The API is the same; what changes is what is available:
+
+- **`ptTcp` and `ptTls` work**, client and server. `ptLocal` **does not exist** — an Android
+  app is single-process and exposing a Unix Domain Socket runs into sandboxing. Using it
+  raises `EPipeError` telling you what to do, instead of failing obscurely later on.
+- **`ptTls` is always OpenSSL** (Schannel is Windows-only), which is why this is the only
+  target where `PIPES_OPENSSL` is turned on automatically. You have to package
+  `libcrypto.so` and `libssl.so` per ABI in the app's Deployment — see
+  `samples/EchoAndroid/LEIA-ME.md`.
+- **The `INTERNET` permission** is mandatory in the manifest, and `ptTcp` (cleartext) also
+  requires `usesCleartextTraffic` from Android 9 onwards. One more reason to prefer `ptTls`.
+- Recommended on a phone: `DispatchMode := pdmMainThread` (events arrive on the main thread,
+  so you can touch the UI directly) and `Connect` off the main thread, since it blocks until
+  the deadline.
+
+Verification happens on a device: there is no dual-compiler pair (FPC does not compile for
+Android in this project). The device suite lives in `tests/Android/`. Full rationale in
+[`docs/ARCHITECTURE.en.md`](docs/ARCHITECTURE.en.md) §13.
 
 ### TLS (`ptTls`)
 
@@ -294,6 +316,31 @@ WriteLn('avg request latency: ', LCliStats.AvgRequestLatencyMs, ' ms');
   that actually got a reply (timeout and error are excluded: "the server didn't respond"
   is a different question from "how long did it take").
 
+### Address failover (`FailoverAddresses`)
+
+`TPipeClient` only (`TPipeServer` listens on a single `Address`; there is nothing to "fail
+over" to on the accepting side). Addresses are tried in order AFTER `Address`, the primary —
+empty by default, behaviour identical to before this property existed. They all share the
+client's `Transport`/`TlsOptions`/`KeepAliveSeconds`: they are alternative network locations
+of the SAME service (e.g. main store and DR of the same back office), not a way to talk to a
+different server.
+
+```pascal
+Client := TPipeClient.Create('main-store:9000', ptTcp);
+Client.FailoverAddresses := ['dr-store:9000'];
+Client.AutoReconnect := True;
+Client.Connect(5000);             // splits the deadline across the addresses
+WriteLn(Client.ActiveAddress);    // which one the current session uses
+```
+
+`Connect(ATimeoutMs)` goes around the list with an equal slice of the deadline per address,
+until one connects or the total expires. Automatic reconnection (`AutoReconnect`) advances
+one address per failed attempt, and goes back to preferring the primary as soon as a session
+lasts longer than `ReconnectDelayMs` — a "real" session on an alternate does not leave the
+client stuck on it: the NEXT failure tries the primary again before spreading to the others.
+`MaxReconnectAttempts`/`ReconnectDelayMs` still count/space per ATTEMPT, with no separate
+per-address budget.
+
 ## Features
 
 - **Multi-client server** — acceptor + one reader thread per connection; optional
@@ -494,6 +541,8 @@ TPipeClient
   OnTopicMessage: TPipeTopicEvent        // (...; ATopic; AData; ARetained)
                                          // ARetained: True only on subscription catch-up
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
+  FailoverAddresses: TArray<string>      // tried after Address; empty = Address only (default)
+  ActiveAddress                          // which address the current session uses (snapshot)
   OnConnected/OnDisconnected: TPipeConnectionEvent
   Stats: TPipeClientStats                // current SESSION; resets on every reconnect
 
@@ -501,6 +550,45 @@ Pipes.Topics (pure unit, also useful outside the lib)
   PipeTopicMatches(Filter, Topic); PipeIsValidTopic; PipeIsValidTopicFilter
 
 Exceptions: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls
+```
+
+### JSON (`Pipes.Json.pas`, optional)
+
+The API carries `TBytes`; text becomes JSON like any other text — `SendText`/`RequestText`
+are enough if the app builds and reads the JSON with the library of its choice. What
+`Pipes.Json.pas` adds is only the bytes⇄JSON boundary using each compiler's native library
+(`System.JSON` on Delphi, `fpjson`/`jsonparser` on FPC), hidden behind the `TPipeJSONValue`
+alias, plus two thin wrappers (`PipeSendJSON`/`PipeRequestJSON`) over `SendBytes`/`Request`.
+It is not part of the core — `Pipes.Client`/`Pipes.Server` know nothing about it — and does
+not need to be included by anyone not using JSON.
+
+Building and reading the value (`AddPair` vs `Add`, `GetValue<T>` vs `Get`) remains each
+library's native API; unifying that is also outside the unit's scope — anyone with a
+specific case (another format, another JSON library) implements it themselves on top of
+`TBytes`/`SendBytes`, with no penalty.
+
+```pascal
+uses Pipes.Client, Pipes.Json, System.JSON; // or fpjson on FPC
+
+var
+  Obj, Reply: TJSONObject;
+begin
+  Obj := TJSONObject.Create;
+  try
+    Obj.AddPair('event', 'drawer-opened');
+    Obj.AddPair('register', TJSONNumber.Create(3));
+    PipeSendJSON(Client, Obj);              // fire-and-forget
+
+    Reply := PipeRequestJSON(Client, Obj, 3000) as TJSONObject; // synchronous RPC
+    try
+      // ... Reply.GetValue<...>(...)
+    finally
+      Reply.Free;
+    end;
+  finally
+    Obj.Free;
+  end;
+end;
 ```
 
 ### Compatibility with the previous API
@@ -522,7 +610,33 @@ marked `deprecated` only after samples and tests migrate.
 
 - **EchoServer / EchoClient** — console, same source on both compilers. Run the server,
   then the client: plain text uses `SendText` (asynchronous echo via `OnMessage`); lines
-  starting with `?` use `RequestText` (RPC).
+  starting with `?` use `RequestText` (RPC). Both take an optional second argument `tcp`
+  (`EchoServer.exe *:5300 tcp`, `EchoClient.exe 192.168.0.10:5300 tcp`) to swap `ptLocal`
+  for `ptTcp` — that is how **EchoAndroid** talks to them, since a phone cannot reach a
+  Named Pipe or a Unix Domain Socket. Without the argument, behaviour is unchanged.
+- **EchoJson** (`EchoJsonServer` + `EchoJsonClient`) — the same echo, but with a JSON
+  payload via `Pipes.Json.pas` instead of raw text (see the "JSON" section above). Type
+  `item quantity` (e.g. `coffee 2`) for fire-and-forget `PipeSendJSON` — the asynchronous
+  acknowledgement arrives in `OnMessage` — or `?item quantity` for a synchronous
+  `PipeRequestJSON`, with the total computed by the server in the reply. It also shows the
+  one part `Pipes.Json.pas` does not hide: building/reading the value (`AddPair` vs `Add`,
+  `GetValue<T>` vs `Get`) is a `{$IFDEF FPC}` local to the sample, behind two small
+  functions (`JStr`/`JInt`).
+- **EchoFailover** (just `EchoFailoverClient` — it reuses the usual `EchoServer.exe`, run
+  twice) — showcase for `FailoverAddresses`/`ActiveAddress` (see the "Address failover"
+  section above). Start `EchoServer.exe pipes_faa_primario` and
+  `EchoServer.exe pipes_faa_backup`, then
+  `EchoFailoverClient.exe pipes_faa_primario pipes_faa_backup`: exchange messages (the log
+  shows `endereço ativo: pipes_faa_primario`), close the primary's window and exchange
+  messages again — without restarting the client, the log switches to
+  `endereço ativo: pipes_faa_backup`. Full script in the header of
+  `EchoFailoverClient.dpr`.
+- **EchoAndroid** — **Android** client (FMX, Delphi only) for `EchoServer`: connects over
+  `ptTcp` or `ptTls`, sends text and shows the reply. A showcase of what changes on a
+  phone — `pdmMainThread`, `Connect` off the main thread, `HeartbeatIntervalMs` on (sleeping
+  Wi-Fi and carrier NAT drop idle connections silently). The sample's `LEIA-ME.md` has the
+  IDE steps that cannot be versioned in the `.dproj`: the `INTERNET` permission,
+  `usesCleartextTraffic` and packaging OpenSSL per ABI.
 - **EchoSeguro** (`EchoSeguroServer` + `EchoSeguroClient`) — the same echo, but over
   `ptTls` with mTLS: the server demands a client certificate (`CaFile`), the client
   presents its own, traffic encrypted end to end. Uses the test PKI versioned in
@@ -727,14 +841,36 @@ marked `deprecated` only after samples and tests migrate.
   the build has.)
 
 - OpenSSL **1.1** (the other supported branch): swap the image for `debian:bullseye`, which
-  ships `libssl 1.1.1` and does **not** have 3.x. It is not redundant with the previous one
-  — it is the only way to exercise the symbol fallback of the peer-certificate getter,
-  which 3.x renamed (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). With both
-  versions installed the loader would pick 3.x and the old branch would never run; in an
-  image where only 1.1 exists, it is mandatory.
+  ships `libssl 1.1.1` and does **not** have 3.x, and compile with `-dPIPES_OPENSSL`
+  (without the directive there is no TLS backend and the `ptTls` suite does not run). It is
+  not redundant with the previous one — it is the only way to exercise the 1.1/3.x
+  divergences, and **two have already bitten for real**:
+
+  ```bash
+  docker run --rm -v "$PWD:/work" debian:bullseye bash -c '
+    apt-get update -qq && apt-get install -y -qq fpc libssl1.1 >/dev/null
+    cd /work/tests/Integration/fpc
+    fpc -MDelphi -Sh -B -dPIPES_OPENSSL -Fu../../../src -Fi../../../src \
+      -FU/tmp -o/tmp/t PipesIntegrationTestsFpc.lpr
+    /tmp/t --all --format=plain'
+  ```
+
+  1. The **symbol fallback** of the peer-certificate getter, which 3.x renamed
+     (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). With both versions
+     installed the loader would pick 3.x and the old branch would never run.
+  2. **Validation by IP address** (`Tls_ValidaServidorPorIp_Aceita`). An IP address lives in
+     a SAN of type `iPAddress` and requires `X509_VERIFY_PARAM_set1_ip_asc`; on 3.x
+     `SSL_set1_host` accepts an IP literal and masks the difference. That test **passes on
+     3.x with or without the fix** — only the 1.1 image makes it a real guard. History in
+     [`docs/ARCHITECTURE.en.md`](docs/ARCHITECTURE.en.md) §13.9.
 
 The integration suite includes shutdown stress (Stop under flood < 2 s), a handle/fd leak
 detector under repeated abrupt drops, and RPC correlation under concurrency.
+
+**Android is not part of that suite**: FPC does not compile for Android in this project and
+an APK has no console runner, so the Android backend is verified on a device, with the FMX
+suite in `tests/Android` (loopback: server and client in the same app). See
+`tests/Android/LEIA-ME.md` for each case's numeric limits and the reference run.
 
 ### TLS tests
 
@@ -753,11 +889,13 @@ missing test. A missing PKI **fails**, it does not skip.
 ## Structure
 
 ```
-src/                 library (Pipes.Types, Pipes.Framing, Pipes.Transport[.Windows|.Posix],
+src/                 library (Pipes.Types, Pipes.Framing,
+                     Pipes.Transport[.Windows|.Posix|.Android],
                      Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
                      pub/sub: Pipes.Topics (names, wildcards and envelope; pure unit)
                      network: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (facade) + .Schannel / .OpenSSL (backends)
+                     Pipes.Json (bytes<->JSON, OPTIONAL - not coupled to the core)
 packages/            pipes_faa.lpk (Lazarus package)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (turn-based game), PingPong (real-time game),
@@ -765,8 +903,12 @@ samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, C
                      MonitorTopicos (pub/sub explorer with a VCL/LCL UI),
                      PdvDualScreen (Operador + Cliente),
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
-                     GatewaySeguro (ptTls -> ptLocal, server + client in one process)
+                     GatewaySeguro (ptTls -> ptLocal, server + client in one process),
+                     EchoJson (Pipes.Json.pas, optional),
+                     EchoFailover (FailoverAddresses, reuses EchoServer.exe),
+                     EchoAndroid (FMX/Android, Delphi only)
 tests/               Unit + Integration (DUnitX and FPCUnit, mirrored)
+tests/Android/       DEVICE suite for the Android backend (loopback; no dual-compiler pair)
 tests/pki/           versioned TEST PKI, no security value (see its README)
 docs/ARQUITETURA.md  full architecture (wire format, thread lifecycle, rationale)
                      English version: docs/ARCHITECTURE.en.md

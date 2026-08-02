@@ -314,16 +314,19 @@ All handles use `FILE_FLAG_OVERLAPPED`; no synchronous blocking call.
 | `src/Pipes.Topics.pas` | pub/sub: name/filter validation, hierarchical matching, topic envelope. **Pure unit** (no state, no locks, no IO) — §9 |
 | `src/Pipes.Transport.pas` | abstract `TPipeEndpoint`/`TPipeListener` (interruptible Read/Write/Accept + CloseAbort) |
 | `src/Pipes.Transport.Windows.pas` | overlapped Named Pipe (`{$IFDEF PIPES_WINDOWS}`) |
-| `src/Pipes.Transport.Posix.pas` | UDS + fpPoll + self-pipe (`{$IFDEF PIPES_POSIX}`) |
-| `src/Pipes.Transport.Tcp.pas` | TCP socket on both OSes (`ptTcp`), keepalive (§5.3) |
+| `src/Pipes.Transport.Posix.pas` | UDS + fpPoll + self-pipe (`{$IFDEF PIPES_POSIX}`, FPC-only) |
+| `src/Pipes.Transport.Android.pas` | `ptTcp` over the RTL's `Posix.*` units + local `poll` + self-pipe (`{$IFDEF PIPES_ANDROID}`, Delphi-only); endpoint, listener and factories — §13 |
+| `src/Pipes.Transport.Tcp.pas` | TCP socket on both OSes (`ptTcp`), keepalive (§5.3); on Android it is just a facade that delegates (§13.3) |
 | `src/Pipes.Transport.Tls.pas` | neutral `ptTls` facade: wraps a TCP endpoint in a TLS session, picks the backend by directive (§5.3) |
 | `src/Pipes.Transport.Schannel.pas` | TLS backend via SSPI (`{$IFDEF PIPES_SCHANNEL}`), client and server, manual chain validation (§7) |
 | `src/Pipes.Transport.OpenSSL.pas` | TLS backend via OpenSSL (`{$IFDEF PIPES_OPENSSL}`), client and server, mTLS |
 | `src/Pipes.Base.pas` | `TPipeBase` (Address/Transport/TlsOptions/KeepAliveSeconds/DispatchMode), `TPipeTlsConfig`, `TPipeGuard` |
 | `src/Pipes.Server.pas` | `TPipeServer` + acceptor + connections + mTLS peer identity |
-| `src/Pipes.Client.pas` | `TPipeClient` + reconnection + `MaxReconnectAttempts` |
+| `src/Pipes.Client.pas` | `TPipeClient` + reconnection + `MaxReconnectAttempts` + address failover (§12) |
+| `src/Pipes.Json.pas` | **optional** bytes⇄JSON (`System.JSON`/`fpjson`); not coupled to the core — see `../README.en.md` |
 | `tests/Unit/` (`Pipes.ThreadingTests`, `Pipes.FramingTests`, `Pipes.TopicsTests`, `Pipes.AddressTests`) | unit tests; DUnit (Delphi) + fpcunit (FPC, under `fpc/`), layout mirrored from pascal-amqp-faa |
-| `tests/Integration/` (`Pipes.TransportTests`, `Pipes.EndToEndTests`, `Pipes.PubSubTests`, `Pipes.StressTests`, `Pipes.TlsTests`) | dual-OS integration, includes mTLS; same DUnit/fpcunit mirroring |
+| `tests/Integration/` (`Pipes.TransportTests`, `Pipes.EndToEndTests`, `Pipes.PubSubTests`, `Pipes.StressTests`, `Pipes.TlsTests`, `Pipes.HeartbeatTests`, `Pipes.StatsTests`, `Pipes.JsonTests`, `Pipes.FailoverTests`) | dual-OS integration, includes mTLS; same DUnit/fpcunit mirroring |
+| `tests/Android/` | **device** suite for the Android backend (FMX, loopback). No dual-compiler pair: FPC does not compile for Android in this project — §13.8 |
 | `tests/pki/` | versioned **test** PKI (no security value; see its README) |
 | `samples/` | samples (echo, chat, POS, print queue, concurrent RPC, pub/sub, etc.) — see `../README.en.md`, samples section |
 
@@ -673,3 +676,369 @@ answers "why did the session change" better than a lifetime byte total would.
 | S2 | Server | per-connection and aggregate counters, `Stats`/`ConnectionStats` (same Try* pattern as `TryClientIdentity`) | done |
 | S3 | Client | per-session counters, Request latency (success only), `Stats` | done |
 | S4 | Tests | bytes/messages match what was sent, `ConnectionStats` for a nonexistent connection, timeout excluded from latency | done |
+
+## 12. Address failover (`TPipeClient.FailoverAddresses`)
+
+Same diagnosis as the heartbeat and the metrics: the production target is the store POS
+terminal over VPN (§7, "Later milestones"), and there the main server going down is a real
+failure mode, not a hypothetical one. Until now `AutoReconnect` only knew how to keep
+insisting on the SAME `Address`; if the primary stayed down for a while (maintenance, that
+particular store's link dropping), the client had no way to reach a secondary without the
+app tearing down and recreating `TPipeClient` with a different address — losing pub/sub
+subscriptions, session counters and the in-flight `AutoReconnect` itself.
+
+### 12.1 Client-side only — the server has nothing to "fail over" to
+
+`TPipeServer` listens on a single `Address`; failover makes no sense on the side that
+accepts connections. The property sits next to `AutoReconnect`/`ReconnectDelayMs`/
+`MaxReconnectAttempts`, which were already client-exclusive for the same reason.
+
+### 12.2 `Address` stays the primary; `FailoverAddresses` is additive and empty by default
+
+No existing code changes behaviour: with `FailoverAddresses` empty, `ConnectAnyAddress` is
+a single call to `PipeConnect(Address, ...)`, identical to before this feature. Every
+address in the list shares the client's `Transport`/`TlsOptions`/`KeepAliveSeconds` — they
+are alternative network locations of the SAME service (e.g. main store and DR of the same
+back office), not a way to talk to a different server with another protocol or another
+credential.
+
+### 12.3 `Connect` splits the budget; `TryReopenSession` advances one address per attempt
+
+The two places that open a connection spend time in different ways, and failover respects
+each one's shape instead of forcing them together:
+
+- `Connect(ATimeoutMs)` already meant "retry until the deadline" for ONE address (internal
+  `PipeConnect`, see `WinPipeConnect`/`PosixPipeConnect`, retrying until
+  `ERROR_FILE_NOT_FOUND` stops happening). With more than one address, `ConnectAnyAddress`
+  goes around the whole list with an equal slice of `ATimeoutMs` per address, repeating
+  until one connects or the total deadline expires — the same "`while true` with a
+  deadline" shape that already existed for a single address, one level up.
+- `TryReopenSession` was already a loop spaced by `ReconnectDelayMs` (the single reopen
+  funnel, §"Reconnection" in the `Pipes.Client.pas` header); failover only adds "current
+  address failed → aim at the next one (with wraparound) on the NEXT attempt", with no
+  budget of its own and no change to the spacing between attempts.
+
+### 12.4 A DURABLE session goes back to preferring the primary
+
+`FAddrIndex` is reset by the SAME criterion that already resets `FReconnectAttempts` — a
+session that lasted longer than `ReconnectDelayMs` was a real session, and the NEXT failure
+(if any) should try the primary again before spreading across the alternates. Without this,
+a client that migrated to the secondary would stay "stuck" on it (or worse, blindly advance
+to the third address) even after the main one came back up — the test
+`Reconexao_SessaoDuravelNoBackup_VoltaAoPrimarioDepois` exists precisely to pin that
+difference down against the naive "just advance to the next one".
+
+### 12.5 `MaxReconnectAttempts`/`ReconnectDelayMs` remain per ATTEMPT, not per address
+
+The cap and the spacing did not gain a separate per-address budget: every call to
+`PipeConnect` — whether it aims at the primary or an alternate — still counts as ONE
+attempt against `MaxReconnectAttempts`, and the interval between attempts is still the same
+`ReconnectDelayMs`, regardless of whether the next one aims at the same address or a
+different one. Switching addresses "immediately" (without waiting for the spacing) was
+considered and dropped: one more piece of state to reason about in a unit whose own header
+already calls it tight on invariants, for a marginal gain.
+
+### 12.6 No change to the wire format (NPF1) nor to the server side
+
+Failover is entirely a decision about WHICH ADDRESS TO DIAL, resolved before any frame
+travels — `Pipes.Framing`, `Pipes.Server.pas` and the on-the-wire protocol are untouched.
+`ActiveAddress` (a snapshot, same mold as `ClientCount`/`Stats`) is the only way for the app
+to know which address the current session uses, since `TPipeConnectionEvent`
+(`OnConnected`/`OnDisconnected`) did not gain a new parameter — changing that signature
+would affect the whole rest of the library for a datum the property already delivers without
+breaking anything in use.
+
+### 12.7 Milestones
+
+| # | Milestone | Content | Status |
+|---|-----------|---------|--------|
+| F0 | `Pipes.Client` | `FailoverAddresses`/`ActiveAddress`, `FAddrIndex`, `AddressAt`/`AddressCount` | done |
+| F1 | `Connect` | `ConnectAnyAddress` (goes around the list, budget split from `ATimeoutMs`) | done |
+| F2 | `TryReopenSession` | advances one address per failed attempt; resets to the primary on a DURABLE session | done |
+| F3 | Tests | primary alive/dead in `Connect`, migration on reconnect, reset to primary after a durable session, `MaxReconnectAttempts` shared across addresses | done |
+
+## 13. Delphi Android (`ptTcp`/`ptTls`)
+
+> **Status: A0-A3 VERIFIED on a real device.** This section began as the rationale of a
+> feasibility investigation (a throwaway spike, outside the repo) and became the "why"
+> history of the implementation. The `tests/Android/` suite runs **11 ok, 0 failures, 0
+> skipped** on a device — numbers in §13.8. §13.7 records what the implementation changed
+> relative to the original proposal; §13.9, the portability bug that verifying `ptTls` on
+> the device revealed and that neither of the two desktop compilers would have exposed.
+
+Delphi Android is a **third platform axis**, alongside Delphi/Win64 and FPC/POSIX â€” not an
+extension of either. The doubt that motivated the investigation: the blocking-read
+interruption invariant (§5) depends on platform-specific mechanisms (`CancelIoEx` on
+Windows, self-pipe+`fpPoll` on Linux); there was no guarantee a viable equivalent existed
+on Android without falling back to polling.
+
+### 13.1 Scope: `ptTcp`/`ptTls` only â€” `ptLocal` is out
+
+Android apps are single-process by default â€” there is no "two parts of the same app
+exchanging local IPC" scenario to justify a Named Pipe/UDS the way there is on
+Windows/Linux. Exposing a UDS to another process/app runs into sandboxing (SELinux, scoped
+storage). The real mobile use case is a network client talking to the same existing
+Windows/Linux server (the same rationale as the store POS over VPN that motivated `ptTcp`,
+§7 "Later milestones"), not local IPC.
+
+`ptLocal` does not fall through to any backend on Android: `PipeValidateAddress` refuses
+with a message that says what to do ("use `ptTcp` or `ptTls`"). That beats the silent
+alternative â€” someone porting a Windows app and forgetting to change `Transport` would see
+an obscure name-resolution error much further down the line.
+
+**The listener does exist, contrary to what this section said while it was a proposal.**
+The reasoning that "an Android server makes no sense in the target use case" still holds
+for *applications*, but it led to a consequence that only surfaced at implementation time:
+without `Accept` there is no **loopback** test (server and client in the same app), and
+without loopback, verifying this backend would depend on an external server being up and a
+working network â€” an infrastructure test disguised as a transport test. Since `Accept`
+costs ~40 lines on top of the same `poll`+self-pipe the endpoint already uses, the cost of
+having it is far lower than the cost of not being able to test. See
+`tests/Android/LEIA-ME.md`.
+
+### 13.2 It is not an extension of `PIPES_POSIX`
+
+`PIPES_POSIX` is **FPC-exclusive** code: `Pipes.Transport.Posix.pas` uses `BaseUnix`,
+`Sockets`, `UnixType` â€” units that do not exist in Delphi, on any platform. `pipes.inc`
+used to define `PIPES_POSIX` whenever `PIPES_WINDOWS` was not defined, which INCLUDED
+Android by accident â€” with no handling of its own, an Android build would pull in that
+FPC-only backend and fail to compile at all.
+
+A0 fixed this by testing `ANDROID` **first**: in the Delphi compiler, Android also defines
+`POSIX`, so the order is what separates the two axes. `PIPES_ANDROID` and `PIPES_POSIX` are
+mutually exclusive by construction.
+
+### 13.3 Transport backend: the RTL's `Posix.*`, not `System.Net.Socket.TSocket`
+
+Reading the source of `System.Net.Socket.pas` (RAD Studio 12, `...\source\rtl\net\`):
+`TSocket` only has `MSWINDOWS`/`POSIX` branches â€” no third path for Android â€” meaning
+**Android implies `POSIX` in the Delphi compiler's defines**, and `TSocket` really does use
+`Posix.SysSocket`/`recv`/`shutdown`/`Posix.Unistd.__close` underneath; it is not a JNI/Java
+wrapper. That finding is what unblocked feasibility.
+
+The original proposal was to build the backend **on top of** `TSocket`, to avoid rewriting
+bind/connect/accept against `Posix.*`. At implementation time that was inverted, for three
+concrete reasons:
+
+1. **The interruption mechanism comes out weaker** (§13.4). `TSocket.Close` closes the fd
+   immediately, from another thread, with the reader possibly still inside `recv` â€” the
+   recycled-fd race the rest of the library deliberately avoids by deferring the `close` to
+   the destructor (`Pipes.Transport.Posix.pas`, header invariants).
+2. **All the `Posix.*` units exist for Android** â€” checked in `lib\Android64\release`: all
+   100 of them, including `Posix.SysSocket` (with `MSG_NOSIGNAL`, `SHUT_RDWR`,
+   `SO_KEEPALIVE`, `SO_ERROR`), `Posix.NetDB`, `Posix.Unistd`, `Posix.Fcntl`, `Posix.Errno`,
+   `Posix.NetinetTCP`. The premise that "socket support in `Posix.*` on Android is patchy"
+   did not hold up. There is no `Posix.Poll`, but `poll()` is declared locally against the
+   same `libc` as `Posix.Base` â€” an idiom the library already used for `getaddrinfo`
+   (`Pipes.Transport.Tcp.pas`) and `CancelIoEx` (`Pipes.Transport.Windows.pas`).
+3. **One fewer model to maintain.** With `Posix.*` the Android backend is the Linux backend
+   with different function names; with `TSocket` it would be a third design.
+
+Two platform traps are recorded in the header of `Pipes.Transport.Android.pas`:
+
+- **bionic's `addrinfo` has `ai_canonname` BEFORE `ai_addr`** â€” BSD order, unlike glibc.
+  The local `TPipeAddrInfo` in `Pipes.Transport.Tcp.pas` follows the glibc layout in the
+  non-Windows branch; reusing it on Android would pass a `char*` to `connect()` as if it
+  were the `sockaddr`, with no compile error. That is why the Android backend uses
+  `Posix.NetDB`'s own `addrinfo` and is self-contained â€” `Pipes.Transport.Tcp.pas` merely
+  delegates.
+- **`TSocket.Receive`/`Send` have a typed overload** (`array of Byte; Offset; Count`) that
+  shadows the untyped one (`var Buf; Count`) when an array is passed: Delphi prefers the
+  typed one and reads the 2nd argument as `Offset`. This is what almost masked the spike's
+  test. The library does not use `TSocket`, so it is not exposed; the note is for whoever
+  writes a sample/test with it â€” the fix is to assign the method to a procedural variable
+  with an explicit signature before calling.
+
+### 13.4 Blocking-read interruption invariant: self-pipe + `poll`, same as Linux
+
+The spike answered the question that was blocking everything:
+`TSocket.Close(ForceClosed=False)` does `shutdown(BOTH)` â†’ drains residual `recv` â†’
+`closesocket`, and on a real Android device (not an emulator) it unblocked a thread stuck in
+`Receive` in **~1-2 ms**, returning EOF with no exception. Repeated with the app going
+through the background during the wait: same result. That matched the best case of the
+acceptance criterion â€” the **strong** mechanism (wake by event, no polling) is portable.
+
+The implementation went one step beyond what the spike measured. It does not use
+`TSocket.Close`; it uses the same design as `Pipes.Transport.Posix.pas`: every
+endpoint/listener has its own `pipe()` pair, every wait is a `poll()` on
+`[operation fd, read end of the self-pipe]`, and `CloseAbort` writes 1 byte into the
+self-pipe (never drained, so future waits also wake immediately) plus `shutdown(SHUT_RDWR)`.
+**The fd is only closed in the destructor**, after the join.
+
+The difference matters: with `TSocket.Close`, unblocking depends on closing the fd out from
+under a thread that may still be inside `recv` â€” it works, but it bets against descriptor
+recycling. With the self-pipe, `poll` wakes on the *other* fd and `recv` is never called
+again; unblocking does not depend on the kernel doing anything to the socket. Same
+observable result, without the bet, and with the Android backend being the Linux backend
+under different names.
+
+The weak variant (`TSocket.ReceiveTimeout`, which sets `SO_RCVTIMEO`) was also tested in the
+spike and works (~205 ms for a 200 ms timeout). It is **not** in use and stands as a plan B
+documented FOR ANDROID ONLY, should some future edge case prove otherwise â€” without touching
+the invariant on `PIPES_WINDOWS`/`PIPES_POSIX` (FPC), which remain polling-free. The
+`CloseAbort destrava Read em ms` case in `tests/Android/` exists precisely to catch a
+regression in that direction: it fails above 250 ms.
+
+### 13.5 TLS: OpenSSL only, and no opt-in
+
+Schannel is Windows-only (native SSPI); Android has only OpenSSL as a TLS backend. The
+dynamic loader in `Pipes.Transport.OpenSSL.pas` already had the "Delphi outside Windows"
+branch via `SysUtils.LoadLibrary`/`GetProcAddress`, which on POSIX maps to `dlopen`/`dlsym`
+â€” that part was reused as-is.
+
+Three adjustments were needed:
+
+- **`PIPES_OPENSSL` is automatic on Android**, the only platform where it is not opt-in.
+  There is no second option to choose, and leaving it opt-in would only yield a "build with
+  no TLS backend" at runtime. Loading is lazy, so an app that only uses `ptTcp` pays
+  nothing.
+- **A single soname pair, with no version suffix** (`libcrypto.so`/`libssl.so`). The Android
+  installer only extracts files matching `lib*.so` from the APK â€” `libssl.so.3` would never
+  reach the device, and trying it would be a wasted `dlopen`. Android's own
+  `/system/lib*/libcrypto.so` (BoringSSL, incompatible ABI) is not a hazard: since Android 7
+  it is outside the public namespace for apps.
+- **The system trust store.** `SSL_CTX_set_default_verify_paths` uses the `OPENSSLDIR`
+  compiled into the `.so` (something like `/usr/local/ssl`), a directory that does not exist
+  on the device â€” chain validation would fail with a generic "unable to get local issuer
+  certificate", as though the certificate were invalid. Android's CAs live in
+  `/apex/com.android.conscrypt/cacerts` (14+) or `/system/etc/security/cacerts`, already in
+  the hashed-directory format OpenSSL expects as `CApath`. `ApplyDefaultTrustStore` tries
+  both, **checking that the directory exists** â€” a directory `X509_LOOKUP` returns success
+  even for a nonexistent path, so without that check the first candidate would always
+  "succeed". CAs the user installs through Android's settings do not count: since Android 7
+  they live in a separate store.
+
+Packaging `libssl.so`/`libcrypto.so` per ABI (`armeabi-v7a`/`arm64-v8a`) in the app's
+Deployment remains the job of whoever builds the APK â€” see `samples/EchoAndroid/LEIA-ME.md`.
+
+### 13.6 Milestones
+
+| # | Milestone | Content | Status |
+|---|-----------|---------|--------|
+| A0 | `pipes.inc` | `PIPES_ANDROID` define tested before `POSIX`; automatic `PIPES_OPENSSL` | done, verified on device |
+| A1 | `Pipes.Transport.Android.pas` | `ptTcp` backend over `Posix.*` + local `poll`; self-pipe interruption (§13.4); endpoint AND listener; `ptLocal` refused with its own message | done, verified on device |
+| A2 | `ptTls` | OpenSSL with no opt-in, Android sonames, system trust store (§13.5) | done, verified on device (§13.9) |
+| A3 | Sample + tests | `samples/EchoAndroid` (FMX) and `tests/Android` (device suite, loopback) | done; suite runs 11/11 |
+
+Dependencies: T5 (done) â†’ A0 â†’ A1 â†’ A2 â†’ A3. An axis independent of P0-P5/H0-H4/S0-S4/
+F0-F3 (pub/sub, heartbeat, stats, failover) â€” nothing there changes, and the Android backend
+inherits all of it for free through the shared `Pipes.Client`/`Pipes.Server`.
+
+### 13.7 What the implementation changed relative to the proposal
+
+Three decisions in this section were inverted when the code was written. They are recorded
+because the original proposal came from a spike, not from an implementation â€” and a reader
+who only knows the previous version of this section would think the code diverged from the
+plan by carelessness.
+
+| Item | Proposal (spike) | Implementation | Why |
+|------|------------------|----------------|-----|
+| Backend | `System.Net.Socket.TSocket` | `Posix.*` units + local `poll()` | §13.3 |
+| Interruption | `TSocket.Close(False)` | self-pipe + `poll`, fd closed only in the destructor | §13.4 |
+| Listener | out of scope | implemented | §13.1 (enables the loopback test) |
+
+None of this weakens what the spike concluded: the answer to the central question ("is there
+a viable equivalent to `CancelIoEx`/`fpPoll` on Android without falling back to polling?")
+is still **yes**, and that is what the backend rests on. What changed was which of the two
+forms of "yes" made it into the code.
+
+### 13.8 Verification: there is no dual-compiler pair
+
+The other milestones are verified by compiling on both compilers and running the suite on
+both. Here that pair does not exist â€” FPC does not compile for Android in this project, and
+an APK has no console runner. On top of that, the Delphi CE on this machine refuses
+command-line compilation (including `dccaarm64`), so **the Android build and the device run
+are manual, through the IDE**.
+
+What the development machine can guarantee on its own, and did:
+
+- FPC/Win64 and FPC/Linux stay green (unit and integration suites) â€” A0 touched `pipes.inc`,
+  which everything includes, so this is not a formality.
+- `Pipes.Transport.Tls.pas` compiles under FPC with `-dPIPES_OPENSSL` (the branch A2
+  changed).
+
+What only the device can answer is in `tests/Android/LEIA-ME.md`, with the numeric limits
+for each case â€” in particular the 250 ms on the read unblock, which is the number that
+separates "woke on an event" from "woke on a timeout".
+
+**Reference run (real device, 2026-08-01): 11 ok, 0 failures, 0 skipped.**
+
+| Case | Measured | Ceiling |
+|------|----------|---------|
+| `CloseAbort` unblocks `Read` | **0-2 ms** | 250 ms |
+| `Disconnect` on an idle connection | 1 ms | 2000 ms |
+| `Stop` on an idle connection | 6 ms | 2000 ms |
+| `Stop` under heavy traffic | 3 ms | 2000 ms |
+
+The first is the result that backs §13.4: **single-digit milliseconds** is the signature of
+waking on an event. Had the mechanism regressed to `SO_RCVTIMEO`, the number would be on the
+order of the configured timeout (the spike measured ~205 ms for a 200 ms timeout) and the
+case would fail. The other three confirm that shutdown does not depend on draining anything
+— `Stop` under load cuts the flow mid-stream, with a fraction of the 2000 messages seen,
+which is the correct behaviour.
+
+The `ptTls` cases closed with the right and **distinct** verdicts: an unknown CA yields
+`X509 err 20` (`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`) on the client; a self-signed client
+under mTLS is refused by the SERVER, and on the client side that raises nothing — under
+TLS 1.3 the client completes its handshake before the server evaluates its certificate, so
+the refusal shows up as the message never arriving. It is the same asymmetry already
+documented for Schannel in §7.
+
+The remaining cases (`ptLocal` refusal, loopback echo, request/reply, abrupt drop notifying
+the server) passed with no number worth recording.
+
+### 13.9 What device verification found: IP-SAN broken on 1.1.1
+
+Closing A2 on the device was not paperwork — it exposed a **real portability bug** in the
+OpenSSL backend, one that also affects Linux and Windows with OpenSSL 1.1.1 and that neither
+of the two desktop compilers would have revealed.
+
+Connecting over `ptTls` by **IP address** failed with `X509_V_ERR_HOSTNAME_MISMATCH`
+(err 62) even with `IP:127.0.0.1` in the certificate's SAN. The cause: `SetupSsl` only
+called `SSL_set1_host`, which compares against **DNS** SANs. An IP address lives in a SAN of
+type `iPAddress`, and only `X509_VERIFY_PARAM_set1_ip_asc` consults it.
+
+Why nobody had seen it: **on 3.x the distinction does not appear** — `set1_host` accepts an
+IP literal. The desktop uses 3.x, and the IP-SAN test passed there; the unit header even
+recorded that as "measured, not presumed". Android is the only platform in the project where
+the available OpenSSL is 1.1.1, and it is the one that brought the defect to light.
+
+`SetupSsl` now tries the IP first and falls back to hostname. `set1_ip_asc` returns 0 when
+the string is not a valid IP, which doubles as the detector and avoids writing an IP parser
+— working the same for IPv4 and IPv6. Both new symbols have existed since 1.0.2 with the
+same signature in 1.1.1 and 3.x, within the unit's binding rule.
+
+**A lesson about method.** The question the device suite answered was not "does Android
+work?" but "what can only Android ask?". A new platform axis is worth less for what it adds
+than for what it **disproves** — here, an assumption about the OpenSSL API that two
+compilers and two green suites had been confirming by accident.
+
+The regression guard now lives on the desktop, but it took a second finding to get there:
+running the suite on `debian:bullseye` (1.1.1) with the fix reverted still passed 96/96. The
+TLS harness turns `SkipServerVerification` on for nearly every case, and the only case with
+verification active asserts **refusal**. There was no case requiring **success** with a
+correct `CaFile` — so validation that started refusing *everything* would stay green.
+`Tls_ValidaServidorPorIp_Aceita` and `Tls_ValidaServidorPorNome_Aceita` cover both branches
+of the fix; the IP one only bites under 1.1.1, which makes the bullseye run part of its
+contract rather than an extra.
+
+### 13.10 Negative TLS tests: four ways to pass without proving anything
+
+The device suite was written from scratch and reintroduced, in four variants, the trap §7
+already recorded for the desktop TLS tests: a negative case that asserts only "an exception
+happened" is satisfied by ANY failure, including the ones that mean the test never ran. Each
+one surfaced only because something else broke first and the case stayed green:
+
+| Actual failure | What the case "proved" | Guard |
+|---|---|---|
+| `libssl.so` missing | certificate refusal | `ExigeVeredictoDeTls` |
+| PEM not deployed (`gemea_ca_cert.pem`) | unknown-CA refusal | `ExigePkiArquivos` |
+| IP validation broken | server refusing the client | verdict must come from the right side |
+| no message arrives | mTLS refused | only valid if the handshake happened |
+
+The pattern that closes all four: **a negative test must assert WHICH refusal happened**,
+not that one did. A TLS case that passes because TLS does not exist is worse than a red one
+— it lies about coverage, and it disappears from view exactly when the regression is most
+serious. The corollary, which cost a full session: wherever there is a negative case, there
+must be the matching **positive** one, or a breakage that makes everything refuse stays
+green.

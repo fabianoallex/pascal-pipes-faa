@@ -13,6 +13,26 @@ backup/
 Win32/
 Win64/
 linux/
+# Android: o IDE gera a arvore do APK (classes.dex, CompiledResources, o
+# AndroidManifest.xml JA resolvido) dentro de Android64/<Config>. O template
+# versionado e o AndroidManifest.template.xml na raiz do projeto, nao este.
+#
+# A saida da plataforma Android 32 bits chama-se so 'Android', que colidiria com
+# o diretorio tests/Android (a suite de device). Por isso os caminhos aqui sao
+# explicitos em vez de um 'Android/' solto.
+Android64/
+samples/EchoAndroid/Android/
+tests/Android/Android/
+# gerado pelo gerenciador de Deployment a partir da secao <Deployment> do .dproj
+*.deployproj
+
+# Bibliotecas nativas de TERCEIROS (libcrypto.so/libssl.so do OpenSSL para
+# Android, por ABI). Ficam em tools/openssl-android/<abi>/ — ja coberto por
+# /tools/*/ abaixo, mas a regra global existe porque um .so solto em qualquer
+# outro lugar do repo entraria num 'git add .' sem ninguem notar: sao megabytes
+# de binario de terceiro, com licenca e proveniencia proprias. Se algum dia
+# houver decisao consciente de versionar um, use 'git add -f'.
+*.so
 
 # binarios ELF (sem extensao) gerados por lazbuild/fpc em Linux
 tests/Unit/fpc/PipesUnitTestsFpc

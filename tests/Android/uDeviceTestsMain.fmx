@@ -1,0 +1,64 @@
+object frmDeviceTests: TfrmDeviceTests
+  Left = 0
+  Top = 0
+  Caption = 'Pipes - testes de device (Android)'
+  ClientHeight = 640
+  ClientWidth = 360
+  FormFactor.Width = 360
+  FormFactor.Height = 640
+  FormFactor.Devices = [Desktop, iPhone, iPad]
+  OnCreate = FormCreate
+  DesignerMasterStyle = 0
+  object lytTopo: TLayout
+    Align = Top
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 8.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Position.X = 8.000000000000000000
+    Position.Y = 8.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 84.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 0
+    object btnRodar: TButton
+      Align = Top
+      Size.Width = 344.000000000000000000
+      Size.Height = 48.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 0
+      Text = 'Rodar'
+      TextSettings.Trimming = None
+      OnClick = btnRodarClick
+    end
+    object lblResumo: TLabel
+      Align = Top
+      Margins.Top = 8.000000000000000000
+      Position.Y = 56.000000000000000000
+      Size.Width = 344.000000000000000000
+      Size.Height = 28.000000000000000000
+      Size.PlatformDefault = False
+      TextSettings.Font.StyleExt = {00070000000000000004000000}
+      Text = 'toque em Rodar'
+      TabOrder = 1
+    end
+  end
+  object memLog: TMemo
+    Touch.InteractiveGestures = [Pan, LongTap, DoubleTap]
+    DataDetectorTypes = []
+    ReadOnly = True
+    StyledSettings = [Family, Style, FontColor]
+    TextSettings.Font.Family = 'monospace'
+    TextSettings.Font.Size = 11.000000000000000000
+    Align = Client
+    Margins.Left = 8.000000000000000000
+    Margins.Top = 8.000000000000000000
+    Margins.Right = 8.000000000000000000
+    Margins.Bottom = 8.000000000000000000
+    Size.Width = 344.000000000000000000
+    Size.Height = 532.000000000000000000
+    Size.PlatformDefault = False
+    TabOrder = 1
+    Viewport.Width = 340.000000000000000000
+    Viewport.Height = 528.000000000000000000
+  end
+end

@@ -134,6 +134,8 @@ type
     [Test] procedure Mtls_AutoReconnect_RefazHandshakeAposQueda;
     // --- validacao do servidor pelo cliente (default seguro) ---
     [Test] procedure Tls_ClienteValidaServidorPorPadrao_Recusa;
+    [Test] procedure Tls_ValidaServidorPorIp_Aceita;
+    [Test] procedure Tls_ValidaServidorPorNome_Aceita;
     // --- recusa (o que de fato prova que ha autenticacao) ---
     [Test] procedure Mtls_ClienteSemCert_Recusado;
     [Test] procedure Mtls_ClienteDeOutraCa_Recusado;
@@ -575,6 +577,63 @@ begin
     'default — a validacao do servidor esta desligada por padrao?', LOk);
   AssertFalse('cliente nao deveria autenticar contra servidor nao validado',
     FHarness.ClienteAutenticado(1000));
+end;
+
+{ Os dois casos abaixo sao o LADO POSITIVO da validacao do servidor, que a suite
+  nao tinha: todo o resto liga SkipServerVerification no harness, e o unico caso
+  com validacao ativa (acima) afirma RECUSA. Sem um caso que exija SUCESSO com
+  CaFile correto, uma validacao que passasse a recusar SEMPRE seguiria verde --
+  foi exatamente assim que o bug de IP-SAN atravessou a suite inteira e so'
+  apareceu na primeira rodada de ptTls em Android (docs/ARQUITETURA.md 13.9).
+
+  So' rodam sob PIPES_OPENSSL: no Schannel o CaFile do CLIENTE e' ignorado (o
+  Windows valida contra o trust store do SO), e a CA de teste nao esta la. }
+
+procedure TPipeTlsTests.Tls_ValidaServidorPorIp_Aceita;
+{$IFDEF PIPES_OPENSSL}
+var
+  LErro: string;
+  LOk: Boolean;
+{$ENDIF}
+begin
+{$IFDEF PIPES_OPENSSL}
+  // O harness sempre disca 127.0.0.1 — um LITERAL DE IP. O certificado de teste
+  // traz IP:127.0.0.1 no SAN, e casar isso exige X509_VERIFY_PARAM_set1_ip_asc:
+  // SSL_set1_host olha os SANs de DNS. Na 3.x o set1_host aceita um literal de
+  // IP e a diferenca some, entao ESTE caso so' morde sob OpenSSL 1.1.1 — o que
+  // torna a rodada em debian:bullseye (ver README, secao Testes) parte do
+  // contrato deste teste, nao um extra.
+  FHarness.Listen(''); // TLS simples: o unico veredito em jogo e' o do cliente
+  FHarness.Client.TlsOptions.CaFile := Pki('ca_cert.pem');
+  LOk := FHarness.TryConnectValidandoServidor(LErro);
+  AssertTrue('cliente RECUSOU um servidor legitimo ao validar por IP: ' + LErro,
+    LOk);
+  AssertTrue('eco nao voltou apos validacao por IP', FHarness.Eco('ip', 5000));
+{$ENDIF}
+end;
+
+procedure TPipeTlsTests.Tls_ValidaServidorPorNome_Aceita;
+{$IFDEF PIPES_OPENSSL}
+var
+  LErro, LPorta: string;
+  LOk: Boolean;
+{$ENDIF}
+begin
+{$IFDEF PIPES_OPENSSL}
+  // O ramo de HOSTNAME (SSL_set1_host), que o caso por IP nao exercita. O cert
+  // de teste traz DNS:localhost no SAN. Guarda contra o oposto do bug de
+  // 13.9: alguem "simplificar" o codigo para so' consultar SAN de IP.
+  FHarness.Listen('');
+  LPorta := Copy(FHarness.Server.Address,
+    Pos(':', FHarness.Server.Address) + 1, MaxInt);
+  FHarness.Client.Address := 'localhost:' + LPorta;
+  FHarness.Client.TlsOptions.CaFile := Pki('ca_cert.pem');
+  LOk := FHarness.TryConnectValidandoServidor(LErro);
+  AssertTrue('cliente RECUSOU um servidor legitimo ao validar por nome: ' +
+    LErro, LOk);
+  AssertTrue('eco nao voltou apos validacao por nome',
+    FHarness.Eco('nome', 5000));
+{$ENDIF}
 end;
 
 procedure TPipeTlsTests.Mtls_ClienteSemCert_Recusado;

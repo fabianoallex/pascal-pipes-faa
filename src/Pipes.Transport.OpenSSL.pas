@@ -4,11 +4,17 @@
 
 { Backend TLS do ptTls via OpenSSL (libssl/libcrypto), multiplataforma.
 
-  Compilado apenas sob a diretiva PIPES_OPENSSL (opt-in, definida pelo projeto
-  consumidor — nunca automática): diferente do SChannel, que é garantido existir
-  no Windows, o OpenSSL depende de libssl/libcrypto presentes na máquina. Sem a
-  diretiva esta unit compila vazia e nada muda no build. Com ela, o OpenSSL é
-  usado em QUALQUER plataforma (inclusive Windows, no lugar do SChannel).
+  Compilado apenas sob a diretiva PIPES_OPENSSL (opt-in no Windows e no POSIX,
+  definida pelo projeto consumidor): diferente do SChannel, que é garantido
+  existir no Windows, o OpenSSL depende de libssl/libcrypto presentes na
+  máquina. Sem a diretiva esta unit compila vazia e nada muda no build. Com ela,
+  o OpenSSL é usado em QUALQUER plataforma (inclusive Windows, no lugar do
+  SChannel).
+
+  ÚNICA exceção ao opt-in: no Android o pipes.inc liga PIPES_OPENSSL sozinho,
+  porque lá não há segunda opção (SChannel é Windows-only) e deixar opt-in só
+  renderia um "build sem backend TLS" em runtime. Como o carregamento é
+  preguiçoso, um app Android que use apenas ptTcp não paga nada por isso.
 
   Mesma receita de Pipes.Transport.Tls (SChannel): bindings próprios contra a
   API pública (nada de código de terceiros — só as assinaturas da ABI), uma
@@ -49,10 +55,17 @@
   (SSL_get1_peer_certificate — ver a nota de compatibilidade 1.1/3.x adiante).
   Há ainda o modo inseguro opt-in por SkipServerVerification (laboratório).
 
-  Endereço por IP funciona: SSL_set1_host aceita '127.0.0.1' e o certificado de
-  teste, que traz IP:127.0.0.1 no SAN, valida — medido, não presumido. (Uma
-  versão anterior deste cabeçalho dizia que IP-SAN estava fora de escopo; era
-  descrição do estado inicial da unit, não do comportamento atual.) }
+  Endereço por IP funciona, mas NÃO por SSL_set1_host: IP mora em SAN do tipo
+  iPAddress, que só X509_VERIFY_PARAM_set1_ip_asc consulta; set1_host olha os
+  SANs de DNS. Na 3.x a distinção não aparece (o set1_host aceita um literal de
+  IP), e por isso o desktop sempre passou com uma versão anterior deste código
+  que só chamava set1_host. Na 1.1.1 não passa: dava
+  X509_V_ERR_HOSTNAME_MISMATCH (err 62) mesmo com IP:127.0.0.1 no SAN. O bug só
+  apareceu na primeira rodada de ptTls em aparelho Android, onde o OpenSSL
+  disponível é 1.1.1 — é o tipo de divergência que nenhum dos dois compiladores
+  do desktop teria exposto. Hoje SetupSsl tenta o IP primeiro e cai para
+  hostname, o que cobre as duas versões e ainda serve de detector de literal
+  (set1_ip_asc devolve 0 se a string não for IP), sem parser próprio. }
 
 interface
 
@@ -186,10 +199,25 @@ const
     ('libcrypto-1_1-x64.dll', 'libssl-1_1-x64.dll'),
     ('libcrypto-1_1.dll', 'libssl-1_1.dll'));
   {$ELSE}
+    {$IFDEF PIPES_ANDROID}
+  // Um par só, e sem sufixo de versão: o instalador do Android extrai do APK
+  // apenas arquivos que casem com 'lib*.so' — 'libssl.so.3' nem chega ao
+  // dispositivo, então tentar os sonames versionados seria dlopen perdido.
+  // As libs precisam ser adicionadas ao Deployment por ABI (armeabi-v7a e
+  // arm64-v8a); ver docs/ARQUITETURA.md seção 13.5.
+  //
+  // O Android tem um /system/lib*/libcrypto.so próprio (BoringSSL, ABI
+  // incompatível), mas desde o Android 7 ele está fora do namespace público de
+  // apps: o dlopen resolve a cópia empacotada no APK ou falha — não silencia
+  // num BoringSSL do sistema.
+  SSL_LIB_PAIRS: array[0..0, 0..1] of string = (
+    ('libcrypto.so', 'libssl.so'));
+    {$ELSE}
   SSL_LIB_PAIRS: array[0..2, 0..1] of string = (
     ('libcrypto.so.3', 'libssl.so.3'),
     ('libcrypto.so.1.1', 'libssl.so.1.1'),
     ('libcrypto.so', 'libssl.so'));
+    {$ENDIF}
   {$ENDIF}
 
   // SSL_get_error
@@ -241,6 +269,11 @@ var
   p_SSL_ctrl: function(ASsl: Pointer; ACmd: Integer; ALarg: TSslLong;
     AParg: Pointer): TSslLong; cdecl;
   p_SSL_set1_host: function(ASsl: Pointer; AHost: PAnsiChar): Integer; cdecl;
+  // Verificação por ENDEREÇO IP. Existem desde a 1.0.2, com a mesma assinatura
+  // na 1.1.1 e na 3.x — dentro da regra de bindings desta unit.
+  p_SSL_get0_param: function(ASsl: Pointer): Pointer; cdecl;
+  p_X509_VERIFY_PARAM_set1_ip_asc: function(AParam: Pointer;
+    AIpAsc: PAnsiChar): Integer; cdecl;
   p_SSL_set_bio: procedure(ASsl: Pointer; ARbio, AWbio: Pointer); cdecl;
   p_SSL_set_connect_state: procedure(ASsl: Pointer); cdecl;
   p_SSL_set_accept_state: procedure(ASsl: Pointer); cdecl;
@@ -388,6 +421,9 @@ begin
       p_SSL_free := SslMustGet(LSsl, 'SSL_free', LSslName);
       p_SSL_ctrl := SslMustGet(LSsl, 'SSL_ctrl', LSslName);
       p_SSL_set1_host := SslMustGet(LSsl, 'SSL_set1_host', LSslName);
+      p_SSL_get0_param := SslMustGet(LSsl, 'SSL_get0_param', LSslName);
+      p_X509_VERIFY_PARAM_set1_ip_asc :=
+        SslMustGet(LCrypto, 'X509_VERIFY_PARAM_set1_ip_asc', LCryptoName);
       p_SSL_set_bio := SslMustGet(LSsl, 'SSL_set_bio', LSslName);
       p_SSL_set_connect_state := SslMustGet(LSsl, 'SSL_set_connect_state', LSslName);
       p_SSL_set_accept_state := SslMustGet(LSsl, 'SSL_set_accept_state', LSslName);
@@ -480,6 +516,54 @@ begin
     Result := Format('SSL_get_error=%d', [AErr]);
 end;
 
+// Aponta o contexto para o trust store do SISTEMA (usado quando CaFile esta
+// vazio). False = nao ha trust store utilizavel; o chamador levanta.
+//
+// No Android o SSL_CTX_set_default_verify_paths sozinho NAO serve: ele usa o
+// OPENSSLDIR compilado dentro do .so (algo como /usr/local/ssl), diretorio que
+// simplesmente nao existe no aparelho — a validacao de cadeia falharia com um
+// erro generico de "unable to get local issuer certificate", como se o
+// certificado fosse invalido. As CAs do Android vivem em outro lugar, ja no
+// formato de diretorio com hash que o OpenSSL espera como CApath:
+//
+//   /apex/com.android.conscrypt/cacerts   Android 14+ (atualizavel via APEX)
+//   /system/etc/security/cacerts          caminho classico, ainda presente
+//
+// Tenta os dois em ordem e so' entao cai no default do proprio OpenSSL.
+//
+// Isto vale para a validacao contra CAs PUBLICAS. O caso de uso alvo desta lib
+// (frota com PKI interna) passa CaFile e nem chega aqui, e as CAs que o usuario
+// instala pelo Android nao entram: desde o Android 7 elas ficam num store
+// separado que so' vale para quem usa a API de rede do proprio sistema.
+function ApplyDefaultTrustStore(ACtx: Pointer): Boolean;
+{$IFDEF PIPES_ANDROID}
+const
+  ANDROID_CA_DIRS: array[0..1] of string = (
+    '/apex/com.android.conscrypt/cacerts',
+    '/system/etc/security/cacerts');
+var
+  I: Integer;
+  LDir: AnsiString;
+{$ENDIF}
+begin
+  {$IFDEF PIPES_ANDROID}
+  for I := Low(ANDROID_CA_DIRS) to High(ANDROID_CA_DIRS) do
+  begin
+    // O DirectoryExists NAO e' redundante: o X509_LOOKUP de diretorio so
+    // registra o caminho e devolve 1 mesmo para um diretorio inexistente. Sem
+    // esta checagem o primeiro candidato "daria certo" sempre e o segundo
+    // nunca seria tentado — em Android anterior ao 14, onde o caminho do APEX
+    // nao existe, isso deixaria o contexto sem CA nenhuma.
+    if not DirectoryExists(ANDROID_CA_DIRS[I]) then
+      Continue;
+    LDir := AnsiString(ANDROID_CA_DIRS[I]);
+    if p_SSL_CTX_load_verify_locations(ACtx, nil, PAnsiChar(LDir)) = 1 then
+      Exit(True);
+  end;
+  {$ENDIF}
+  Result := p_SSL_CTX_set_default_verify_paths(ACtx) = 1;
+end;
+
 { TPipeOpenSslStream }
 
 // (declaracao adiantada: usada por SetupSsl do cliente, definida adiante)
@@ -536,6 +620,8 @@ end;
 procedure TPipeOpenSslStream.SetupSsl;
 var
   LTmp: AnsiString;
+  LParam: Pointer;
+  LIsIp: Boolean;
 begin
   FCtx := p_SSL_CTX_new(p_TLS_client_method());
   if FCtx = nil then
@@ -557,9 +643,9 @@ begin
           [FOptions.CaFile, LastSslErrorText]);
     end
     // Trust store do sistema (ex.: /etc/ssl/certs no Linux).
-    else if p_SSL_CTX_set_default_verify_paths(FCtx) <> 1 then
-      raise EPipeTls.CreateFmt('SSL_CTX_set_default_verify_paths falhou (%s)',
-        [LastSslErrorText]);
+    else if not ApplyDefaultTrustStore(FCtx) then
+      raise EPipeTls.CreateFmt('nao foi possivel abrir o trust store do ' +
+        'sistema (%s)', [LastSslErrorText]);
   end
   else
     p_SSL_CTX_set_verify(FCtx, SSL_VERIFY_NONE, nil);
@@ -585,9 +671,28 @@ begin
     // SNI (SSL_set_tlsext_host_name é macro sobre SSL_ctrl).
     p_SSL_ctrl(FSsl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_HOST_NAME,
       PAnsiChar(FTargetName));
-    // Validação de hostname contra o cert (só faz sentido com verify).
-    if FVerifyPeer and (p_SSL_set1_host(FSsl, PAnsiChar(FTargetName)) <> 1) then
-      raise EPipeTls.Create('SSL_set1_host falhou');
+    // Validação da identidade do servidor contra o cert (só com verify).
+    //
+    // IP e hostname são verificações DIFERENTES no OpenSSL: SSL_set1_host
+    // compara com os SANs de DNS, e endereço IP mora em SAN de tipo iPAddress,
+    // que só X509_VERIFY_PARAM_set1_ip_asc consulta. Na 3.x o set1_host aceita
+    // um literal de IP e a distinção não aparece — foi por isso que o desktop
+    // (OpenSSL 3.x) sempre passou. Na 1.1.1 não: conectar por IP dava
+    // X509_V_ERR_HOSTNAME_MISMATCH (err 62) mesmo com IP:127.0.0.1 no SAN.
+    // Achado na primeira rodada de ptTls em aparelho Android, que usa 1.1.1.
+    //
+    // set1_ip_asc devolve 0 quando a string não é um IP válido, o que serve de
+    // detector: tenta IP primeiro e cai para hostname. Evita escrever um
+    // parser de IP aqui e funciona igual para IPv4 e IPv6.
+    if FVerifyPeer then
+    begin
+      LParam := p_SSL_get0_param(FSsl);
+      LIsIp := (LParam <> nil)
+        and (p_X509_VERIFY_PARAM_set1_ip_asc(LParam, PAnsiChar(FTargetName)) = 1);
+      if not LIsIp then
+        if p_SSL_set1_host(FSsl, PAnsiChar(FTargetName)) <> 1 then
+          raise EPipeTls.Create('SSL_set1_host falhou');
+    end;
   end;
 
   p_SSL_set_connect_state(FSsl);
