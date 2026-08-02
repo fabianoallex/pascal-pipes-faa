@@ -205,6 +205,27 @@ Anote junto de onde elas vieram (URL e versão). Sem isso, daqui a um ano
 ninguém sabe se aquele `libssl.so` é 1.1.1d, 1.1.1w ou 3.x, nem se já foi
 alcançado por algum CVE.
 
+### O aviso de "16 KB" no Android 15+
+
+Ao abrir um app *debuggable* com essas bibliotecas, o Android 15 ou mais novo
+pode mostrar um diálogo de **Compatibilidade de apps Android** dizendo que o app
+não é compatível com 16 KB e listando as `.so` cujo segmento `LOAD` não está
+alinhado.
+
+Para desenvolvimento e para validar `ptTls`, é só aviso: em aparelho com página
+de 4 KB tudo funciona. Num aparelho com página de 16 KB as bibliotecas não
+carregam, e o sintoma seria o mesmo erro de `OpenSSL não encontrado`.
+
+Duas observações antes de sair trocando de build do OpenSSL:
+
+- O aviso lista também a biblioteca **gerada pelo próprio Delphi**
+  (`lib<Projeto>.so`), não só as do OpenSSL. É uma questão de toolchain, não de
+  onde vieram as `.so` — recompilar só o OpenSSL não resolve o app.
+- Publicar na Play Store exige suporte a 16 KB para apps novos e atualizações.
+  Se esse for o destino, o alinhamento precisa vir do build: bibliotecas
+  próprias compiladas com `-Wl,-z,max-page-size=16384` e uma versão do RAD
+  Studio que já gere o executável alinhado.
+
 ### Como saber se deu certo
 
 O carregamento é preguiçoso: um app que só usa `ptTcp` sobe normalmente mesmo
