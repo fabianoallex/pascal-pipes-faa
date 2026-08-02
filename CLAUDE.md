@@ -188,13 +188,13 @@ P0-P4 (pub/sub por tópico), os dois últimos grupos detalhados em `docs/ARQUITE
 §9 — estão **concluídos**. A tabela fica como referência de sequenciamento e alocação de
 agente para o próximo milestone que surgir, não como trabalho pendente.
 
-Exceção: **A0/A1/A3 (Delphi Android) estão verificados em aparelho; A2 (`ptTls`) NÃO.**
-A suíte `tests/Android` rodou em device real com 8 ok / 0 falhas — o desbloqueio de leitura
-mediu **1 ms** (teto 250 ms), confirmando que o self-pipe + `poll` acorda por evento
-também no Android. Os três casos de `ptTls` ficaram PULADOS por falta da PKI e das libs do
-OpenSSL no aparelho: de A2 só se sabe que o ramo compila. **Não afirmar que TLS funciona no
-Android.** O que falta para fechar A2 está em `docs/ARQUITETURA.md` §13.9; os números da
-rodada, em §13.8.
+**A0-A3 (Delphi Android) estão verificados em aparelho real**: `tests/Android` roda
+11 ok / 0 falhas / 0 pulados. O desbloqueio de leitura mede milissegundos de um dígito
+(teto 250 ms), confirmando que o self-pipe + `poll` acorda por evento também no Android.
+Fechar A2 revelou um bug de portabilidade real — validação por IP-SAN quebrada no OpenSSL
+1.1.1, que o desktop (3.x) mascarava; ver `docs/ARQUITETURA.md` §13.9. Números da rodada
+em §13.8, e §13.10 registra as quatro formas de um teste negativo de TLS passar sem provar
+nada, todas encontradas nessa verificação.
 
 O Delphi CE desta máquina recusa build por linha de comando (inclusive `dccaarm64`), então
 qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
@@ -215,7 +215,7 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | H0-H4 | Heartbeat de aplicação (`ptTcp`/`ptTls`): `TPipeFrame.Ping`, `TPipeHeartbeatThread`, `HeartbeatIntervalMs`, detecção de zumbi nos dois sentidos — ver `docs/ARQUITETURA.md` §10 | sonnet | concluído |
 | S0-S4 | Métricas/observabilidade: `Stats`/`ConnectionStats`, `PipeAtomicAdd64`, latência de Request — ver `docs/ARQUITETURA.md` §11 | sonnet | concluído |
 | F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
-| A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | A0/A1/A3 verificados em device (8/8); **A2 (`ptTls`) não verificado** |
+| A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | concluído, verificado em device (11/11) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/

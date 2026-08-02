@@ -742,13 +742,12 @@ todo o resto da lib por um dado que a property já resolve sem quebrar nada em u
 
 ## 13. Delphi Android (`ptTcp`/`ptTls`)
 
-> **Status: A0/A1/A3 VERIFICADOS em aparelho; A2 (TLS) implementado mas NÃO verificado.**
-> Esta seção começou como o racional de uma investigação de viabilidade (spike descartável,
-> fora do repo) e virou o histórico de "por quê" da implementação. A suíte
-> `tests/Android/` rodou num device real com **8 ok, 0 falhas** — números em §13.8. Os três
-> casos de `ptTls` ficaram PULADOS por falta da PKI e das bibliotecas do OpenSSL no
-> aparelho, então **nada de A2 está confirmado em runtime**: o que se sabe é que o ramo
-> compila. §13.7 registra o que a implementação mudou em relação à proposta original.
+> **Status: A0-A3 VERIFICADOS em aparelho real.** Esta seção começou como o racional de uma
+> investigação de viabilidade (spike descartável, fora do repo) e virou o histórico de "por
+> quê" da implementação. A suíte `tests/Android/` roda **11 ok, 0 falhas, 0 pulados** num
+> device — números em §13.8. §13.7 registra o que a implementação mudou em relação à
+> proposta original; §13.9, o bug de portabilidade que a verificação de `ptTls` no aparelho
+> revelou e que nenhum dos dois compiladores do desktop teria exposto.
 
 Delphi Android é um **terceiro eixo de plataforma**, ao lado de Delphi/Win64 e
 FPC/POSIX — não uma extensão de nenhum dos dois. A dúvida que motivou a investigação: o
@@ -899,8 +898,8 @@ app continua sendo tarefa de quem constrói o APK — ver `samples/EchoAndroid/L
 |---|-----------|----------|--------|
 | A0 | `pipes.inc` | define `PIPES_ANDROID` testado antes de `POSIX`; `PIPES_OPENSSL` automático | concluído, verificado em device |
 | A1 | `Pipes.Transport.Android.pas` | backend `ptTcp` sobre `Posix.*` + `poll` local; interrupção por self-pipe (§13.4); endpoint E listener; `ptLocal` recusado com mensagem própria | concluído, verificado em device |
-| A2 | `ptTls` | OpenSSL sem opt-in, sonames de Android, trust store do sistema (§13.5) | implementado; **NÃO verificado** (ver §13.9) |
-| A3 | Sample + testes | `samples/EchoAndroid` (FMX) e `tests/Android` (suíte de device, loopback) | concluído; suíte roda 8/8 em `ptTcp` |
+| A2 | `ptTls` | OpenSSL sem opt-in, sonames de Android, trust store do sistema (§13.5) | concluído, verificado em device (§13.9) |
+| A3 | Sample + testes | `samples/EchoAndroid` (FMX) e `tests/Android` (suíte de device, loopback) | concluído; suíte roda 11/11 |
 
 Dependências: T5 (concluído) → A0 → A1 → A2 → A3. Eixo independente de P0-P5/H0-H4/
 S0-S4/F0-F3 (pub/sub, heartbeat, stats, failover) — nada ali muda, e o backend Android
@@ -942,43 +941,73 @@ O que só o aparelho responde está em `tests/Android/LEIA-ME.md`, com os limite
 de cada caso — em especial os 250ms do desbloqueio de leitura, que é o número que separa
 "acordou por evento" de "acordou por timeout".
 
-**Rodada de referência (device real, 2026-08-01): 8 ok, 0 falhas, 3 pulados.**
+**Rodada de referência (device real, 2026-08-01): 11 ok, 0 falhas, 0 pulados.**
 
 | Caso | Medido | Teto |
 |------|--------|------|
-| `CloseAbort` destrava `Read` | **1 ms** | 250 ms |
-| `Disconnect` com conexão ociosa | 2 ms | 2000 ms |
+| `CloseAbort` destrava `Read` | **0-2 ms** | 250 ms |
+| `Disconnect` com conexão ociosa | 1 ms | 2000 ms |
 | `Stop` com conexão ociosa | 6 ms | 2000 ms |
-| `Stop` sob tráfego intenso (1043 msgs vistas) | 1 ms | 2000 ms |
+| `Stop` sob tráfego intenso | 3 ms | 2000 ms |
 
-O primeiro é o resultado que sustenta §13.4: **1 ms** é a assinatura de acordar por evento.
-Se o mecanismo tivesse regredido para `SO_RCVTIMEO`, o número seria da ordem do timeout
-configurado (o spike mediu ~205 ms para um timeout de 200 ms) e o caso reprovaria. Os
-outros três confirmam que o encerramento não depende de drenar nada — `Stop` sob carga
-cortou o fluxo com 1043 das 2000 mensagens vistas, que é o comportamento correto.
+O primeiro é o resultado que sustenta §13.4: **milissegundos de um dígito** é a assinatura
+de acordar por evento. Se o mecanismo tivesse regredido para `SO_RCVTIMEO`, o número seria
+da ordem do timeout configurado (o spike mediu ~205 ms para um timeout de 200 ms) e o caso
+reprovaria. Os outros três confirmam que o encerramento não depende de drenar nada — `Stop`
+sob carga corta o fluxo no meio, com uma fração das 2000 mensagens vista, que é o
+comportamento correto.
+
+Os casos de `ptTls` fecharam com os vereditos certos e **distintos**: CA desconhecida dá
+`X509 err 20` (`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`) no cliente; cliente auto-assinado sob
+mTLS é recusado pelo SERVIDOR, e do lado do cliente isso não levanta nada — sob TLS 1.3 ele
+conclui o handshake antes de o servidor avaliar o certificado, então a recusa se manifesta
+como a mensagem não chegando. É a mesma assimetria já documentada para o Schannel em §7.
 
 Os demais casos (recusa de `ptLocal`, eco loopback, request/reply, queda abrupta
 notificando o servidor) passaram sem número relevante a registrar.
 
-### 13.9 O que ainda não foi verificado: `ptTls` no aparelho
+### 13.9 O que a verificação em aparelho encontrou: IP-SAN quebrado na 1.1.1
 
-Os três casos de `ptTls` da suíte ficaram **PULADOS**, não verdes. Eles procuram os PEMs em
-`TPath.GetDocumentsPath` e não os acharam. Portanto, de A2 sabe-se apenas que o ramo
-compila; nenhuma afirmação sobre TLS no Android está confirmada em runtime — nem o
-carregamento das bibliotecas, nem o veredito de CA desconhecida, nem o `ApplyDefaultTrustStore`.
+Fechar A2 no aparelho não foi burocracia — expôs um **bug de portabilidade real** no
+backend OpenSSL, que afeta também Linux e Windows com OpenSSL 1.1.1 e que nenhum dos dois
+compiladores do desktop teria revelado.
 
-Uma tentativa manual com `ptTls` a partir do `EchoAndroid` mostrou o modo de falha esperado
-e vale como registro: o servidor logou `conectou`/`desconectou` **sem nenhum erro de
-protocolo**. Isso localiza a falha com precisão — `TlsPipeConnect` faz o TCP primeiro e só
-depois monta o TLS, então o cliente morreu ao carregar o OpenSSL, antes de enviar o
-ClientHello. Se o ClientHello tivesse saído, o servidor teria lido `0x16 0x03 0x01…` no
-lugar do magic `NPF1` e registrado erro de protocolo.
+Conectar em `ptTls` por **endereço IP** falhava com `X509_V_ERR_HOSTNAME_MISMATCH` (err 62)
+mesmo com `IP:127.0.0.1` no SAN do certificado. A causa: `SetupSsl` só chamava
+`SSL_set1_host`, que compara com os SANs de **DNS**. Endereço IP mora em SAN do tipo
+`iPAddress`, e só `X509_VERIFY_PARAM_set1_ip_asc` o consulta.
 
-Para fechar A2 faltam quatro coisas, e nenhuma é código da biblioteca:
+Por que ninguém tinha visto: **na 3.x a distinção não aparece** — o `set1_host` aceita um
+literal de IP. O desktop usa 3.x, e o teste de IP-SAN passava lá; o cabeçalho da unit
+chegou a registrar isso como "medido, não presumido". O Android é a única plataforma do
+projeto onde o OpenSSL disponível é 1.1.1, e foi ela que trouxe o defeito à tona.
 
-1. `libcrypto.so` e `libssl.so` para a ABI do aparelho, no Deployment do projeto;
-2. a PKI de teste copiada para a pasta de documentos do app;
-3. um certificado de servidor cujo SAN cubra o endereço usado — o `tests/pki/srv_cert.pem`
-   versionado tem `DNS:localhost, IP:127.0.0.1`, então conectar por IP de LAN falha a
-   validação (corretamente). A suíte de device não sofre disso porque é loopback;
-4. certificado de cliente configurado, se o servidor do outro lado ligar mTLS.
+Hoje `SetupSsl` tenta o IP primeiro e cai para hostname. O `set1_ip_asc` devolve 0 quando a
+string não é um IP válido, o que serve de detector e evita um parser de IP próprio —
+funcionando igual para IPv4 e IPv6. Os dois símbolos novos existem desde a 1.0.2 com a
+mesma assinatura na 1.1.1 e na 3.x, dentro da regra de bindings da unit.
+
+**Lição de método.** A pergunta que a suíte de device respondeu não foi "o Android
+funciona?", e sim "o que só o Android consegue perguntar?". Um eixo de plataforma novo vale
+menos pelo que ele adiciona do que pelo que ele **desmente** — aqui, uma premissa sobre a
+API do OpenSSL que dois compiladores e duas suítes verdes vinham confirmando por acidente.
+
+### 13.10 Testes negativos de TLS: quatro maneiras de passar sem provar nada
+
+A suíte de device foi escrita do zero e reintroduziu, em quatro variantes, a armadilha que
+§7 já registrava para os testes de TLS no desktop: um caso negativo que afirma apenas
+"houve exceção" é satisfeito por QUALQUER falha, inclusive as que significam que o teste
+não rodou. Cada uma só apareceu porque outra coisa quebrou primeiro e o caso continuou
+verde:
+
+| Falha real | O que o caso "provava" | Guarda |
+|---|---|---|
+| `libssl.so` ausente | recusa de certificado | `ExigeVeredictoDeTls` |
+| PEM não deployado (`gemea_ca_cert.pem`) | recusa de CA desconhecida | `ExigePkiArquivos` |
+| validação por IP quebrada | recusa do cliente pelo servidor | veredito tem que vir do lado certo |
+| nenhuma mensagem chega | mTLS recusou | só vale com o handshake tendo ocorrido |
+
+O padrão que fecha os quatro: **um teste negativo precisa afirmar QUAL foi a recusa**, não
+que houve uma. Um caso de TLS que passa porque o TLS não existe é pior que um caso
+vermelho — ele mente sobre a cobertura, e some do radar justamente quando a regressão é
+mais grave.

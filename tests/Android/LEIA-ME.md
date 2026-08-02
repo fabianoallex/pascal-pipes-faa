@@ -34,15 +34,14 @@ regrediu para polling.
 
 ## Rodada de referência (device real, 2026-08-01)
 
-`8 ok, 0 falha(s), 3 pulado(s)` — os três pulados são os de `ptTls`, por falta da PKI no
-aparelho.
+`11 ok, 0 falha(s), 0 pulado(s)`.
 
 | Caso | Medido | Teto |
 |------|--------|------|
-| `CloseAbort` destrava `Read` | **1 ms** | 250 ms |
-| `Disconnect` com conexão ociosa | 2 ms | 2000 ms |
+| `CloseAbort` destrava `Read` | **0-2 ms** | 250 ms |
+| `Disconnect` com conexão ociosa | 1 ms | 2000 ms |
 | `Stop` com conexão ociosa | 6 ms | 2000 ms |
-| `Stop` sob tráfego intenso (1043 msgs vistas) | 1 ms | 2000 ms |
+| `Stop` sob tráfego intenso | 3 ms | 2000 ms |
 
 Use esses números como linha de base: uma regressão do mecanismo forte para polling não
 faria o caso passar de "verde" a "vermelho" de imediato — faria o desbloqueio pular de 1 ms
@@ -108,12 +107,20 @@ correto: a PKI estar presente e o TLS não funcionar é um problema de verdade.
 De onde tirar as `.so` está em `samples/EchoAndroid/LEIA-ME.md`, seção "de onde
 vêm as `.so`".
 
-> **Por que existe o guarda `ExigeVeredictoDeTls`.** Os dois casos negativos
-> (CA desconhecida, auto-assinado sob mTLS) provam que a conexão foi
-> **recusada** — e "recusada" não pode ser satisfeita por qualquer exceção. Sem
-> as `.so`, o `EnsureOpenSsl` levanta `EPipeTls` antes de um único byte de TLS
-> sair, e os dois passariam em **verde** sem ter exercitado validação nenhuma.
-> Foi exatamente o que aconteceu numa rodada real: PKI no aparelho, `.so`
-> ausentes, resultado `10 ok, 1 falha` — com dois verdes falsos. O guarda
-> transforma isso em falha barulhenta. Um caso de TLS que passa porque o TLS não
-> existe é pior que um caso vermelho: ele mente sobre a cobertura.
+> **Por que os casos negativos têm guardas.** Eles provam que a conexão foi
+> **recusada** — e "recusada" não pode ser satisfeita por qualquer exceção. Esta
+> suíte reintroduziu, em quatro variantes, a armadilha que a §7 do
+> `docs/ARQUITETURA.md` já registrava para os testes de TLS no desktop. Cada uma
+> só apareceu porque outra coisa quebrou primeiro e o caso continuou verde:
+>
+> | Falha real | O que o caso "provava" | Guarda |
+> |---|---|---|
+> | `libssl.so` ausente | recusa de certificado | `ExigeVeredictoDeTls` |
+> | PEM não deployado | recusa de CA desconhecida | `ExigePkiArquivos` |
+> | validação por IP quebrada | recusa do cliente pelo servidor | veredito do lado certo |
+> | nenhuma mensagem chega | mTLS recusou | só vale com handshake ocorrido |
+>
+> O padrão que fecha os quatro: **um teste negativo precisa afirmar QUAL foi a
+> recusa**, não que houve uma. Um caso de TLS que passa porque o TLS não existe é
+> pior que um caso vermelho — ele mente sobre a cobertura, e some do radar
+> justamente quando a regressão é mais grave. Ver `docs/ARQUITETURA.md` §13.10.
