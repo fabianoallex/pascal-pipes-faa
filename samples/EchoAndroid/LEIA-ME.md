@@ -371,6 +371,32 @@ OpenSSL aponta para um `OPENSSLDIR` que não existe no Android, então
 do Android **não** entram — desde o Android 7 elas ficam num store separado,
 válido só para quem usa a API de rede do próprio sistema.
 
+## Segundo plano derruba a conexão — projete para isso
+
+Observado em aparelho real (Samsung, Android 15): basta trocar de app — abrir o
+WhatsApp, por exemplo — para o sistema derrubar a conexão. O servidor loga
+`desconectou` em segundos. Ao voltar para o app, o `AutoReconnect` reabre
+sozinho e o servidor registra uma conexão NOVA (`conn 6`, `conn 7`…), sem o app
+precisar recriar o `TPipeClient`.
+
+Isso é política de execução em segundo plano do Android, não comportamento da
+biblioteca, e é mais agressiva em alguns fabricantes. Três consequências de
+projeto:
+
+- **Não conte com sessão longa.** Em celular, "conectado" é um estado que o
+  sistema pode revogar a qualquer momento. `AutoReconnect := True` não é
+  conveniência, é requisito.
+- **`ConnId` muda a cada reconexão.** Se o servidor guarda estado por conexão,
+  ele precisa de uma identidade de aplicação (sob mTLS, o CN do certificado do
+  cliente, via `TryClientIdentity`) — não do `ConnId`.
+- **Assinaturas de pub/sub sobrevivem**, e isso é da lib: o cliente as reenvia
+  em `TryReopenSession` ANTES de disparar `OnConnected`, então o app não
+  reassina nada. Ver `docs/ARQUITETURA.md` §9.6.
+
+O `HeartbeatIntervalMs` que o sample liga serve ao caso oposto e igualmente
+comum: a conexão que o sistema **não** derruba mas o NAT da operadora silencia.
+Sem ele o servidor acumularia conexão zumbi de celular fora de alcance.
+
 ## O que o sample mostra
 
 - `DispatchMode := pdmMainThread` — os eventos chegam pela thread principal
