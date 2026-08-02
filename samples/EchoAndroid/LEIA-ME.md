@@ -321,17 +321,14 @@ porque as entradas não são `Required`. Quem só quer ver o `ptTcp` funcionando
 ignora os avisos; quem quer `ptTls` gera os pré-requisitos e eles passam a ser
 encontrados.
 
-Falta apenas o certificado de CLIENTE, para mTLS. Adicione no IDE
-(`Project > Deployment`, **Android64**, **Debug**), com *Remote Path*
-`assets\internal\`:
+Isso inclui o certificado de CLIENTE (`cli_cert.pem` / `cli_key.pem`), usado
+quando o servidor liga mTLS — não há nenhum passo manual de Deployment.
 
-- `..\..\tools\pki-android\cli_cert.pem`
-- `..\..\tools\pki-android\cli_key.pem`
-
-`cli_*` são os nomes que o `ConfiguraTls` procura. O `gerar-pki.sh` batiza os
-certificados de cliente pelo CN (`android-001_cert.pem`), então copie-os com
-esses nomes — é mais simples que editar a coluna *Remote Name*, e mantém o
-sample funcionando com qualquer PKI.
+Os nomes `cli_*` são fixos no `ConfiguraTls`: é um sample, não um instalador de
+credenciais. O `gerar-pki.sh` batiza os certificados de cliente pelo CN
+(`android-001_cert.pem`), então copie-os com esses nomes dentro de
+`tools/pki-android/`. É mais simples que editar a coluna *Remote Name* no IDE, e
+mantém o sample funcionando com qualquer PKI.
 
 O `System.StartUpCopy` do `.dpr` copia `assets/internal` para a pasta de
 documentos do app no primeiro start; é de lá que o sample lê. O log da tela diz
