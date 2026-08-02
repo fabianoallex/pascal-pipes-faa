@@ -833,11 +833,26 @@ marcados `deprecated` só depois que samples e testes migrarem.
   quais backends o build tem.)
 
 - OpenSSL **1.1** (o outro ramo suportado): trocar a imagem por `debian:bullseye`, que traz
-  `libssl 1.1.1` e **não** tem a 3.x. Não é redundante com a anterior — é a única forma de
-  exercitar o fallback de símbolo do getter do certificado do par, que o 3.x renomeou
-  (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). Com as duas versões instaladas
-  o loader escolheria a 3.x e o ramo antigo nunca rodaria; numa imagem onde só existe a 1.1,
-  ele é obrigatório.
+  `libssl 1.1.1` e **não** tem a 3.x, e compilar com `-dPIPES_OPENSSL` (sem a diretiva não
+  há backend TLS e a suíte de `ptTls` não roda). Não é redundante com a anterior — é a
+  única forma de exercitar as divergências 1.1/3.x, e **duas já morderam de verdade**:
+
+  ```bash
+  docker run --rm -v "$PWD:/work" debian:bullseye bash -c '
+    apt-get update -qq && apt-get install -y -qq fpc libssl1.1 >/dev/null
+    cd /work/tests/Integration/fpc
+    fpc -MDelphi -Sh -B -dPIPES_OPENSSL -Fu../../../src -Fi../../../src       -FU/tmp -o/tmp/t PipesIntegrationTestsFpc.lpr
+    /tmp/t --all --format=plain'
+  ```
+
+  1. O **fallback de símbolo** do getter do certificado do par, que o 3.x renomeou
+     (`SSL_get_peer_certificate` → `SSL_get1_peer_certificate`). Com as duas versões
+     instaladas o loader escolheria a 3.x e o ramo antigo nunca rodaria.
+  2. A **validação por endereço IP** (`Tls_ValidaServidorPorIp_Aceita`). Endereço IP mora em
+     SAN do tipo `iPAddress` e exige `X509_VERIFY_PARAM_set1_ip_asc`; na 3.x o
+     `SSL_set1_host` aceita um literal de IP e mascara a diferença. Esse teste **passa na
+     3.x com ou sem a correção** — só a imagem 1.1 o torna um guarda de verdade. Histórico
+     em [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §13.9.
 
 A suíte de integração inclui stress de encerramento (Stop sob flood < 2 s), detector de
 vazamento de handle/fd em quedas abruptas repetidas e correlação RPC sob concorrência.
