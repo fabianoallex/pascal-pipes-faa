@@ -1,4 +1,4 @@
-<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
         <ProjectGuid>{9F41A7D2-58C3-4E16-9A0B-2D7E85C34B90}</ProjectGuid>
         <ProjectVersion>20.1</ProjectVersion>
@@ -310,18 +310,6 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
-        <DCCReference Include="..\..\src\Pipes.Threading.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Types.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Framing.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Topics.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Transport.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Transport.Android.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Transport.Tcp.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Transport.OpenSSL.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Transport.Tls.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Base.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Server.pas"/>
-        <DCCReference Include="..\..\src\Pipes.Client.pas"/>
         <DCCReference Include="uEchoAndroidMain.pas">
             <Form>frmEchoAndroid</Form>
             <FormType>fmx</FormType>
@@ -520,6 +508,27 @@
                 <DeployFile LocalName="$(BDS)\lib\android\debug\mips\libnative-activity.so" Configuration="Debug" Class="AndroidLibnativeMipsFile">
                     <Platform Name="Android64">
                         <RemoteName>libEchoAndroid.so</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\tools\openssl-android\arm64-v8a\libcrypto.so" Configuration="Debug" Class="File">
+                    <Platform Name="Android64">
+                        <RemoteDir>library\lib\arm64-v8a\</RemoteDir>
+                        <RemoteName>libcrypto.so</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\tools\openssl-android\arm64-v8a\libssl.so" Configuration="Debug" Class="File">
+                    <Platform Name="Android64">
+                        <RemoteDir>library\lib\arm64-v8a\</RemoteDir>
+                        <RemoteName>libssl.so</RemoteName>
+                        <Overwrite>true</Overwrite>
+                    </Platform>
+                </DeployFile>
+                <DeployFile LocalName="..\..\tools\pki-android\ca_cert.pem" Configuration="Debug" Class="File">
+                    <Platform Name="Android64">
+                        <RemoteDir>assets\internal\</RemoteDir>
+                        <RemoteName>ca_cert.pem</RemoteName>
                         <Overwrite>true</Overwrite>
                     </Platform>
                 </DeployFile>

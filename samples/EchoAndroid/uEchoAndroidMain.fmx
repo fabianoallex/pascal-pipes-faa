@@ -15,33 +15,37 @@ object frmEchoAndroid: TfrmEchoAndroid
     Margins.Left = 8.000000000000000000
     Margins.Top = 8.000000000000000000
     Margins.Right = 8.000000000000000000
+    Position.X = 8.000000000000000000
+    Position.Y = 8.000000000000000000
     Size.Width = 344.000000000000000000
     Size.Height = 20.000000000000000000
     Size.PlatformDefault = False
-    TextSettings.Font.Style = [fsBold]
+    TextSettings.Font.StyleExt = {00070000000000000004000000}
     Text = 'Servidor (host:porta)'
     TabOrder = 0
   end
   object edtEndereco: TEdit
     Touch.InteractiveGestures = [LongTap, DoubleTap]
     Align = Top
+    TabOrder = 1
+    KeyboardType = URL
+    Text = '192.168.0.10:5300'
+    Position.X = 8.000000000000000000
+    Position.Y = 32.000000000000000000
     Margins.Left = 8.000000000000000000
     Margins.Top = 4.000000000000000000
     Margins.Right = 8.000000000000000000
-    Position.Y = 28.000000000000000000
     Size.Width = 344.000000000000000000
     Size.Height = 40.000000000000000000
     Size.PlatformDefault = False
-    TabOrder = 1
-    Text = '192.168.0.10:5300'
-    KeyboardType = URL
   end
   object lytTls: TLayout
     Align = Top
     Margins.Left = 8.000000000000000000
     Margins.Top = 8.000000000000000000
     Margins.Right = 8.000000000000000000
-    Position.Y = 76.000000000000000000
+    Position.X = 8.000000000000000000
+    Position.Y = 80.000000000000000000
     Size.Width = 344.000000000000000000
     Size.Height = 32.000000000000000000
     Size.PlatformDefault = False
@@ -69,7 +73,8 @@ object frmEchoAndroid: TfrmEchoAndroid
     Margins.Left = 8.000000000000000000
     Margins.Top = 8.000000000000000000
     Margins.Right = 8.000000000000000000
-    Position.Y = 116.000000000000000000
+    Position.X = 8.000000000000000000
+    Position.Y = 120.000000000000000000
     Size.Width = 344.000000000000000000
     Size.Height = 48.000000000000000000
     Size.PlatformDefault = False
@@ -81,6 +86,7 @@ object frmEchoAndroid: TfrmEchoAndroid
       Size.PlatformDefault = False
       TabOrder = 0
       Text = 'Conectar'
+      TextSettings.Trimming = None
       OnClick = btnConectarClick
     end
     object btnDesconectar: TButton
@@ -91,20 +97,22 @@ object frmEchoAndroid: TfrmEchoAndroid
       Size.PlatformDefault = False
       TabOrder = 1
       Text = 'Desconectar'
+      TextSettings.Trimming = None
       OnClick = btnDesconectarClick
     end
   end
   object edtMensagem: TEdit
     Touch.InteractiveGestures = [LongTap, DoubleTap]
     Align = Top
+    TabOrder = 4
+    Position.X = 8.000000000000000000
+    Position.Y = 180.000000000000000000
     Margins.Left = 8.000000000000000000
     Margins.Top = 12.000000000000000000
     Margins.Right = 8.000000000000000000
-    Position.Y = 176.000000000000000000
     Size.Width = 344.000000000000000000
     Size.Height = 40.000000000000000000
     Size.PlatformDefault = False
-    TabOrder = 4
     TextPrompt = 'mensagem'
   end
   object btnEnviar: TButton
@@ -112,12 +120,14 @@ object frmEchoAndroid: TfrmEchoAndroid
     Margins.Left = 8.000000000000000000
     Margins.Top = 4.000000000000000000
     Margins.Right = 8.000000000000000000
-    Position.Y = 220.000000000000000000
+    Position.X = 8.000000000000000000
+    Position.Y = 224.000000000000000000
     Size.Width = 344.000000000000000000
     Size.Height = 48.000000000000000000
     Size.PlatformDefault = False
     TabOrder = 5
     Text = 'Enviar'
+    TextSettings.Trimming = None
     OnClick = btnEnviarClick
   end
   object memLog: TMemo
@@ -133,7 +143,6 @@ object frmEchoAndroid: TfrmEchoAndroid
     Size.Width = 344.000000000000000000
     Size.Height = 348.000000000000000000
     Size.PlatformDefault = False
-    TextSettings.Font.Size = 12.000000000000000000
     TabOrder = 6
     Viewport.Width = 340.000000000000000000
     Viewport.Height = 344.000000000000000000

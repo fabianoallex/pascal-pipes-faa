@@ -745,7 +745,9 @@ todo o resto da lib por um dado que a property já resolve sem quebrar nada em u
 > **Status: A0-A3 VERIFICADOS em aparelho real.** Esta seção começou como o racional de uma
 > investigação de viabilidade (spike descartável, fora do repo) e virou o histórico de "por
 > quê" da implementação. A suíte `tests/Android/` roda **11 ok, 0 falhas, 0 pulados** num
-> device — números em §13.8. §13.7 registra o que a implementação mudou em relação à
+> device — números em §13.8 —, e o sample `EchoAndroid` fecha o caso de uso real: celular
+> contra servidor Windows pelo IP da LAN, com `ptTls` e mTLS, aceitando o cliente
+> legítimo e recusando o sem certificado (`samples/EchoAndroid/LEIA-ME.md`). §13.7 registra o que a implementação mudou em relação à
 > proposta original; §13.9, o bug de portabilidade que a verificação de `ptTls` no aparelho
 > revelou e que nenhum dos dois compiladores do desktop teria exposto.
 

@@ -43,6 +43,7 @@
       <Filename Value="EchoServer"/>
     </Target>
     <SearchPaths>
+      <IncludeFiles Value="..\..\src"/>
       <UnitOutputDirectory Value="lib\$(TargetCPU)-$(TargetOS)"/>
     </SearchPaths>
     <Parsing>

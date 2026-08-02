@@ -335,6 +335,17 @@ TLS: apresentando cli_cert.pem (mTLS)
 Se aparecer `sem ca_cert.pem` ou `sem certificado de cliente`, os arquivos não
 chegaram — reveja o Remote Path.
 
+
+> **Trocou um certificado e o app continua usando o antigo?** O
+> `System.StartUpCopy` copia `assets/internal` para a pasta de documentos
+> **sem sobrescrever** (`System.StartUpCopy.pas:83`, `if not FileExists(...)
+> //do not overwrite files`) — por design, para não destruir dados do usuário
+> numa atualização. Consequência: um PEM trocado no Deployment entra no APK
+> novo mas **não** substitui o que já está no aparelho, e o veredito de TLS
+> passa a mentir. Desinstale o app (ou limpe os dados) e faça o deploy de novo.
+> Foi assim que um `X509 err 20` sobreviveu à correção do arquivo: o APK já
+> estava certo, o aparelho não.
+
 ### Do lado do servidor (PC)
 
 `samples/EchoSeguro/EchoSeguroServer.exe` usa a PKI de `tests/pki`, que não tem
@@ -359,6 +370,54 @@ OpenSSL aponta para um `OPENSSLDIR` que não existe no Android, então
 `/system/etc/security/cacerts`. CAs que o *usuário* instalou pelas configurações
 do Android **não** entram — desde o Android 7 elas ficam num store separado,
 válido só para quem usa a API de rede do próprio sistema.
+
+## Verificado em aparelho e rede reais (2026-08-02)
+
+Celular Android (OpenSSL 1.1.1) contra `EchoServer` no Windows (SChannel), pelo
+IP da LAN — backends diferentes nas duas pontas:
+
+| Cenário | Resultado |
+|---|---|
+| `ptTcp` | mensagens trafegam |
+| `ptTls`, validando o servidor pelo **IP** do SAN | conecta e ecoa |
+| `ptTls` + mTLS, cliente **com** certificado | aceito, eco de volta |
+| `ptTls` + mTLS, cliente **sem** certificado | recusado — `mTLS: o cliente nao apresentou certificado` |
+
+O caso negativo veio de graça: o app antigo (ainda sem `cli_cert.pem`) ficou
+tentando reconectar e o servidor recusou as 12 tentativas, todas com o veredito
+correto. E elas **não viraram laço quente** — ficaram espaçadas pelo
+`ReconnectDelayMs` mesmo com recusa imediata, que é o que o teste
+`Mtls_AutoReconnectRecusado_NaoViraLacoQuente` protege no desktop.
+
+A validação por IP é o caminho que estava quebrado no OpenSSL 1.1.1 até
+`docs/ARQUITETURA.md` §13.9 — sem aquela correção, este cenário daria
+`X509_V_ERR_HOSTNAME_MISMATCH`.
+
+## Segundo plano derruba a conexão — projete para isso
+
+Observado em aparelho real (Samsung, Android 15): basta trocar de app — abrir o
+WhatsApp, por exemplo — para o sistema derrubar a conexão. O servidor loga
+`desconectou` em segundos. Ao voltar para o app, o `AutoReconnect` reabre
+sozinho e o servidor registra uma conexão NOVA (`conn 6`, `conn 7`…), sem o app
+precisar recriar o `TPipeClient`.
+
+Isso é política de execução em segundo plano do Android, não comportamento da
+biblioteca, e é mais agressiva em alguns fabricantes. Três consequências de
+projeto:
+
+- **Não conte com sessão longa.** Em celular, "conectado" é um estado que o
+  sistema pode revogar a qualquer momento. `AutoReconnect := True` não é
+  conveniência, é requisito.
+- **`ConnId` muda a cada reconexão.** Se o servidor guarda estado por conexão,
+  ele precisa de uma identidade de aplicação (sob mTLS, o CN do certificado do
+  cliente, via `TryClientIdentity`) — não do `ConnId`.
+- **Assinaturas de pub/sub sobrevivem**, e isso é da lib: o cliente as reenvia
+  em `TryReopenSession` ANTES de disparar `OnConnected`, então o app não
+  reassina nada. Ver `docs/ARQUITETURA.md` §9.6.
+
+O `HeartbeatIntervalMs` que o sample liga serve ao caso oposto e igualmente
+comum: a conexão que o sistema **não** derruba mas o NAT da operadora silencia.
+Sem ele o servidor acumularia conexão zumbi de celular fora de alcance.
 
 ## O que o sample mostra
 

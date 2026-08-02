@@ -1,4 +1,4 @@
-unit uEchoAndroidMain;
+﻿unit uEchoAndroidMain;
 
 { Tela unica do sample: endereco, chave de TLS, conectar/desconectar, campo de
   mensagem e log.

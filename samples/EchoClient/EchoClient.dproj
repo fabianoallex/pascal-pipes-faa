@@ -39,6 +39,7 @@
         <DCC_ExeOutput>.\$(Platform)\$(Config)</DCC_ExeOutput>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
         <DCC_UnitSearchPath>..\..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+        <DCC_IncludePath>..\..\src;$(DCC_IncludePath)</DCC_IncludePath>
         <SanitizedProjectName>EchoClient</SanitizedProjectName>
         <UsingDelphiRTL>true</UsingDelphiRTL>
     </PropertyGroup>
