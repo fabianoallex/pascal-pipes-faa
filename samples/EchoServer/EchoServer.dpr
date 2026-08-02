@@ -17,8 +17,14 @@ program EchoServer;
     EchoServer                         ptLocal em 'pipes_faa_echo' (padrao)
     EchoServer meu_pipe                ptLocal em 'meu_pipe'
     EchoServer *:5300 tcp              ptTcp em todas as interfaces, porta 5300
-    EchoServer *:5300 tls ..\..\tools\pki-android
-    EchoServer *:5300 tls <dir> mtls   exige certificado do cliente
+    EchoServer *:5300 tls <dir-pki>
+    EchoServer *:5300 tls <dir-pki> mtls   exige certificado do cliente
+
+  <dir-pki> relativo vale a partir do diretorio ATUAL, e os dois compiladores
+  deixam o exe em lugares diferentes: do build do FPC (samples\EchoServer) o
+  caminho e' ..\..\tools\pki-android; do build do Delphi
+  (samples\EchoServer\Win64\Debug) sao quatro niveis. Na duvida, use caminho
+  absoluto.
 
   Os parametros a partir do segundo sao opcionais e mantem o comportamento
   antigo intacto: sem eles, ptLocal como sempre. Existem para o sample
@@ -184,8 +190,14 @@ begin
     LFalta := LDir + 'srv_cert.pem';
     {$ENDIF}
     if not FileExists(LFalta) then
-      raise Exception.Create('credencial de servidor nao encontrada: ' + LFalta +
-        ' (gere a PKI com tools/gerar-pki.sh)');
+      // ExpandFileName no texto do erro NAO e' detalhe: caminho relativo e'
+      // resolvido contra o diretorio ATUAL, e o exe do FPC e o do Delphi
+      // ficam em niveis diferentes da arvore. Sem o caminho absoluto, a
+      // mensagem diz o que faltou mas nao ONDE procurou.
+      raise Exception.Create('credencial de servidor nao encontrada: ' +
+        ExpandFileName(LFalta) +
+        ' (gere a PKI com tools/gerar-pki.sh; caminho relativo vale a' +
+        ' partir do diretorio atual)');
     if AMtls then
     begin
       // CaFile no SERVIDOR liga mTLS: cliente sem certificado desta CA e'

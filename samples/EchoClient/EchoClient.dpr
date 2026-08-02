@@ -17,8 +17,12 @@ program EchoClient;
     EchoClient                       ptLocal em 'pipes_faa_echo' (padrao)
     EchoClient meu_pipe              ptLocal em 'meu_pipe'
     EchoClient 192.168.0.10:5300 tcp ptTcp
-    EchoClient 192.168.0.10:5300 tls ..\..\tools\pki-android
-    EchoClient ... tls <dir> android-001    apresenta certificado (mTLS)
+    EchoClient 192.168.0.10:5300 tls <dir-pki>
+    EchoClient ... tls <dir-pki> cli        apresenta certificado (mTLS)
+
+  <dir-pki> relativo vale a partir do diretorio ATUAL; o build do FPC e o do
+  Delphi deixam o exe em niveis diferentes da arvore. Na duvida, use caminho
+  absoluto.
 
   Os parametros a partir do segundo sao opcionais e nao mudam o comportamento
   antigo. Servem para conferir do PC um servidor ptTcp/ptTls antes de culpar o
