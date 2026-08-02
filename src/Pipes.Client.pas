@@ -216,6 +216,11 @@ type
     procedure Disconnect;
     procedure SendBytes(const AData: TBytes);
     procedure SendText(const AText: string);
+    /// Mesma coisa que SendBytes, para N mensagens num unico Write no stream
+    /// — pensado para rajadas (varias mensagens prontas de uma vez) em vez de
+    /// N locks/syscalls separados. Ordem preservada; lista vazia e' no-op.
+    /// Mesmos erros de SendBytes (EPipeClosed se nao ha sessao).
+    procedure SendBytesBatch(const AItems: TArray<TBytes>);
     /// Request-reply sincrono: bloqueia o CHAMADOR (nunca a thread de
     /// leitura) ate o reply, EPipeTimeout no prazo, EPipeError se o servidor
     /// respondeu com erro (excecao no OnRequest ou handler ausente),
@@ -253,6 +258,10 @@ type
     /// servidor, em OnPublish.
     procedure Publish(const ATopic: string; const AData: TBytes);
     procedure PublishText(const ATopic, AText: string);
+    /// Mesma coisa que Publish, para N itens (cada um com seu topico/corpo/
+    /// retain) num unico Write. EPipeError se ALGUM topico for invalido
+    /// (nenhum item e' publicado), EPipeClosed se nao ha sessao.
+    procedure PublishBatch(const AItems: TArray<TPipePublishItem>);
     /// Chegou uma publicacao que casa com algum filtro assinado. AConnId e' 0
     /// (o cliente tem uma conexao so').
     ///
@@ -996,6 +1005,36 @@ begin
   Publish(ATopic, PipeUtf8Encode(AText));
 end;
 
+procedure TPipeClient.PublishBatch(const AItems: TArray<TPipePublishItem>);
+var
+  LFrames: TArray<TPipeFrame>;
+  I: Integer;
+  LBytes: UInt64;
+begin
+  if Length(AItems) = 0 then
+    Exit;
+  for I := 0 to High(AItems) do
+    if not PipeIsValidTopic(AItems[I].Topic) then
+      raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [AItems[I].Topic]);
+  SetLength(LFrames, Length(AItems));
+  for I := 0 to High(AItems) do
+    LFrames[I] := PipePublishFrame(AItems[I].Topic, AItems[I].Payload, AItems[I].Retain);
+  FWriteLock.Enter;
+  try
+    if (not FConnected) or (FStream = nil) then
+      raise EPipeClosed.Create('cliente nao esta conectado');
+    PipeWriteFrames(FStream, LFrames, MaxMessageSize);
+    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    LBytes := 0;
+    for I := 0 to High(LFrames) do
+      Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrames[I].Payload)));
+    PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
+  finally
+    FWriteLock.Leave;
+  end;
+end;
+
 procedure TPipeClient.ResolveRpc(const AFrame: TPipeFrame);
 var
   LObj: TObject;
@@ -1151,6 +1190,33 @@ end;
 procedure TPipeClient.SendText(const AText: string);
 begin
   SendBytes(PipeUtf8Encode(AText));
+end;
+
+procedure TPipeClient.SendBytesBatch(const AItems: TArray<TBytes>);
+var
+  LFrames: TArray<TPipeFrame>;
+  I: Integer;
+  LBytes: UInt64;
+begin
+  if Length(AItems) = 0 then
+    Exit;
+  SetLength(LFrames, Length(AItems));
+  for I := 0 to High(AItems) do
+    LFrames[I] := TPipeFrame.Msg(AItems[I]);
+  FWriteLock.Enter;
+  try
+    if (not FConnected) or (FStream = nil) then
+      raise EPipeClosed.Create('cliente nao esta conectado');
+    PipeWriteFrames(FStream, LFrames, MaxMessageSize);
+    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    LBytes := 0;
+    for I := 0 to High(LFrames) do
+      Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrames[I].Payload)));
+    PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
+  finally
+    FWriteLock.Leave;
+  end;
 end;
 
 end.

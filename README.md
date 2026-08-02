@@ -508,8 +508,10 @@ TPipeBase (abstrata)
 TPipeServer
   Listen; Stop;                          // Listen não-blocante; Stop síncrono
   SendBytes/SendText(ConnId, ...)        // EPipeError se ConnId não existe
+  SendBytesBatch(ConnId, TArray<TBytes>) // N mensagens, um Write só; ordem preservada
   Broadcast/BroadcastText(...)           // snapshot; falha por conexão é engolida
   Publish/PublishText(Topico, ..., Retain = False)  // só quem assinou o tópico
+  PublishBatch(TArray<TPipePublishItem>) // N itens (Topic/Payload/Retain); um Write por conexão
   SubscriberCount(Topico)                // quantos receberiam uma publicação
   ClientSubscriptions(ConnId)            // filtros que aquele cliente assinou
   ClearRetained                          // valores retidos não morrem no Stop
@@ -530,10 +532,12 @@ TPipeServer
 TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect re-tenta até o prazo
   SendBytes/SendText(...)                // fire-and-forget
+  SendBytesBatch(TArray<TBytes>)         // N mensagens, um Write só; ordem preservada
   Request/RequestText(..., TimeoutMs)    // RPC síncrono; EPipeTimeout no prazo
   Subscribe/Unsubscribe(Filtro)          // funciona desconectado; refeito na reconexão
   Subscriptions                          // filtros assinados (estado desejado)
   Publish/PublishText(Topico, ...)       // EPipeClosed sem sessão
+  PublishBatch(TArray<TPipePublishItem>) // N itens (Topic/Payload/Retain), um Write só
   OnTopicMessage: TPipeTopicEvent        // (...; ATopic; AData; ARetained)
                                          // ARetained: True só em catch-up de assinatura
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
@@ -544,6 +548,7 @@ TPipeClient
 
 Pipes.Topics (unit pura, útil também fora da lib)
   PipeTopicMatches(Filtro, Topico); PipeIsValidTopic; PipeIsValidTopicFilter
+  TPipePublishItem = record Topic; Payload: TBytes; Retain: Boolean; end  // ver PublishBatch
 
 Pipes.Json (OPCIONAL — só inclui quem for usar; ver "JSON" abaixo)
   TPipeJSONValue                         // = TJSONValue (Delphi) / TJSONData (FPC)

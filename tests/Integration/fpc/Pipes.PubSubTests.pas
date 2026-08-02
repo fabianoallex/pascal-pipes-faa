@@ -70,6 +70,7 @@ type
     procedure DoSubscribeFiltroInvalido;
     procedure DoPublishTopicoInvalidoNoServidor;
     procedure DoPublishDesconectado;
+    procedure DoPublishBatchTopicoInvalidoNoServidor;
     // Infra:
     function IndexOfClient(Sender: TObject): Integer;
     procedure OpenServer(ADispatchMode: TPipeDispatchMode = pdmPool);
@@ -106,6 +107,10 @@ type
     procedure PublishDoCliente_ComRelayAlcancaOsOutros;
     procedure Resubscribe_AposReconexaoAutomatica;
     procedure Stop_ComPublicacaoIntensa_TerminaEm2s;
+    procedure PublishBatch_ItensSoVaoParaQuemAssinaCadaTopico;
+    procedure PublishBatch_RetainPorItem_ChegaAQuemAssinaDepois;
+    procedure PublishBatch_TopicoInvalido_NaoPublicaNadaDoLote;
+    procedure PublishBatch_DoCliente_SemRelayVaiSoParaOnPublish;
   end;
 
 implementation
@@ -315,6 +320,18 @@ end;
 procedure TPipePubSubTests.DoPublishDesconectado;
 begin
   FClients[0].PublishText('caixa.3.status', 'x');
+end;
+
+procedure TPipePubSubTests.DoPublishBatchTopicoInvalidoNoServidor;
+var
+  LItems: TArray<TPipePublishItem>;
+begin
+  SetLength(LItems, 2);
+  LItems[0].Topic := 'caixa.3.status'; // valido
+  LItems[0].Payload := PipeUtf8Encode('x');
+  LItems[1].Topic := 'caixa..status'; // invalido: segmento vazio
+  LItems[1].Payload := PipeUtf8Encode('y');
+  FServer.PublishBatch(LItems);
 end;
 
 { --- infra --- }
@@ -726,6 +743,100 @@ begin
   AssertFalse('servidor devia estar inativo', FServer.Active);
   AssertTrue('os clientes nao perceberam o Stop',
     WaitCount(FCliDiscCount, 3, 3000));
+end;
+
+{ --- PublishBatch --- }
+
+procedure TPipePubSubTests.PublishBatch_ItensSoVaoParaQuemAssinaCadaTopico;
+var
+  LItems: TArray<TPipePublishItem>;
+begin
+  OpenServer;
+  AddClient(0);
+  AddClient(1);
+  AddClient(2);
+  FClients[0].Subscribe('caixa.3.status');
+  FClients[1].Subscribe('caixa.4.status');
+  // O cliente 2 nao assina nada: item sem assinante nao pode virar Write nenhum.
+  AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  AssertTrue(WaitSubscribers('caixa.4.status', 1, 3000));
+
+  SetLength(LItems, 2);
+  LItems[0].Topic := 'caixa.3.status';
+  LItems[0].Payload := PipeUtf8Encode('aberto');
+  LItems[1].Topic := 'caixa.4.status';
+  LItems[1].Payload := PipeUtf8Encode('fechado');
+  FServer.PublishBatch(LItems);
+
+  AssertTrue('cliente 0 nao recebeu o item do seu topico',
+    WaitCount(FTopicCount[0], 1, 3000));
+  AssertTrue('cliente 1 nao recebeu o item do seu topico',
+    WaitCount(FTopicCount[1], 1, 3000));
+  Sleep(150);
+  AssertEquals('cliente 2 nao assinou nada e nao devia receber',
+    0, PipeAtomicGet(FTopicCount[2]));
+  AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
+  AssertEquals(1, CountLog('1|caixa.4.status|fechado'));
+end;
+
+procedure TPipePubSubTests.PublishBatch_RetainPorItem_ChegaAQuemAssinaDepois;
+var
+  LItems: TArray<TPipePublishItem>;
+begin
+  OpenServer;
+  SetLength(LItems, 2);
+  LItems[0].Topic := 't.1';
+  LItems[0].Payload := PipeUtf8Encode('um');
+  LItems[0].Retain := True;
+  LItems[1].Topic := 't.2';
+  LItems[1].Payload := PipeUtf8Encode('dois');
+  LItems[1].Retain := False; // nao devia sobreviver para quem assina depois
+  FServer.PublishBatch(LItems);
+
+  AddClient(0);
+  FClients[0].Subscribe('t.#');
+  AssertTrue('retido do lote nao chegou', WaitCount(FTopicCount[0], 1, 3000));
+  Sleep(200);
+  AssertEquals('so o item com Retain=True devia sobreviver para o novo assinante',
+    1, PipeAtomicGet(FTopicCount[0]));
+  AssertEquals(1, CountLog('0|t.1|um'));
+  AssertEquals(0, CountLog('0|t.2|'));
+end;
+
+procedure TPipePubSubTests.PublishBatch_TopicoInvalido_NaoPublicaNadaDoLote;
+begin
+  OpenServer;
+  AddClient(0);
+  FClients[0].Subscribe('caixa.#');
+  AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  AssertException(EPipeError, DoPublishBatchTopicoInvalidoNoServidor);
+  Sleep(150);
+  AssertEquals('topico invalido no lote nao pode deixar os outros itens passarem',
+    0, PipeAtomicGet(FTopicCount[0]));
+end;
+
+procedure TPipePubSubTests.PublishBatch_DoCliente_SemRelayVaiSoParaOnPublish;
+var
+  LItems: TArray<TPipePublishItem>;
+begin
+  OpenServer;
+  AddClient(0);
+  AddClient(1);
+  FClients[1].Subscribe('caixa.#');
+  AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+
+  SetLength(LItems, 2);
+  LItems[0].Topic := 'caixa.3.status';
+  LItems[0].Payload := PipeUtf8Encode('a');
+  LItems[1].Topic := 'caixa.4.status';
+  LItems[1].Payload := PipeUtf8Encode('b');
+  FClients[0].PublishBatch(LItems);
+
+  AssertTrue('OnPublish nao viu os dois itens do lote',
+    WaitCount(FPublishCount, 2, 3000));
+  Sleep(150);
+  AssertEquals('sem RelayClientPublish, o lote nao alcanca outros clientes',
+    0, PipeAtomicGet(FTopicCount[1]));
 end;
 
 initialization

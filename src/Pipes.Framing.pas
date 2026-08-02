@@ -100,6 +100,15 @@ function PipeReadFrame(AStream: TStream; AMaxPayload: Cardinal): TPipeFrame;
 procedure PipeWriteFrame(AStream: TStream; const AFrame: TPipeFrame;
   AMaxPayload: Cardinal);
 
+/// Escreve N frames no stream numa unica chamada Write, preservando a ordem
+/// (mesma garantia de PipeWriteFrame, so' que amortizando o custo de syscall
+/// entre varios frames — pensado para rajadas de mensagens do mesmo remetente
+/// pro mesmo destinatario). Lista vazia e' no-op. EPipeProtocol se ALGUM
+/// frame exceder AMaxPayload: a validacao roda ANTES de escrever qualquer
+/// byte, entao uma rejeicao nunca deixa frame parcial no stream.
+procedure PipeWriteFrames(AStream: TStream; const AFrames: TArray<TPipeFrame>;
+  AMaxPayload: Cardinal);
+
 implementation
 
 const
@@ -317,6 +326,39 @@ begin
     raise EPipeProtocol.CreateFmt('payload de %d bytes excede o maximo configurado (%u)',
       [Length(AFrame.Payload), AMaxPayload]);
   LBuf := PipeEncodeFrame(AFrame);
+  AStream.WriteBuffer(LBuf[0], Length(LBuf));
+end;
+
+procedure PipeWriteFrames(AStream: TStream; const AFrames: TArray<TPipeFrame>;
+  AMaxPayload: Cardinal);
+var
+  LEncoded: array of TBytes;
+  LBuf: TBytes;
+  I, LOffset, LTotal: Integer;
+begin
+  if Length(AFrames) = 0 then
+    Exit;
+  // Valida tudo primeiro (mesmo criterio de PipeWriteFrame por frame): assim
+  // um item grande demais no meio do lote nao deixa metade do lote escrita.
+  SetLength(LEncoded, Length(AFrames));
+  LTotal := 0;
+  for I := 0 to High(AFrames) do
+  begin
+    if Cardinal(Length(AFrames[I].Payload)) > AMaxPayload then
+      raise EPipeProtocol.CreateFmt('payload de %d bytes excede o maximo configurado (%u)',
+        [Length(AFrames[I].Payload), AMaxPayload]);
+    LEncoded[I] := PipeEncodeFrame(AFrames[I]);
+    Inc(LTotal, Length(LEncoded[I]));
+  end;
+  LBuf := nil;
+  SetLength(LBuf, LTotal);
+  LOffset := 0;
+  for I := 0 to High(LEncoded) do
+  begin
+    if Length(LEncoded[I]) > 0 then
+      Move(LEncoded[I][0], LBuf[LOffset], Length(LEncoded[I]));
+    Inc(LOffset, Length(LEncoded[I]));
+  end;
   AStream.WriteBuffer(LBuf[0], Length(LBuf));
 end;
 

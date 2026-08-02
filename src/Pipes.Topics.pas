@@ -60,6 +60,16 @@ const
   /// (a lista de assinaturas do servidor e' memoria que o CLIENTE dita).
   PIPE_MAX_TOPIC_BYTES = 255;
 
+type
+  /// Um item de publicacao em lote (ver TPipeServer.PublishBatch/
+  /// TPipeClient.PublishBatch): mesmos tres argumentos de Publish, agrupados
+  /// para ir num unico frame por conexao/lote em vez de um Publish por item.
+  TPipePublishItem = record
+    Topic: string;
+    Payload: TBytes;
+    Retain: Boolean;
+  end;
+
 /// Nome literal, para publicar: hierarquico, sem curinga, sem segmento vazio,
 /// sem caractere de controle, ate PIPE_MAX_TOPIC_BYTES.
 function PipeIsValidTopic(const ATopic: string): Boolean;

@@ -1013,3 +1013,68 @@ O padrão que fecha os quatro: **um teste negativo precisa afirmar QUAL foi a re
 que houve uma. Um caso de TLS que passa porque o TLS não existe é pior que um caso
 vermelho — ele mente sobre a cobertura, e some do radar justamente quando a regressão é
 mais grave.
+
+## 14. Batch de envio/publicação (`SendBytesBatch`/`PublishBatch`)
+
+Motivação: uma rajada de N mensagens avulsas pagava N vezes o par lock+syscall de escrita
+(`FWriteLock.Enter/Leave` + `Write` no stream), mesmo já sendo cada frame individual uma
+única chamada `Write` (`PipeWriteFrame` já emitia header+payload junto desde o M2). O ganho
+mecânico de agrupar não estava em economizar chamadas de `Write` por frame — já era uma —, e
+sim em não pagar N vezes o lock/syscall quando o app tem N mensagens prontas de uma vez.
+
+### 14.1 `PipeWriteFrames`: mesma garantia de `PipeWriteFrame`, para uma lista
+
+`Pipes.Framing.PipeWriteFrames(AStream, AFrames, AMaxPayload)` valida TODOS os frames antes
+de escrever qualquer byte (mesmo critério tudo-ou-nada de `PipeWriteFrame` por frame), depois
+concatena os frames codificados num único buffer e faz UMA chamada `Write`. Zero mudança de
+wire format: quem lê (`PipeReadFrame`) nunca soube nem precisa saber se os bytes chegaram
+numa `recv()`/`ReadFile` só ou em várias — um peer antigo sem `SendBytesBatch` continua
+entendendo o stream sem nenhuma mudança.
+
+### 14.2 `TPipePublishItem`: por que um record em `Pipes.Topics`, não `Pipes.Framing`
+
+O trio Topic/Payload/Retain espelha os três argumentos de `Publish`/`PipePublishFrame` — mora
+em `Pipes.Topics` (unit pura, sem IO) pelo mesmo motivo que `PipePublishFrame` mora lá: quem
+monta o frame de publicação é essa unit, não `Pipes.Framing`, que não sabe o que é um tópico.
+
+### 14.3 `PublishBatch`: casamento de tópico continua saindo SOB `FConnLock`, um Write por conexão
+
+`TPipeServer.PublishBatch` segue a mesma mecânica de `FanOut` (§9.3): o casamento
+`MatchesTopic` roda dentro do `FConnLock`, porque é ali que a lista de filtros de cada
+conexão pode ser lida com segurança — não depois. A diferença para `FanOut` é que aqui o
+resultado por conexão não é "vai ou não vai" um frame só, e sim um SUBCONJUNTO do lote (só os
+itens cujo tópico algum filtro daquela conexão alcança), montado ainda sob o lock e enviado
+com uma única `SendFrames` fora dele. Conexão sem nenhum item casando não gera `Write`
+nenhum — não é um lote vazio sendo mandado, é a conexão inteira pulada.
+
+Tópico inválido em QUALQUER item do lote recusa o lote inteiro (`EPipeError`, antes de
+publicar/reter qualquer item) — mesmo critério tudo-ou-nada de `PipeWriteFrames`, para não
+deixar retenção pela metade se o app tiver um erro de digitação no meio do lote.
+
+### 14.4 Uso interno: replay de retidos na reconexão ganhou atomicidade de graça
+
+`SendRetained` (entrega de valores retidos a quem acabou de assinar — §9.6) trocou o laço
+`for ... SendFrame ... except Break` por um `SendFrames` só. Efeito colateral bom: antes, um
+cliente caindo NO MEIO do replay recebia um PREFIXO arbitrário dos retidos (o `Break` só
+parava o laço, sem sinalizar nada); agora o replay inteiro é uma unidade de escrita — ou
+chega tudo, ou a exceção cai no mesmo `except` de antes e nada chega. Não foi o motivo de
+implementar o batch (a motivação era a rajada do app, §14 acima), mas é o tipo de correção
+que só aparece quando uma sequência de writes vira uma só.
+
+### 14.5 Ordem no fio ≠ ordem de entrega ao callback
+
+Armadilha que pegou o primeiro teste desta feature: `SendBytesBatch`/`PublishBatch` garantem
+ordem NO FIO (mesma sequência do array, um `Write`). A ordem em que o app VÊ isso em
+`OnMessage`/`OnTopicMessage` depende do `DispatchMode` — em `pdmPool` (o padrão), cada frame
+lido vira um work item despachado a um pool de workers, sem ordem garantida entre eles,
+exatamente como já valia para qualquer sequência de `SendBytes` avulsos antes deste milestone
+(é por isso que `OrdemPreservadaComSerialized`, de M6, já existia usando `pdmSerialized`). O
+batch não muda nem afrouxa essa regra; os testes de ordem de `SendBytesBatch` usam
+`pdmSerialized` pelo mesmo motivo.
+
+### 14.6 Escopo do que NÃO entrou
+
+Pipelining de verdade em request-reply (disparar N requests sem esperar cada resposta antes
+da próxima) foi considerado e descartado desta rodada: `Request` é síncrono por chamada, e
+paralelizar isso exigiria uma API assíncrona nova (`... of object`, sem `reference to`) — um
+projeto por si, não uma extensão do batch de mensagens avulsas/publicações.

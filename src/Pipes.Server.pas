@@ -136,6 +136,10 @@ type
     procedure Release; // libera o objeto quando zera
     procedure StartReader;
     procedure SendFrame(const AFrame: TPipeFrame);
+    /// Mesma coisa que SendFrame, para N frames num unico Write (ver
+    /// PipeWriteFrames) — um lock, uma syscall, para toda a lista. Lista
+    /// vazia e' no-op.
+    procedure SendFrames(const AFrames: TArray<TPipeFrame>);
     /// True se algum filtro assinado alcanca ATopic. Sob FConnLock.
     function MatchesTopic(const ATopic: string): Boolean;
     /// Chamada pela reader thread apos OnClientConnected. No-op se
@@ -253,6 +257,11 @@ type
     procedure Stop;
     procedure SendBytes(AConnId: TPipeConnectionId; const AData: TBytes);
     procedure SendText(AConnId: TPipeConnectionId; const AText: string);
+    /// Mesma coisa que SendBytes, para N mensagens num unico Write no stream
+    /// da conexao — pensado para rajadas (um app que tem varias mensagens
+    /// prontas de uma vez) em vez de N locks/syscalls separados. Ordem
+    /// preservada; lista vazia e' no-op. Mesmos erros de SendBytes.
+    procedure SendBytesBatch(AConnId: TPipeConnectionId; const AItems: TArray<TBytes>);
     /// Envia a todos os clientes conectados. Falha de envio a UM cliente e'
     /// ignorada (a desconexao dele sera notificada pelo proprio reader).
     procedure Broadcast(const AData: TBytes);
@@ -312,6 +321,12 @@ type
       ARetain: Boolean = False);
     procedure PublishText(const ATopic, AText: string;
       ARetain: Boolean = False);
+    /// Mesma coisa que Publish, para N itens (cada um com seu topico/corpo/
+    /// retain) em vez de uma chamada por item. Cada conexao recebe, num unico
+    /// Write, so' os itens do lote cujo topico algum filtro dela alcanca —
+    /// itens sem nenhum assinante nao geram Write nenhum para essa conexao.
+    /// EPipeError se ALGUM topico for invalido (nenhum item e' publicado).
+    procedure PublishBatch(const AItems: TArray<TPipePublishItem>);
     /// Quantos clientes estabelecidos receberiam uma publicacao em ATopic.
     function SubscriberCount(const ATopic: string): Integer;
     /// Filtros que o cliente assinou (vazio se ele saiu ou nunca assinou).
@@ -384,6 +399,13 @@ type
     procedure Execute; override;
   public
     constructor Create(AConn: TPipeServerConnection);
+  end;
+
+  { Subconjunto de um PublishBatch destinado a UMA conexao (so' os itens cujo
+    topico algum filtro dela alcanca) — ver TPipeServer.PublishBatch. }
+  TPipeConnFrameBatch = record
+    Conn: TPipeServerConnection;
+    Frames: TArray<TPipeFrame>;
   end;
 
   { Limpeza pos-morte de uma conexao cujo teardown pertence a um work item
@@ -578,6 +600,29 @@ begin
     PipeAtomicAdd64(FMessagesSent, 1);
     PipeAtomicAdd64(FServer.FTotalBytesSent, LBytes);
     PipeAtomicAdd64(FServer.FTotalMessagesSent, 1);
+  finally
+    FWriteLock.Leave;
+  end;
+end;
+
+procedure TPipeServerConnection.SendFrames(const AFrames: TArray<TPipeFrame>);
+var
+  LBytes: UInt64;
+  I: Integer;
+begin
+  if Length(AFrames) = 0 then
+    Exit;
+  FWriteLock.Enter;
+  try
+    PipeWriteFrames(FStream, AFrames, FServer.MaxMessageSize);
+    PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
+    LBytes := 0;
+    for I := 0 to High(AFrames) do
+      Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrames[I].Payload)));
+    PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FMessagesSent, UInt64(Length(AFrames)));
+    PipeAtomicAdd64(FServer.FTotalBytesSent, LBytes);
+    PipeAtomicAdd64(FServer.FTotalMessagesSent, UInt64(Length(AFrames)));
   finally
     FWriteLock.Leave;
   end;
@@ -1037,6 +1082,7 @@ procedure TPipeServer.SendRetained(AConn: TPipeServerConnection;
 var
   LTopics: TArray<string>;
   LDatas: TArray<TBytes>;
+  LFrames: TArray<TPipeFrame>;
   LTopic: string;
   LData: TBytes;
   LCount, I: Integer;
@@ -1068,15 +1114,24 @@ begin
   finally
     FConnLock.Leave;
   end;
+  if Length(LTopics) = 0 then
+    Exit;
+  SetLength(LFrames, Length(LTopics));
   for I := 0 to High(LTopics) do
-    try
-      // PIPE_FLAG_RETAIN ligado: valor guardado, nao acontecimento de agora.
-      // Chega ao app como ARetained = True em OnTopicMessage, e e' o UNICO
-      // caminho que liga esse bit (ver FanOut).
-      AConn.SendFrame(PipePublishFrame(LTopics[I], LDatas[I], True));
-    except
-      Break; // conexao caindo: o reader dela notifica
-    end;
+    // PIPE_FLAG_RETAIN ligado: valor guardado, nao acontecimento de agora.
+    // Chega ao app como ARetained = True em OnTopicMessage, e e' o UNICO
+    // caminho que liga esse bit (ver FanOut).
+    LFrames[I] := PipePublishFrame(LTopics[I], LDatas[I], True);
+  try
+    // Um Write so' para todo o replay (SendFrames): alem de mais barato numa
+    // reconexao com muitos retidos, tambem ficou atomico — antes, um cliente
+    // caindo no meio do loop recebia so' um PREFIXO dos retidos (o Break so'
+    // parava o loop, sem avisar ninguem); agora ou chega o replay inteiro ou
+    // nao chega nenhum, e a excecao cai no except abaixo do mesmo jeito.
+    AConn.SendFrames(LFrames);
+  except
+    // conexao caindo: o reader dela notifica
+  end;
 end;
 
 procedure TPipeServer.FanOut(const ATopic: string; const AData: TBytes);
@@ -1137,6 +1192,68 @@ procedure TPipeServer.PublishText(const ATopic, AText: string;
   ARetain: Boolean);
 begin
   Publish(ATopic, PipeUtf8Encode(AText), ARetain);
+end;
+
+procedure TPipeServer.PublishBatch(const AItems: TArray<TPipePublishItem>);
+var
+  I, J, LMatchCount: Integer;
+  LFrames: TArray<TPipeFrame>;
+  LMatched: TArray<TPipeFrame>;
+  LConn: TPipeServerConnection;
+  LBatches: TArray<TPipeConnFrameBatch>;
+begin
+  if Length(AItems) = 0 then
+    Exit;
+  for I := 0 to High(AItems) do
+    if not PipeIsValidTopic(AItems[I].Topic) then
+      raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [AItems[I].Topic]);
+  SetLength(LFrames, Length(AItems));
+  for I := 0 to High(AItems) do
+  begin
+    if AItems[I].Retain then
+      StoreRetained(AItems[I].Topic, AItems[I].Payload);
+    LFrames[I] := PipePublishFrame(AItems[I].Topic, AItems[I].Payload, AItems[I].Retain);
+  end;
+  // Mesma mecanica de FanOut: o casamento roda SOB FConnLock (e' onde a lista
+  // de filtros de cada conexao pode ser lida com seguranca — ver o cabecalho
+  // da unit), e o subconjunto por conexao ja sai pronto do lock; o envio (IO)
+  // acontece fora dele, um SendFrames por conexao em vez de um Write por item.
+  SetLength(LBatches, 0);
+  FConnLock.Enter;
+  try
+    for LConn in FConnections.Values do
+    begin
+      if not LConn.FEstablished then
+        Continue;
+      SetLength(LMatched, Length(LFrames));
+      LMatchCount := 0;
+      for J := 0 to High(LFrames) do
+        if LConn.MatchesTopic(AItems[J].Topic) then
+        begin
+          LMatched[LMatchCount] := LFrames[J];
+          Inc(LMatchCount);
+        end;
+      if LMatchCount = 0 then
+        Continue; // ninguem casou: nao gera Write nenhum para esta conexao
+      SetLength(LMatched, LMatchCount);
+      LConn.AddRef;
+      SetLength(LBatches, Length(LBatches) + 1);
+      LBatches[High(LBatches)].Conn := LConn;
+      LBatches[High(LBatches)].Frames := LMatched;
+    end;
+  finally
+    FConnLock.Leave;
+  end;
+  for I := 0 to High(LBatches) do
+    try
+      try
+        LBatches[I].Conn.SendFrames(LBatches[I].Frames);
+      except
+        // conexao caindo: o reader dela notificara; o lote segue para as demais
+      end;
+    finally
+      LBatches[I].Conn.Release;
+    end;
 end;
 
 function TPipeServer.SubscriberCount(const ATopic: string): Integer;
@@ -1253,6 +1370,38 @@ procedure TPipeServer.SendText(AConnId: TPipeConnectionId;
   const AText: string);
 begin
   SendBytes(AConnId, PipeUtf8Encode(AText));
+end;
+
+procedure TPipeServer.SendBytesBatch(AConnId: TPipeConnectionId;
+  const AItems: TArray<TBytes>);
+var
+  LConn: TPipeServerConnection;
+  LFrames: TArray<TPipeFrame>;
+  I: Integer;
+begin
+  if Length(AItems) = 0 then
+    Exit;
+  FConnLock.Enter;
+  try
+    // Mesma regra de SendBytes (ver o comentario la').
+    if FConnections.TryGetValue(AConnId, LConn) and LConn.FEstablished then
+      LConn.AddRef
+    else
+      LConn := nil;
+  finally
+    FConnLock.Leave;
+  end;
+  if LConn = nil then
+    raise EPipeError.Create('cliente ' + IntToStr(Int64(AConnId)) +
+      ' nao esta conectado');
+  try
+    SetLength(LFrames, Length(AItems));
+    for I := 0 to High(AItems) do
+      LFrames[I] := TPipeFrame.Msg(AItems[I]);
+    LConn.SendFrames(LFrames);
+  finally
+    LConn.Release;
+  end;
 end;
 
 procedure TPipeServer.Broadcast(const AData: TBytes);

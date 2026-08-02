@@ -76,6 +76,9 @@ type
     [Test] procedure Request_Timeout_LevantaEPipeTimeout;
     [Test] procedure AutoReconnect_ReconectaAposRestartDoServidor;
     [Test] procedure MainThread_EventosViaCheckSynchronize;
+    [Test] procedure SendBytesBatch_ClienteParaServidor_ChegamNaOrdem;
+    [Test] procedure SendBytesBatch_ServidorParaCliente_ChegamNaOrdem;
+    [Test] procedure SendBytesBatch_Vazio_NaoEnviaNada;
   end;
 
 implementation
@@ -532,6 +535,97 @@ begin
   FreeAndNil(FServer);
   for I := 1 to 5 do
     CheckSynchronize(10);
+end;
+
+procedure TPipeEndToEndTests.SendBytesBatch_ClienteParaServidor_ChegamNaOrdem;
+var
+  LItems: TArray<TBytes>;
+begin
+  // A garantia do lote e' de ORDEM NO FIO (mesma sequencia do array, um Write
+  // so'); a ordem de ENTREGA ao callback depende do DispatchMode, exatamente
+  // como para qualquer sequencia de SendBytes avulsos — dai pdmSerialized
+  // aqui, mesmo motivo de OrdemPreservadaComSerialized.
+  OpenPair(pdmSerialized);
+  SetLength(LItems, 3);
+  LItems[0] := PipeUtf8Encode('um');
+  LItems[1] := PipeUtf8Encode('dois');
+  LItems[2] := PipeUtf8Encode('tres');
+  FClient.SendBytesBatch(LItems);
+  Assert.IsTrue(WaitCount(FSrvMsgCount, 3, 3000), 'lote nao chegou completo ao servidor');
+  FLock.Enter;
+  try
+    EqualInt(3, FServerTexts.Count);
+    Assert.AreEqual('um', FServerTexts[0]);
+    Assert.AreEqual('dois', FServerTexts[1]);
+    Assert.AreEqual('tres', FServerTexts[2]);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TPipeEndToEndTests.SendBytesBatch_ServidorParaCliente_ChegamNaOrdem;
+var
+  LName: string;
+  LItems: TArray<TBytes>;
+  LConnId: TPipeConnectionId;
+begin
+  // Nao usa OpenPair: DispatchMode nao pode mudar com o componente ativo (ver
+  // EnsureInactive), entao precisa ser ajustado ANTES do Connect. Ordem de
+  // ENTREGA ao OnMessage do cliente passa pelo pool por padrao (mesmo
+  // mecanismo de DispatchMessage do lado servidor) — dai pdmSerialized aqui,
+  // senao a asserção de ordem valeria so' para o fio, nao para o callback.
+  LName := UniquePipeName;
+  FServer := TNamedPipeServer.Create(LName);
+  FServer.OnMessage := OnSrvMessage;
+  FServer.OnClientConnected := OnSrvClientConnected;
+  FServer.Listen;
+
+  FClient := TNamedPipeClient.Create(LName);
+  FClient.DispatchMode := pdmSerialized;
+  FClient.OnMessage := OnCliMessage;
+  FClient.Connect(3000);
+  Assert.IsTrue(WaitCount(FConnectedCount, 1, 3000), 'OnClientConnected nao disparou');
+
+  FLock.Enter;
+  try
+    LConnId := FLastConnId;
+  finally
+    FLock.Leave;
+  end;
+  SetLength(LItems, 3);
+  LItems[0] := PipeUtf8Encode('a');
+  LItems[1] := PipeUtf8Encode('b');
+  LItems[2] := PipeUtf8Encode('c');
+  FServer.SendBytesBatch(LConnId, LItems);
+  Assert.IsTrue(WaitCount(FCliMsgCount, 3, 3000), 'lote nao chegou completo ao cliente');
+  FLock.Enter;
+  try
+    EqualInt(3, FClientTexts.Count);
+    Assert.AreEqual('a', FClientTexts[0]);
+    Assert.AreEqual('b', FClientTexts[1]);
+    Assert.AreEqual('c', FClientTexts[2]);
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TPipeEndToEndTests.SendBytesBatch_Vazio_NaoEnviaNada;
+var
+  LItems: TArray<TBytes>;
+begin
+  OpenPair;
+  LItems := nil;
+  FClient.SendBytesBatch(LItems); // no-op
+  // Se o no-op tivesse escrito algo, essa sentinela nao seria a mensagem [0].
+  FClient.SendText('sentinela');
+  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000));
+  FLock.Enter;
+  try
+    EqualInt(1, FServerTexts.Count);
+    Assert.AreEqual('sentinela', FServerTexts[0]);
+  finally
+    FLock.Leave;
+  end;
 end;
 
 initialization

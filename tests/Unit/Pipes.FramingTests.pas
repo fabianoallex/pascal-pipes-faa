@@ -19,8 +19,10 @@ type
   private
     FStream: TBytesStream;
     FFrame: TPipeFrame;
+    FFrames: TArray<TPipeFrame>;
     procedure DoReadFromStream;   // PipeReadFrame(FStream, 100)
     procedure DoWriteToStream;    // PipeWriteFrame(FStream, FFrame, 100)
+    procedure DoWriteFramesToStream; // PipeWriteFrames(FStream, FFrames, 100)
   public
     [TearDown] procedure TearDown;
   published
@@ -36,6 +38,10 @@ type
     [Test] procedure ReadFrame_PayloadAcimaDoMaximo_Levanta;
     [Test] procedure ReadFrame_StreamTruncado_Levanta;
     [Test] procedure WriteFrame_PayloadAcimaDoMaximo_Levanta;
+    [Test] procedure WriteFrames_Vazio_NaoEscreveNada;
+    [Test] procedure WriteFrames_IdenticoASequenciaDeWriteFrame;
+    [Test] procedure WriteFrames_RoundTrip_PreservaOrdemEConteudo;
+    [Test] procedure WriteFrames_PayloadAcimaDoMaximo_LevantaSemEscreverNada;
     [Test] procedure Utf8_RoundTripAscii;
     [Test] procedure Utf8_RoundTripNaoAscii_ViaBytes;
   end;
@@ -90,6 +96,11 @@ end;
 procedure TPipeFramingTests.DoWriteToStream;
 begin
   PipeWriteFrame(FStream, FFrame, 100);
+end;
+
+procedure TPipeFramingTests.DoWriteFramesToStream;
+begin
+  PipeWriteFrames(FStream, FFrames, 100);
 end;
 
 procedure TPipeFramingTests.Encode_LayoutBinario;
@@ -272,6 +283,87 @@ begin
   FFrame := TPipeFrame.Msg(LBig);
   FStream := TBytesStream.Create;
   Assert.WillRaise(DoWriteToStream, EPipeProtocol);
+  Assert.AreEqual(Int64(0), FStream.Size, 'falhou mas escreveu bytes no stream');
+end;
+
+procedure TPipeFramingTests.WriteFrames_Vazio_NaoEscreveNada;
+begin
+  FFrames := nil;
+  FStream := TBytesStream.Create;
+  PipeWriteFrames(FStream, FFrames, 1024);
+  Assert.AreEqual(Int64(0), FStream.Size);
+end;
+
+procedure TPipeFramingTests.WriteFrames_IdenticoASequenciaDeWriteFrame;
+var
+  LViaFrames, LViaLoop: TBytesStream;
+  I: Integer;
+begin
+  // A garantia central de PipeWriteFrames e' amortizar a syscall sem mudar
+  // UM byte do que vai no fio: o resultado tem que ser byte a byte igual a
+  // escrever cada frame em sequencia com PipeWriteFrame.
+  SetLength(FFrames, 3);
+  FFrames[0] := TPipeFrame.Msg(MakeBytes([10]));
+  FFrames[1] := TPipeFrame.Request(7, MakeBytes([20, 21]));
+  FFrames[2] := TPipeFrame.Reply(7, nil);
+
+  LViaFrames := TBytesStream.Create;
+  LViaLoop := TBytesStream.Create;
+  try
+    PipeWriteFrames(LViaFrames, FFrames, 1024);
+    for I := 0 to High(FFrames) do
+      PipeWriteFrame(LViaLoop, FFrames[I], 1024);
+    Assert.AreEqual(LViaLoop.Size, LViaFrames.Size);
+    Assert.IsTrue(CompareMem(LViaFrames.Memory, LViaLoop.Memory, LViaLoop.Size),
+      'bytes divergem entre PipeWriteFrames e a sequencia de PipeWriteFrame');
+  finally
+    LViaFrames.Free;
+    LViaLoop.Free;
+  end;
+end;
+
+procedure TPipeFramingTests.WriteFrames_RoundTrip_PreservaOrdemEConteudo;
+var
+  LFrame: TPipeFrame;
+begin
+  SetLength(FFrames, 3);
+  FFrames[0] := TPipeFrame.Msg(MakeBytes([10]));
+  FFrames[1] := TPipeFrame.Request(7, MakeBytes([20, 21]));
+  FFrames[2] := TPipeFrame.Reply(7, nil);
+
+  FStream := TBytesStream.Create;
+  PipeWriteFrames(FStream, FFrames, 1024);
+  FStream.Position := 0;
+
+  LFrame := PipeReadFrame(FStream, 1024);
+  Assert.IsTrue(LFrame.Kind = pfkMessage);
+  EqualInt(1, Length(LFrame.Payload));
+
+  LFrame := PipeReadFrame(FStream, 1024);
+  Assert.IsTrue(LFrame.Kind = pfkRequest);
+  EqualInt(2, Length(LFrame.Payload));
+  EqualByte(20, LFrame.Payload[0]);
+  EqualByte(21, LFrame.Payload[1]);
+
+  LFrame := PipeReadFrame(FStream, 1024);
+  Assert.IsTrue(LFrame.Kind = pfkReply);
+  Assert.IsTrue(LFrame.CorrId = 7);
+  EqualInt(0, Length(LFrame.Payload));
+end;
+
+procedure TPipeFramingTests.WriteFrames_PayloadAcimaDoMaximo_LevantaSemEscreverNada;
+var
+  LBig: TBytes;
+begin
+  // O primeiro item e' valido; so' o segundo estoura o teto (100). A validacao
+  // roda para TODOS antes de escrever qualquer byte, entao nem o primeiro
+  // (valido) chega ao stream.
+  SetLength(LBig, 101);
+  SetLength(FFrames, 2);
+  FFrames[0] := TPipeFrame.Msg(MakeBytes([1, 2, 3]));
+  FFrames[1] := TPipeFrame.Msg(LBig);
+  FStream := TBytesStream.Create;
+  Assert.WillRaise(DoWriteFramesToStream, EPipeProtocol);
   Assert.AreEqual(Int64(0), FStream.Size, 'falhou mas escreveu bytes no stream');
 end;
 

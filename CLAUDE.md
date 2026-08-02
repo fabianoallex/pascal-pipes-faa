@@ -110,11 +110,12 @@ implementar qualquer milestone novo.
 `TPipeBase` (abstrata: Address, Transport, TlsOptions, KeepAliveSeconds,
 HeartbeatIntervalMs, Active, DispatchMode, MaxMessageSize, OnMessage, OnError) →
 `TPipeServer` (Listen, Stop,
-SendBytes/SendText por ConnId, Broadcast, DisconnectClient, ClientCount/ClientIds
+SendBytes/SendText por ConnId, SendBytesBatch (N mensagens, um Write só, ordem
+preservada), Broadcast, DisconnectClient, ClientCount/ClientIds
 (só conexões estabelecidas), TryClientIdentity (identidade do par mTLS), MaxClients,
 OnClientConnected/Disconnected, OnRequest, Stats/ConnectionStats — métricas, ver abaixo)
-e `TPipeClient` (Connect, Disconnect, SendBytes/SendText, Request/RequestText síncrono
-com timeout, AutoReconnect, MaxReconnectAttempts, FailoverAddresses/ActiveAddress —
+e `TPipeClient` (Connect, Disconnect, SendBytes/SendText, SendBytesBatch, Request/RequestText
+síncrono com timeout, AutoReconnect, MaxReconnectAttempts, FailoverAddresses/ActiveAddress —
 failover, ver abaixo —, OnConnected/OnDisconnected, Stats).
 Assinaturas completas e exemplos em `README.md`; racional de design em
 `docs/ARQUITETURA.md`.
@@ -144,11 +145,13 @@ conta o caminho de SUCESSO (timeout e erro ficam de fora).
 `TPipeTransportKind`: `ptLocal` (padrão, Named Pipe/UDS), `ptTcp`, `ptTls` (mTLS opcional
 via `TlsOptions`).
 
-Pub/sub: servidor `Publish/PublishText` (com `ARetain`), `SubscriberCount`,
-`ClientSubscriptions`, `ClearRetained`, `RelayClientPublish` (default **False**),
-`MaxSubscriptionsPerClient`, `MaxRetained`, `OnPublish`/`OnSubscribe`/`OnUnsubscribe`;
-cliente `Subscribe`/`Unsubscribe` (funcionam desconectado), `Subscriptions`, `Publish`,
-`OnTopicMessage`. Filtros: `.` separa, `*` = um segmento, `#` = o resto (só no fim).
+Pub/sub: servidor `Publish/PublishText` (com `ARetain`), `PublishBatch` (N itens
+`TPipePublishItem` — Topic/Payload/Retain —, um Write por conexão, só para quem
+casa cada item), `SubscriberCount`, `ClientSubscriptions`, `ClearRetained`,
+`RelayClientPublish` (default **False**), `MaxSubscriptionsPerClient`, `MaxRetained`,
+`OnPublish`/`OnSubscribe`/`OnUnsubscribe`; cliente `Subscribe`/`Unsubscribe` (funcionam
+desconectado), `Subscriptions`, `Publish`, `PublishBatch`, `OnTopicMessage`. Filtros:
+`.` separa, `*` = um segmento, `#` = o resto (só no fim).
 `TPipeTopicEvent` termina em `ARetained: Boolean`, e o sentido dele MUDA por lado: no
 cliente, "veio do cache de retidos" (ao vivo é sempre False, mesmo com retain pedido — ver
 `docs/ARQUITETURA.md` §9.7); no servidor, "o cliente pediu para reter".
