@@ -12,20 +12,27 @@ program EchoClient;
     FPC:    fpc -MDelphi -Sh -Fu..\..\src EchoClient.dpr   (ou lazbuild EchoClient.lpi)
     Delphi: abrir EchoClient.dproj no IDE
 
-  Uso: EchoClient [endereco] [tcp]
+  Uso: EchoClient [endereco] [tcp|tls [dir-pki] [nome-do-cliente]]
 
     EchoClient                       ptLocal em 'pipes_faa_echo' (padrao)
     EchoClient meu_pipe              ptLocal em 'meu_pipe'
     EchoClient 192.168.0.10:5300 tcp ptTcp
+    EchoClient 192.168.0.10:5300 tls ..\..\tools\pki-android
+    EchoClient ... tls <dir> android-001    apresenta certificado (mTLS)
 
-  O segundo parametro e' opcional e nao muda o comportamento antigo. Serve para
-  conferir do PC um servidor ptTcp antes de culpar o celular (ver o sample
-  EchoAndroid). }
+  Os parametros a partir do segundo sao opcionais e nao mudam o comportamento
+  antigo. Servem para conferir do PC um servidor ptTcp/ptTls antes de culpar o
+  celular (ver o sample EchoAndroid).
 
-{$IFDEF FPC}
-  {$MODE DELPHI}
-  {$H+}
-{$ELSE}
+  No modo tls, CaFile aponta para o ca_cert.pem do diretorio dado. ATENCAO: no
+  backend SChannel (padrao no Windows) o CaFile do CLIENTE e' IGNORADO — o
+  Windows valida contra o trust store do SO, onde a PKI de teste nao esta, e a
+  conexao sera recusada. Para conferir um servidor de PKI propria a partir do
+  PC, compile este sample com -dPIPES_OPENSSL (ou rode-o no Linux). }
+
+{$I pipes.inc}
+
+{$IFNDEF FPC}
   {$APPTYPE CONSOLE}
 {$ENDIF}
 
@@ -58,7 +65,8 @@ type
   public
     constructor Create;
     destructor Destroy; override;
-    procedure Run(const AAddress: string; ATransport: TPipeTransport);
+    procedure Run(const AAddress: string; ATransport: TPipeTransport;
+      const APkiDir, ACliCert: string);
   end;
 
 constructor TEchoClientApp.Create;
@@ -107,12 +115,30 @@ begin
 end;
 
 procedure TEchoClientApp.Run(const AAddress: string;
-  ATransport: TPipeTransport);
+  ATransport: TPipeTransport; const APkiDir, ACliCert: string);
 var
-  LLinha, LReply: string;
+  LLinha, LReply, LDir: string;
 begin
   FClient := TNamedPipeClient.Create(AAddress);
   FClient.Transport := ATransport;
+  if ATransport = ptTls then
+  begin
+    LDir := IncludeTrailingPathDelimiter(APkiDir);
+    // CA que assina o servidor. Sem isto o cliente valida contra o trust store
+    // do SO, onde uma PKI propria nao esta.
+    FClient.TlsOptions.CaFile := LDir + 'ca_cert.pem';
+    if ACliCert <> '' then
+    begin
+      // mTLS: so' apresenta certificado se pedirem um. O arquivo depende do
+      // backend compilado, igual ao lado do servidor.
+      {$IFDEF PIPES_SCHANNEL}
+      FClient.TlsOptions.CertFile := LDir + ACliCert + '.pfx';
+      {$ELSE}
+      FClient.TlsOptions.CertFile := LDir + ACliCert + '_cert.pem';
+      FClient.TlsOptions.KeyFile := LDir + ACliCert + '_key.pem';
+      {$ENDIF}
+    end;
+  end;
   FClient.OnMessage := OnMsg;
   FClient.OnConnected := OnConn;
   FClient.OnDisconnected := OnDisc;
@@ -143,7 +169,7 @@ end;
 
 var
   App: TEchoClientApp;
-  Address: string;
+  Address, PkiDir, CliCert: string;
   Transport: TPipeTransport;
 begin
   {$IFNDEF FPC}
@@ -154,11 +180,28 @@ begin
   else
     Address := 'pipes_faa_echo';
   Transport := ptLocal;
-  if (ParamCount >= 2) and SameText(ParamStr(2), 'tcp') then
-    Transport := ptTcp;
+  PkiDir := '';
+  CliCert := '';
+  if ParamCount >= 2 then
+  begin
+    if SameText(ParamStr(2), 'tcp') then
+      Transport := ptTcp
+    else if SameText(ParamStr(2), 'tls') then
+    begin
+      Transport := ptTls;
+      if ParamCount < 3 then
+      begin
+        Writeln('modo tls exige o diretorio da PKI.');
+        Halt(2);
+      end;
+      PkiDir := ParamStr(3);
+      if ParamCount >= 4 then
+        CliCert := ParamStr(4);
+    end;
+  end;
   App := TEchoClientApp.Create;
   try
-    App.Run(Address, Transport);
+    App.Run(Address, Transport, PkiDir, CliCert);
   finally
     App.Free;
   end;
