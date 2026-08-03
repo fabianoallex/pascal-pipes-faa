@@ -20,7 +20,9 @@ uses
   Pipes.Transport.Tcp in '..\..\src\Pipes.Transport.Tcp.pas',
   Pipes.Transport.Schannel in '..\..\src\Pipes.Transport.Schannel.pas',
   Pipes.Transport.Tls in '..\..\src\Pipes.Transport.Tls.pas',
-  Pipes.AddressTests in 'Pipes.AddressTests.pas';
+  Pipes.AddressTests in 'Pipes.AddressTests.pas',
+  Pipes.Discovery in '..\..\src\Pipes.Discovery.pas',
+  Pipes.DiscoveryTests in 'Pipes.DiscoveryTests.pas';
 
 var
   runner: ITestRunner;

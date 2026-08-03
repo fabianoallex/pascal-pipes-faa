@@ -11,7 +11,7 @@ uses
   Pipes.Threading, Pipes.Types, Pipes.Framing, Pipes.Topics, Pipes.Transport,
   Pipes.Transport.Windows, Pipes.Transport.Posix, Pipes.Transport.Tcp, 
   Pipes.Transport.Schannel, Pipes.Transport.OpenSSL, Pipes.Transport.Tls, 
-  Pipes.Base, Pipes.Server, Pipes.Client;
+  Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Discovery;
 
 implementation
 

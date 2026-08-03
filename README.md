@@ -365,6 +365,43 @@ nele: a PRÓXIMA falha tenta o primário de novo antes de espalhar pelos outros.
 `MaxReconnectAttempts`/`ReconnectDelayMs` continuam contando/espaçando por TENTATIVA, sem
 orçamento separado por endereço.
 
+### Descoberta de servidor na LAN (`Pipes.Discovery`)
+
+"Onde está o servidor?" sem digitar IP: o servidor anuncia a si mesmo com um
+`TPipeDiscoveryResponder` e o cliente pergunta por broadcast UDP com
+`PipeDiscoverServers`. A resposta traz o endereço pronto para `Address` (o IP é o
+endereço de origem da resposta — funciona certo até com servidor multi-NIC), o
+transporte e um nome de exibição. É um **complemento** aos transportes, não um
+transporte: nada do NPF1 passa por aqui, e a segurança continua onde sempre esteve —
+descoberta encontra candidatos, `ptTls` autentica quem é de verdade.
+
+```pascal
+// Lado servidor, junto do Listen:
+Responder := TPipeDiscoveryResponder.Create(
+  9000,               // porta do SERVICO (a do TPipeServer)
+  ptTls,              // transporte que o cliente deve usar
+  'Retaguarda Loja 3' // nome de exibicao
+);                    // porta de descoberta e token opcionais
+Responder.Start;
+
+// Lado cliente, antes do Connect:
+Encontrados := PipeDiscoverServers(1000); // janela de 1s na sub-rede
+if Length(Encontrados) > 0 then
+begin
+  Client.Address := Encontrados[0].Address;         // 'ip:porta' pronto
+  // sobrando mais de um, o resto vira failover:
+  // Client.FailoverAddresses := [Encontrados[1].Address, ...];
+  Client.Connect(5000);
+end;
+```
+
+Lista vazia não é erro — é "ninguém respondeu" (a janela expira em silêncio). Um `Token`
+opcional separa instalações que dividem a mesma rede (é discriminador, não autenticação).
+Alcance é a **sub-rede local**: broadcast não atravessa roteador nem VPN — PDV remoto
+continua com IP configurado + `FailoverAddresses`. A forma dirigida
+`PipeDiscoverServers('192.168.1.10', ...)` sonda um host específico ("o servidor está
+vivo?"). Detalhes e racional em `docs/ARQUITETURA.md` §16.
+
 ## Recursos
 
 - **Servidor multi-cliente** — acceptor + uma reader thread por conexão; `MaxClients`
@@ -403,6 +440,10 @@ orçamento separado por endereço.
   daquela CA ser recusado antes de `OnClientConnected`. Backend nativo por plataforma
   (Schannel no Windows, OpenSSL no Linux) e prazo próprio de handshake, para que um par que
   abra a conexão e não fale não consuma uma thread indefinidamente.
+- **Descoberta na LAN** (`Pipes.Discovery`) — `TPipeDiscoveryResponder` no servidor +
+  `PipeDiscoverServers` no cliente acham o servidor na sub-rede por broadcast UDP, sem IP
+  configurado; o resultado alimenta `Address`/`FailoverAddresses`. Ver
+  [Descoberta de servidor na LAN](#descoberta-de-servidor-na-lan-pipesdiscovery).
 
 ## Pub/sub (tópicos)
 
@@ -918,6 +959,7 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing,
                      pub/sub: Pipes.Topics (nomes, curingas e envelope; unit pura)
                      rede: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
+                     descoberta LAN: Pipes.Discovery (broadcast UDP; complemento, nao transporte)
                      Pipes.Json (bytes<->JSON, OPCIONAL — nao acoplada ao core)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),

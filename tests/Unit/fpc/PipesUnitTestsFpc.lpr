@@ -23,7 +23,8 @@ uses
   Pipes.ThreadingTests,
   Pipes.FramingTests,
   Pipes.TopicsTests,
-  Pipes.AddressTests;
+  Pipes.AddressTests,
+  Pipes.DiscoveryTests;
 
 var
   ConsoleApp: TTestRunner;

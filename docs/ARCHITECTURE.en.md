@@ -1231,3 +1231,112 @@ from an absence of evidence. The test for parallelism across DIFFERENT keys does
 with a generous margin to avoid flakiness. The end-to-end tests
 (`tests/Integration/{,fpc/}Pipes.EndToEndTests.pas`) repeat both proofs through the full wire
 path (`SendBytes` → `AFrame.CorrId` → `DispatchMessage`), not just in the pure unit.
+
+## 16. LAN server discovery (`Pipes.Discovery`, NPD1 protocol)
+
+Motivation: to open a TCP connection the client must know the destination FIRST — a
+chicken-and-egg problem when the requirement is "plug the POS into the store network and
+it finds the server by itself". UDP broadcast is the only way the IP stack offers to ask
+without knowing anyone: a `sendto` to `255.255.255.255:<discovery port>` reaches every
+host on the subnet, and whoever has an active `TPipeDiscoveryResponder` replies — in
+unicast, only to the asker — with the service port, the transport and a name. The result
+feeds `TPipeClient.Address`/`FailoverAddresses`, closing the loop with failover (§12) and
+mTLS (§7). It is the same pattern as SQL Server Browser (UDP 1434), mDNS and SSDP — here
+in a minimal proprietary version.
+
+### 16.1 A complement, not a transport — why UDP is acceptable here and only here
+
+`ptUdp` as a fourth transport was evaluated and rejected: every API promise (delivery,
+ordering, `AGroupKey`, stateful pub/sub, heartbeat "dead = no frame for 2x the interval")
+assumes a reliable stream, and UDP silently drops/duplicates/reorders — the same call with
+the opposite contract. Discovery is the single cut where UDP fits, because the protocol is
+idempotent by nature: a lost probe, the next one finds (resend every 300 ms within the
+window); a lost reply, the next probe's reply arrives; a duplicated reply, the per-address
+dedup drops it. No NPF1 frame travels here and `Pipes.Discovery` does not depend on
+`Pipes.Transport` — it is a parallel unit, outside the `TPipeBase` hierarchy.
+
+### 16.2 Broadcast, not multicast; IPv4 only
+
+The desired reach ("the store") is exactly the local subnet, which is broadcast's reach.
+Multicast would go further IF the infrastructure cooperated (IGMP — in store networks,
+almost never), requires group joins and, on Android, `WifiManager.MulticastLock`; plain
+broadcast requires none of that and works on all three platforms, Android included.
+Documented consequences: discovery does NOT cross routers or VPNs (a remote POS keeps
+using a configured IP + failover), and the socket is `AF_INET` — broadcast does not exist
+in IPv6, and the IPv6-only LAN that one day needs this will need multicast, out of scope.
+
+### 16.3 The server's IP comes from the ENVELOPE, not the letter
+
+The client builds `Address` from the SOURCE address of the reply datagram (which
+`recvfrom` hands over for free) + the port announced in the payload. There is never an IP
+inside the payload: on a multi-NIC server (cable + Wi-Fi + Docker + VPN), the server
+itself has no way to know which of its IPs reaches that client — but the source IP the
+client sees is, by construction, one that worked. This detail also spares the responder
+from enumerating interfaces, which would keep state that goes stale.
+
+### 16.4 Security: discovery FINDS, TLS AUTHENTICATES
+
+Any process on the LAN can answer the probe, impostors included. The defense is not to
+make discovery smarter — it is the composition with what already exists: a reply is a
+CANDIDATE, never an identity; whoever proves the server's identity is `ptTls` on the
+connection that follows (a discovered impostor fails the handshake exactly as a hand-typed
+one would). The `Token` is an installation discriminator (two networks/environments on the
+same LAN don't see each other), travels in cleartext and is NOT authentication.
+Anti-amplification: the responder only answers probes with valid magic and token, the
+reply has a small ceiling (~200 bytes) and datagrams that fail to decode die silently.
+
+### 16.5 NPD1 wire: strict lengths, conservative transport byte
+
+```
+probe = 'NPD1' + kind(1)=1 + tokenLen(1) + token[UTF-8 <= 64 bytes]
+reply = 'NPD1' + kind(1)=2 + tokenLen(1) + token
+      + servicePort(2, little-endian) + transport(1, Ord)
+      + nameLen(1) + name[UTF-8 <= 128 bytes]
+```
+
+A datagram with extra or missing bytes is refused (UDP preserves message boundaries, so
+"exact length" is verifiable — unlike NPF1, which runs over a stream and therefore needs
+the length prefix). A transport byte outside the known enum = a reply from a newer
+version: refuse, don't guess. Port 0 is refused on both ends. A REPLY never decodes as a
+probe (distinct kinds) — otherwise two responders on the same port would loop answering
+each other.
+
+### 16.6 UDP channel per platform: the usual interruption patterns
+
+`TPipeUdpChannel` (internal to the unit) reuses the idioms already paid for: Windows =
+`WSAEventSelect(FD_READ)` + `WSAWaitForMultipleEvents([event, stop])` (§5); POSIX/Android
+= `poll([fd, self-pipe])` (§5/§13). No wait uses polling timeouts; the responder's `Stop`
+wakes the thread by event and completes in milliseconds. Two UDP accidents handled in the
+channel: on Windows, `SIO_UDP_CONNRESET` is turned off (without it, an ICMP "port
+unreachable" echoed from an earlier `sendto` makes the NEXT `recvfrom` fail with
+`WSAECONNRESET` and would kill the collection — and `TryRecvFrom` still tolerates the
+error, belt and suspenders); on POSIX, `ECONNREFUSED` in `recvfrom` is discarded for the
+same reason. The responder thread runs NO user code at all (the unit has no callbacks) —
+the reply is pre-encoded in the constructor and the loop is read-validate-answer.
+
+### 16.7 Assumed limitations (documented, not solved)
+
+One responder per machine per discovery port — no `SO_REUSEADDR`, for the same reason as
+the TCP listener on Windows (see the `Pipes.Transport.Tcp` header): a second `Start` on
+the same port is an `EPipeError` with a clear message, and multiple services on the same
+machine use distinct discovery ports. The firewall must allow inbound UDP on the port (on
+Windows the first `Start` usually triggers the prompt). Wi-Fi AP isolation blocks
+client→client. The directed form (`PipeDiscoverServers('192.168.1.10', ...)`) requires an
+IPv4 literal — the unit does no name resolution (whoever has a hostname already has a
+better address than discovery). A multi-homed client sends through the routing table's
+default; enumerating interfaces and sending a directed broadcast per interface remains an
+open door.
+
+### 16.8 Tests: directed at 127.0.0.1, broadcast deliberately left out
+
+Real broadcast depends on active interfaces, firewall and topology — not deterministic in
+CI. The integration tests use the directed form over loopback, which exercises EVERYTHING
+except the literal `255.255.255.255` in `sendto` (same socket, same collection, same
+dedup). What each one proves: a window longer than the resend cadence returns ONE entry
+(real dedup, with the responder answering 2-3 probes); a wrong token and a port with no
+responder return an EMPTY list without error (the latter is the regression test for the
+ICMP accident of §16.6); two responders on distinct ports don't leak into each other;
+`Start` on a busy port raises immediately; `Stop` completes in < 2s (same ceiling as
+M7/H0-H4) and the SAME object can `Start` again with the port released. The pure protocol
+(encode/decode, strict lengths, multibyte UTF-8, network-order IPv4) has a full unit-test
+pair in both frameworks.

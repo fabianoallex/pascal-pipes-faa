@@ -368,6 +368,43 @@ client stuck on it: the NEXT failure tries the primary again before spreading to
 `MaxReconnectAttempts`/`ReconnectDelayMs` still count/space per ATTEMPT, with no separate
 per-address budget.
 
+### LAN server discovery (`Pipes.Discovery`)
+
+"Where is the server?" without typing an IP: the server announces itself with a
+`TPipeDiscoveryResponder` and the client asks over UDP broadcast with
+`PipeDiscoverServers`. The reply carries an address ready for `Address` (the IP is the
+reply's source address — correct even on a multi-NIC server), the transport and a display
+name. It is a **complement** to the transports, not a transport: nothing of NPF1 travels
+here, and security stays where it always was — discovery finds candidates, `ptTls`
+authenticates who is real.
+
+```pascal
+// Server side, next to Listen:
+Responder := TPipeDiscoveryResponder.Create(
+  9000,           // SERVICE port (the TPipeServer one)
+  ptTls,          // transport the client should use
+  'Store 3 backend'
+);                // discovery port and token are optional
+Responder.Start;
+
+// Client side, before Connect:
+Found := PipeDiscoverServers(1000); // 1s window on the subnet
+if Length(Found) > 0 then
+begin
+  Client.Address := Found[0].Address;         // ready-made 'ip:port'
+  // with more than one, the rest becomes failover:
+  // Client.FailoverAddresses := [Found[1].Address, ...];
+  Client.Connect(5000);
+end;
+```
+
+An empty list is not an error — it means "nobody answered" (the window expires silently).
+An optional `Token` separates installations sharing the same network (a discriminator, not
+authentication). The reach is the **local subnet**: broadcast does not cross routers or
+VPNs — a remote POS keeps its configured IP + `FailoverAddresses`. The directed form
+`PipeDiscoverServers('192.168.1.10', ...)` probes a specific host ("is the server
+alive?"). Details and rationale in `docs/ARCHITECTURE.en.md` §16.
+
 ## Features
 
 - **Multi-client server** — acceptor + one reader thread per connection; optional
@@ -409,6 +446,10 @@ per-address budget.
   certificate from that CA get refused before `OnClientConnected`. Native backend per
   platform (Schannel on Windows, OpenSSL on Linux) and a dedicated handshake deadline, so a
   peer that opens the connection and stays silent does not consume a thread indefinitely.
+- **LAN discovery** (`Pipes.Discovery`) — `TPipeDiscoveryResponder` on the server +
+  `PipeDiscoverServers` on the client find the server on the subnet via UDP broadcast,
+  with no configured IP; the result feeds `Address`/`FailoverAddresses`. See
+  [LAN server discovery](#lan-server-discovery-pipesdiscovery).
 
 ## Pub/sub (topics)
 
@@ -930,6 +971,7 @@ src/                 library (Pipes.Types, Pipes.Framing,
                      pub/sub: Pipes.Topics (names, wildcards and envelope; pure unit)
                      network: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (facade) + .Schannel / .OpenSSL (backends)
+                     LAN discovery: Pipes.Discovery (UDP broadcast; a complement, not a transport)
                      Pipes.Json (bytes<->JSON, OPTIONAL - not coupled to the core)
 packages/            pipes_faa.lpk (Lazarus package)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,

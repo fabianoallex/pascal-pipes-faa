@@ -29,7 +29,9 @@ uses
   Pipes.StatsTests in 'Pipes.StatsTests.pas',
   Pipes.Json in '..\..\src\Pipes.Json.pas',
   Pipes.JsonTests in 'Pipes.JsonTests.pas',
-  Pipes.FailoverTests in 'Pipes.FailoverTests.pas';
+  Pipes.FailoverTests in 'Pipes.FailoverTests.pas',
+  Pipes.Discovery in '..\..\src\Pipes.Discovery.pas',
+  Pipes.DiscoveryTests in 'Pipes.DiscoveryTests.pas';
 
 var
   runner: ITestRunner;

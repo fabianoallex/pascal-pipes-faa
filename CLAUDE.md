@@ -141,6 +141,16 @@ uma sessão é DURÁVEL (mesmo critério que já zera `MaxReconnectAttempts`). S
 servidor escuta um único `Address`. `Client.ActiveAddress` (snapshot) diz qual endereço a
 sessão atual usa.
 
+Descoberta de servidor na LAN (milestone D0, `docs/ARQUITETURA.md` §16): `Pipes.Discovery`,
+unit paralela FORA da hierarquia `TPipeBase` — `TPipeDiscoveryResponder` (servidor anuncia
+porta/transporte/nome numa porta UDP de descoberta) + `PipeDiscoverServers` (cliente sonda
+por broadcast e coleta respostas unicast; forma dirigida aceita literal IPv4). Protocolo
+NPD1 próprio (não NPF1), comprimentos estritos, IPv4/broadcast apenas (multicast e IPv6
+fora de escopo). Três decisões que não se rediscutem sem ler §16: o IP do resultado vem do
+ENVELOPE (origem do recvfrom), nunca do payload (multi-NIC); descoberta ENCONTRA e ptTls
+AUTENTICA (token é discriminador, não segurança); e `ptUdp` como transporte foi avaliado e
+rejeitado — UDP só é aceitável neste recorte porque o protocolo é idempotente por natureza.
+
 Métricas/observabilidade (milestones S0-S4, `docs/ARQUITETURA.md` §11): `Server.Stats:
 TPipeServerStats` (agregado cumulativo desde o Listen) e `Server.ConnectionStats(ConnId,
 out): Boolean` (por conexão, morre com ela — padrão Try* de `TryClientIdentity`) e
@@ -179,9 +189,12 @@ src/Pipes.Transport.Android.pas  (Delphi/Android: ptTcp/ptTls sobre Posix.* + po
 src/Pipes.Transport.Tcp.pas      src/Pipes.Transport.Tls.pas
 src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
 src/Pipes.Client.pas             src/Pipes.Server.pas
+src/Pipes.Discovery.pas          (descoberta LAN por broadcast UDP — complemento, não
+                                  transporte; NÃO depende de Pipes.Transport — ver §16)
 src/Pipes.Json.pas                (bytes<->JSON OPCIONAL: System.JSON/fpjson — ver README.md)
-tests/Unit (Threading/Framing/Topics/Address)
-  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json)
+tests/Unit (Threading/Framing/Topics/Address/Discovery)
+  + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json/Failover/
+    Discovery)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
 samples/ (17 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
@@ -231,6 +244,7 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | S0-S4 | Métricas/observabilidade: `Stats`/`ConnectionStats`, `PipeAtomicAdd64`, latência de Request — ver `docs/ARQUITETURA.md` §11 | sonnet | concluído |
 | F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
 | A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | concluído, verificado em device (11/11) |
+| D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
@@ -257,6 +271,13 @@ alternativo quando o primário cai em definitivo, uma sessão DURÁVEL num alter
 PRÓXIMA falha voltar a preferir o primário (não só avançar para o próximo da lista), e
 `MaxReconnectAttempts` conta tentativas contra QUALQUER endereço num teto só, não um por
 endereço.
+
+D0 exige: janela de coleta maior que a cadência de reenvio (300ms) devolve UMA entrada
+(dedup real); token errado e porta sem responder devolvem lista VAZIA sem erro (o segundo
+é a regressão do eco de ICMP — `SIO_UDP_CONNRESET`/`ECONNREFUSED`); `Start` em porta de
+descoberta ocupada levanta `EPipeError` na hora; `Stop` conclui em < 2s e o MESMO objeto
+aceita `Start` de novo (porta liberada). Testes de integração usam SEMPRE a forma dirigida
+a 127.0.0.1 — broadcast real não é determinístico em CI (ver §16.8).
 
 A0-A3 não têm par dual-compiler tradicional — FPC não compila para Android neste projeto,
 e o Delphi CE desta máquina não compila por linha de comando. O que a máquina de

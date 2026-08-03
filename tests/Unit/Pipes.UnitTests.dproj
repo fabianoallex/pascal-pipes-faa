@@ -177,6 +177,8 @@
         <DCCReference Include="..\..\src\Pipes.Transport.Schannel.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Tls.pas"/>
         <DCCReference Include="Pipes.AddressTests.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Discovery.pas"/>
+        <DCCReference Include="Pipes.DiscoveryTests.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

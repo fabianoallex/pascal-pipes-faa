@@ -77,6 +77,10 @@
         <Filename Value="..\src\Pipes.Client.pas"/>
         <UnitName Value="Pipes.Client"/>
       </Item>
+      <Item>
+        <Filename Value="..\src\Pipes.Discovery.pas"/>
+        <UnitName Value="Pipes.Discovery"/>
+      </Item>
     </Files>
     <RequiredPkgs>
       <Item>
