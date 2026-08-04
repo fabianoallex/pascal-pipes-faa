@@ -932,6 +932,19 @@ marcados `deprecated` só depois que samples e testes migrarem.
   Publicar — a visão do roteador; como cliente, mostra as próprias, editáveis. Roteiro de
   2 minutos no cabeçalho de
   [`MonitorTopicos.dpr`](samples/MonitorTopicos/MonitorTopicos.dpr).
+- **TransferenciaArquivos** — envio de arquivo com **UI** (VCL no Delphi, LCL no Lazarus,
+  mesmo fonte), vitrine de `CompressionMinSize` e dos campos `*Wire` de `Stats`. Uma
+  instância `Ser servidor` (salva o que chega em `recebidos/`), a outra `Ser cliente`
+  (`Selecionar...` escolhe o arquivo, `Enviar arquivo` manda). O checkbox "Comprimir" só
+  fica editável ANTES de conectar — trava depois, mesma regra de `MaxMessageSize`
+  (`EnsureInactive`) — e mostra na prática por que é um kind novo no NPF1, não um bit de
+  `Flags`: liga só de um lado sem quebrar nada no outro. Cada envio loga a economia real dos
+  DOIS lados: o cliente pelo delta de `Client.Stats` (`BytesSent` vs `BytesSentWire`) antes/
+  depois do `SendBytes`, e o servidor por `ConnectionStats.BytesReceivedWire` — a única forma
+  de quem só RECEBE enxergar a economia, já que a descompressão devolve o payload lógico
+  antes de `OnMessage` rodar (opaco por design). Protocolo do arquivo em si é só deste
+  sample (não da lib): envelope `[TamanhoDoNome][NomeUTF8][Bytes]` cru sobre `SendBytes`,
+  arquivo inteiro em memória — sem chunking, não é streaming de produção.
 
 ## Testes
 
