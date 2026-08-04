@@ -171,7 +171,10 @@ cumulativo entre sessões). Snapshot sob demanda, mesmo molde de `ClientCount`/
 `Subscriptions` — NÃO é um evento periódico. Sempre ativos, sem opt-in (custo de um
 `PipeAtomicAdd64` por frame). `PoolQueueDepth` é o backlog do pool GLOBAL em `pdmPool`,
 não só deste servidor — só é exclusivo dele em `pdmSerialized`. Latência de Request só
-conta o caminho de SUCESSO (timeout e erro ficam de fora).
+conta o caminho de SUCESSO (timeout e erro ficam de fora). `BytesSentWire`/
+`BytesReceivedWire` (irmãos aditivos de `BytesSent`/`BytesReceived`, entraram junto com C0
+— ver `docs/ARQUITETURA.md` §17.6) são o que de fato passou pelo fio; os originais continuam
+sendo o payload lógico, sem mudança de significado.
 
 Compressão de payload (milestone C0, `docs/ARQUITETURA.md` §17): `CompressionMinSize:
 Cardinal` (em `TPipeBase`, 0 = desligado por padrão) — deflate opcional via
@@ -267,7 +270,7 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
 | A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | concluído, verificado em device (11/11) |
 | D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks, sample `EchoDiscovery` (reaproveita o `EchoServer.exe`, so' ganha `discover` na linha de comando) — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
-| C0 | Compressão de payload: `Pipes.Compression.pas` (deflate via `System.ZLib`/`paszlib`), `pfkCompressed` (kind 7 do NPF1), `CompressionMinSize` em `TPipeBase`, proteção de zip bomb — ver `docs/ARQUITETURA.md` §17 | sonnet | concluído: verde nos dois compiladores (FPC 115 unit + 113 integração; Delphi/IDE confirmado 2026-08-04) |
+| C0 | Compressão de payload: `Pipes.Compression.pas` (deflate via `System.ZLib`/`paszlib`), `pfkCompressed` (kind 7 do NPF1), `CompressionMinSize` em `TPipeBase`, `BytesSentWire`/`BytesReceivedWire` em `Stats`, proteção de zip bomb — ver `docs/ARQUITETURA.md` §17 | sonnet | concluído: verde nos dois compiladores (FPC 115 unit + 117 integração; Delphi/IDE confirmado 2026-08-04, extensão de Stats verificada só no FPC até aqui) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/

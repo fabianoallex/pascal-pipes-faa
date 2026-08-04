@@ -155,6 +155,9 @@ type
     // ativos, sem opt-in.
     FBytesSent: UInt64;
     FBytesReceived: UInt64;
+    // Bytes de fato no fio (pos-compressao) — ver Pipes.Types.TPipeConnStats.
+    FBytesSentWire: UInt64;
+    FBytesReceivedWire: UInt64;
     FMessagesSent: UInt64;
     FMessagesReceived: UInt64;
     // Latencia de Request bem-sucedido (exclui timeout/erro), tambem por
@@ -374,16 +377,21 @@ end;
 procedure TPipeClientReaderThread.Execute;
 var
   LFrame: TPipeFrame;
+  LWireBytes: UInt64;
 begin
   try
     while True do
     begin
       LFrame := PipeReadFrame(FClient.FStream, FClient.MaxMessageSize);
+      // Tamanho NO FIO, antes de desfazer o envelope — ver mesma logica em
+      // Pipes.Server.TPipeServerReaderThread.Execute.
+      LWireBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload));
       if LFrame.Kind = pfkCompressed then
         LFrame := PipeUndoCompress(LFrame, FClient.MaxMessageSize);
       PipeAtomicWrite64(FClient.FLastReadTick, PipeTickMs);
       PipeAtomicAdd64(FClient.FBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+      PipeAtomicAdd64(FClient.FBytesReceivedWire, LWireBytes);
       PipeAtomicAdd64(FClient.FMessagesReceived, 1);
       FClient.HandleFrame(LFrame);
     end;
@@ -758,6 +766,8 @@ procedure TPipeClient.ResetSessionStats;
 begin
   PipeAtomicWrite64(FBytesSent, 0);
   PipeAtomicWrite64(FBytesReceived, 0);
+  PipeAtomicWrite64(FBytesSentWire, 0);
+  PipeAtomicWrite64(FBytesReceivedWire, 0);
   PipeAtomicWrite64(FMessagesSent, 0);
   PipeAtomicWrite64(FMessagesReceived, 0);
   PipeAtomicWrite64(FReqCount, 0);
@@ -832,6 +842,8 @@ begin
       PipeWriteFrame(FStream, TPipeFrame.Ping, MaxMessageSize);
       PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
       PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE);
+      // Ping nunca e' comprimido (fora de PipeIsCompressible): fio = logico.
+      PipeAtomicAdd64(FBytesSentWire, PIPE_FRAME_HEADER_SIZE);
       PipeAtomicAdd64(FMessagesSent, 1);
     except
       // Escrita falhou = sessao morrendo (mesma tolerancia de
@@ -910,7 +922,11 @@ begin
     try
       PipeWriteFrame(FStream, AFrame, MaxMessageSize);
       PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+      // Subscribe/Unsubscribe nunca sao comprimidos (fora de
+      // PipeIsCompressible): fio = logico.
       PipeAtomicAdd64(FBytesSent,
+        PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload)));
+      PipeAtomicAdd64(FBytesSentWire,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload)));
       PipeAtomicAdd64(FMessagesSent, 1);
     except
@@ -1009,9 +1025,12 @@ begin
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     // Tamanho do payload JA CODIFICADO (topico em UTF-8 + envelope), nao um
     // recalculo manual: Length(ATopic) sozinho mentiria para topico nao-ASCII.
-    // Sempre o de LFrame (logico) — LWire e' so' o que vai no fio.
+    // FBytesSent usa LFrame (logico); FBytesSentWire usa LWire (o que foi de
+    // fato escrito) — a diferenca e' a economia da compressao.
     PipeAtomicAdd64(FBytesSent,
       PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+    PipeAtomicAdd64(FBytesSentWire,
+      PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload)));
     PipeAtomicAdd64(FMessagesSent, 1);
   finally
     FWriteLock.Leave;
@@ -1027,7 +1046,7 @@ procedure TPipeClient.PublishBatch(const AItems: TArray<TPipePublishItem>);
 var
   LFrames, LWireFrames: TArray<TPipeFrame>;
   I: Integer;
-  LBytes: UInt64;
+  LBytes, LWireBytes: UInt64;
 begin
   if Length(AItems) = 0 then
     Exit;
@@ -1049,9 +1068,14 @@ begin
     PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     LBytes := 0;
+    LWireBytes := 0;
     for I := 0 to High(LFrames) do
+    begin
       Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrames[I].Payload)));
+      Inc(LWireBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWireFrames[I].Payload)));
+    end;
     PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
     PipeAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
   finally
     FWriteLock.Leave;
@@ -1128,6 +1152,8 @@ begin
         PipeWriteFrame(FStream, LWire, MaxMessageSize);
         PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
         PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
+        PipeAtomicAdd64(FBytesSentWire,
+          PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload)));
         PipeAtomicAdd64(FMessagesSent, 1);
       finally
         FWriteLock.Leave;
@@ -1180,6 +1206,8 @@ begin
   FillChar(Result, SizeOf(Result), 0);
   Result.BytesSent := PipeAtomicRead64(FBytesSent);
   Result.BytesReceived := PipeAtomicRead64(FBytesReceived);
+  Result.BytesSentWire := PipeAtomicRead64(FBytesSentWire);
+  Result.BytesReceivedWire := PipeAtomicRead64(FBytesReceivedWire);
   Result.MessagesSent := PipeAtomicRead64(FMessagesSent);
   Result.MessagesReceived := PipeAtomicRead64(FMessagesReceived);
   Result.ReconnectAttempts := PipeAtomicGet(FReconnectAttempts);
@@ -1212,6 +1240,8 @@ begin
     PipeWriteFrame(FStream, LWire, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
+    PipeAtomicAdd64(FBytesSentWire,
+      PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload)));
     PipeAtomicAdd64(FMessagesSent, 1);
   finally
     FWriteLock.Leave;
@@ -1227,7 +1257,7 @@ procedure TPipeClient.SendBytesBatch(const AItems: TArray<TBytes>);
 var
   LFrames, LWireFrames: TArray<TPipeFrame>;
   I: Integer;
-  LBytes: UInt64;
+  LBytes, LWireBytes: UInt64;
 begin
   if Length(AItems) = 0 then
     Exit;
@@ -1246,9 +1276,14 @@ begin
     PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     LBytes := 0;
+    LWireBytes := 0;
     for I := 0 to High(LFrames) do
+    begin
       Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrames[I].Payload)));
+      Inc(LWireBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWireFrames[I].Payload)));
+    end;
     PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
     PipeAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
   finally
     FWriteLock.Leave;

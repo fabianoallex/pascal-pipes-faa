@@ -47,6 +47,8 @@ type
     [Test] procedure Cliente_Stats_ContaBytesEMensagens;
     [Test] procedure ConnectionStats_ConexaoInexistente_DevolveFalse;
     [Test] procedure Cliente_Stats_LatenciaSoContaSucesso;
+    [Test] procedure SemCompressao_BytesWireIgualBytesLogicoNosDoisLados;
+    [Test] procedure ComCompressao_BytesWireMenorQueBytesLogicoNosDoisLados;
   end;
 
 implementation
@@ -244,6 +246,79 @@ begin
   Assert.IsTrue(LStats.AvgRequestLatencyMs < 3000, 'latencia absurda');
   Assert.IsTrue(LStats.MaxRequestLatencyMs >= LStats.AvgRequestLatencyMs);
   Assert.AreEqual(0, LStats.PendingRequests);
+end;
+
+procedure TPipeStatsTests.SemCompressao_BytesWireIgualBytesLogicoNosDoisLados;
+const
+  PAYLOAD_LEN = 200;
+var
+  LIds: TArray<TPipeConnectionId>;
+  LConnStats: TPipeConnStats;
+  LCliStats: TPipeClientStats;
+  LPayload: TBytes;
+begin
+  // CompressionMinSize = 0 (padrao): o campo Wire tem que bater exatamente
+  // com o logico, nos dois lados — transparencia total quando desligado.
+  FServer := TPipeServer.Create(UniquePipeName);
+  FServer.OnMessage := OnSrvMessage;
+  FServer.Listen;
+  FClient := TPipeClient.Create(FServer.Address);
+  FClient.Connect(3000);
+
+  SetLength(LPayload, PAYLOAD_LEN);
+  FClient.SendBytes(LPayload);
+  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou a tempo');
+
+  LCliStats := FClient.Stats;
+  Assert.IsTrue(LCliStats.BytesSentWire = LCliStats.BytesSent,
+    'sem compressao, BytesSentWire devia ser identico a BytesSent');
+
+  LIds := FServer.ClientIds;
+  EqualInt(1, Length(LIds));
+  Assert.IsTrue(FServer.ConnectionStats(LIds[0], LConnStats));
+  Assert.IsTrue(LConnStats.BytesReceivedWire = LConnStats.BytesReceived,
+    'sem compressao, BytesReceivedWire devia ser identico a BytesReceived');
+end;
+
+procedure TPipeStatsTests.ComCompressao_BytesWireMenorQueBytesLogicoNosDoisLados;
+const
+  PAYLOAD_LEN = 20000;
+var
+  LIds: TArray<TPipeConnectionId>;
+  LConnStats: TPipeConnStats;
+  LSrvStats: TPipeServerStats;
+  LCliStats: TPipeClientStats;
+  LPayload: TBytes;
+begin
+  // Payload grande e repetitivo (comprime bem) com CompressionMinSize ligado
+  // so' no cliente: a decodificacao no servidor e' sempre ativa (ver
+  // Pipes.Compression), entao nao precisa ligar dos dois lados para o
+  // servidor enxergar a economia em BytesReceivedWire.
+  FServer := TPipeServer.Create(UniquePipeName);
+  FServer.OnMessage := OnSrvMessage;
+  FServer.Listen;
+  FClient := TPipeClient.Create(FServer.Address);
+  FClient.CompressionMinSize := 256;
+  FClient.Connect(3000);
+
+  SetLength(LPayload, PAYLOAD_LEN);
+  FillChar(LPayload[0], PAYLOAD_LEN, Ord('A'));
+  FClient.SendBytes(LPayload);
+  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou a tempo');
+
+  LCliStats := FClient.Stats;
+  Assert.IsTrue(LCliStats.BytesSentWire < LCliStats.BytesSent,
+    'BytesSentWire devia refletir a economia da compressao no envio');
+
+  LIds := FServer.ClientIds;
+  EqualInt(1, Length(LIds));
+  Assert.IsTrue(FServer.ConnectionStats(LIds[0], LConnStats));
+  Assert.IsTrue(LConnStats.BytesReceivedWire < LConnStats.BytesReceived,
+    'BytesReceivedWire devia refletir a economia da compressao no recebimento');
+
+  LSrvStats := FServer.Stats;
+  Assert.IsTrue(LSrvStats.TotalBytesReceivedWire < LSrvStats.TotalBytesReceived,
+    'agregado do servidor tambem devia refletir a economia');
 end;
 
 initialization

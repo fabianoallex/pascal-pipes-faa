@@ -593,6 +593,11 @@ clientes de verdade?" — sem instrumentar a aplicação por fora. Ao contrário
 isto vale para **qualquer transporte** (`ptLocal` incluso: um Named Pipe também se beneficia
 de saber quantos bytes passaram).
 
+> `BytesSentWire`/`BytesReceivedWire` (e `TotalBytesSentWire`/`TotalBytesReceivedWire` no
+> agregado) entraram depois, junto da compressão de payload — ver §17.6 para o racional
+> completo. São irmãos aditivos de `BytesSent`/`BytesReceived`, que continuam significando
+> exatamente o que este capítulo documenta (payload lógico).
+
 ### 11.1 Snapshot, não evento — o mesmo molde de `ClientCount`
 
 A lib já resolveu essa decisão de design antes: `ClientCount`, `ClientIds`, `Subscriptions`,
@@ -1350,10 +1355,11 @@ janela/cabeçalho zlib padrão, compatíveis entre si nos dois sentidos.
 Message/Request/Reply/Publish — Ping não tem payload; Subscribe/Unsubscribe/Compressed são
 estruturais), o payload alcançar o mínimo, E o deflate resultante for de fato menor que o
 original (dado já compresso, ex. JPEG, sai cru sem aviso). `Pipes.Server`/`Pipes.Client`
-sempre contabilizam `Stats`/validam `MaxMessageSize` contra o frame ORIGINAL, nunca o
-resultado de `PipeMaybeCompress` — validar/contar o comprimido deixaria um payload lógico
-maior que `MaxMessageSize` passar sempre que comprimisse bem (furando o teto que a property
-documenta) e faria `Stats` mostrar economia de banda em vez do que o app efetivamente enviou.
+sempre validam `MaxMessageSize` contra o frame ORIGINAL, nunca o resultado de
+`PipeMaybeCompress` — validar o comprimido deixaria um payload lógico maior que
+`MaxMessageSize` passar sempre que comprimisse bem, furando o teto que a property documenta.
+`Stats.BytesSent/BytesReceived` seguem a mesma regra (payload ORIGINAL); o par irmão
+`BytesSentWire/BytesReceivedWire` é que mede o que passou pelo fio de fato — ver §17.6.
 A validação/compressão roda FORA do write lock da conexão (é CPU pura): um payload grande
 comprimindo não trava outros escritores da mesma conexão.
 
@@ -1385,4 +1391,37 @@ completo do envelope restaura Kind/Flags/Payload (inclusive `PIPE_FLAG_ERROR` de
 20000 bytes repetitivo nos dois sentidos (cliente→servidor e servidor→cliente) chega íntegro
 depois de decodificado, e `Stats.TotalBytesReceived` bate com o tamanho LÓGICO do texto, não
 o comprimido — prova de que a transparência do §17.3 se sustenta pela pilha real, não só na
-unit pura.
+unit pura. `Pipes.StatsTests` (dual) cobre a extensão do §17.6: sem `CompressionMinSize`,
+`BytesSentWire`/`BytesReceivedWire` são IDÊNTICOS aos campos lógicos, nos dois lados; com
+compressão ligada e payload compressível, `BytesSentWire < BytesSent` no cliente e
+`BytesReceivedWire < BytesReceived` no servidor (por conexão E no agregado `Stats`), com o
+cliente sozinho ligando `CompressionMinSize` — a decodificação (e portanto a contagem Wire)
+do lado do servidor não depende de ele também estar configurado.
+
+### 17.6 `BytesSentWire`/`BytesReceivedWire`: visibilidade agregada sem quebrar a transparência
+
+Depois de fechar o C0, ficou claro que quem só RECEBE não tinha nenhuma forma de saber que a
+compressão estava economizando banda — diferente de quem ENVIA, que ao menos poderia rodar
+`PipeDeflate` de novo localmente para estimar. A causa é a própria transparência do §17.3:
+`PipeUndoCompress` já devolve o frame lógico antes de `HandleFrame`/`OnMessage` rodar, então
+nenhum código de aplicação (nem o servidor) jamais vê o envelope `pfkCompressed` bruto.
+
+A opção descartada foi tornar a compressão visível por mensagem (um parâmetro a mais em
+`OnMessage`, ou um evento novo) — isso vazaria uma decisão de transporte para dentro da API
+de aplicação, o tipo de acoplamento que o design do kind `pfkCompressed` (§17.1) foi feito
+para EVITAR. A opção adotada foi extrapolar `Stats` (S0-S4, §11), que já opera exatamente
+nesse nível — agregado, cumulativo, sem hook por mensagem: `TPipeConnStats`/
+`TPipeServerStats`/`TPipeClientStats` ganharam `BytesSentWire`/`BytesReceivedWire` (e
+`TotalBytesSentWire`/`TotalBytesReceivedWire` no agregado do servidor) como campos IRMÃOS dos
+já existentes, nunca substitutos — `BytesSent`/`BytesReceived` continuam sendo o payload
+LÓGICO, exatamente como documentado antes, e todo código que já lê `Stats` hoje não muda de
+comportamento.
+
+Mecânica: nos mesmos pontos que já calculam `LWire`/`LWireFrames` (escrita) ou capturam o
+frame antes de `PipeUndoCompress` (leitura), mais um `PipeAtomicAdd64` — custo idêntico ao
+que S0-S4 já paga por frame, sem lock novo. Para kinds que nunca são comprimidos (Ping,
+Subscribe/Unsubscribe), o valor Wire é sempre igual ao lógico por construção (mesma
+chamada, mesmo número) — importante para a aritmética de `TotalBytesSentWire` continuar
+comparável a `TotalBytesSent` mesmo numa conexão com muito tráfego de controle/heartbeat e
+pouca mensagem comprimível: se o Wire só contasse os frames elegíveis, a razão "quanto a
+compressão economizou" ficaria artificialmente otimista.

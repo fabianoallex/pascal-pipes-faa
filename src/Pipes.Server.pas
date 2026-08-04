@@ -119,6 +119,9 @@ type
     // MESMO ponto que ja atualiza FLastReadTick/FLastWriteTick.
     FBytesSent: UInt64;
     FBytesReceived: UInt64;
+    // Bytes de fato no fio (pos-compressao) — ver Pipes.Types.TPipeConnStats.
+    FBytesSentWire: UInt64;
+    FBytesReceivedWire: UInt64;
     FMessagesSent: UInt64;
     FMessagesReceived: UInt64;
     FConnectedSinceTick: UInt64;
@@ -191,6 +194,8 @@ type
     FTotalConnectionsAccepted: UInt64;
     FTotalBytesSent: UInt64;
     FTotalBytesReceived: UInt64;
+    FTotalBytesSentWire: UInt64;
+    FTotalBytesReceivedWire: UInt64;
     FTotalMessagesSent: UInt64;
     FTotalMessagesReceived: UInt64;
     // --- pub/sub ---
@@ -486,6 +491,7 @@ end;
 procedure TPipeServerReaderThread.Execute;
 var
   LFrame: TPipeFrame;
+  LWireBytes: UInt64;
 begin
   try
     // Negociacao (TLS do lado servidor) AQUI, nao no Accept: presa nesta
@@ -505,16 +511,22 @@ begin
     while True do
     begin
       LFrame := PipeReadFrame(FConn.FStream, FConn.FServer.MaxMessageSize);
+      // Tamanho NO FIO, antes de desfazer o envelope — pfkCompressed inclui
+      // o overhead do proprio envelope (2 bytes), entao isto e' o que de fato
+      // trafegou, nao uma estimativa.
+      LWireBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload));
       if LFrame.Kind = pfkCompressed then
-        // Transparente daqui pra baixo: Stats e HandleFrame veem o frame
-        // logico, igual a se nunca tivesse sido comprimido no fio.
+        // Transparente daqui pra baixo: Stats (a parte LOGICA) e HandleFrame
+        // veem o frame como se nunca tivesse sido comprimido no fio.
         LFrame := PipeUndoCompress(LFrame, FConn.FServer.MaxMessageSize);
       PipeAtomicWrite64(FConn.FLastReadTick, PipeTickMs);
       PipeAtomicAdd64(FConn.FBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+      PipeAtomicAdd64(FConn.FBytesReceivedWire, LWireBytes);
       PipeAtomicAdd64(FConn.FMessagesReceived, 1);
       PipeAtomicAdd64(FConn.FServer.FTotalBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
+      PipeAtomicAdd64(FConn.FServer.FTotalBytesReceivedWire, LWireBytes);
       PipeAtomicAdd64(FConn.FServer.FTotalMessagesReceived, 1);
       FConn.FServer.HandleFrame(FConn, LFrame);
     end;
@@ -606,12 +618,13 @@ end;
 
 procedure TPipeServerConnection.SendFrame(const AFrame: TPipeFrame);
 var
-  LBytes: UInt64;
+  LBytes, LWireBytes: UInt64;
   LWire: TPipeFrame;
 begin
   // Validacao (do payload ORIGINAL) e compressao sao CPU pura, feitas FORA
   // do write lock: um payload grande comprimindo nao trava outros escritores
-  // desta conexao. Stats usa AFrame (logico), nunca LWire.
+  // desta conexao. LBytes (logico) usa AFrame; LWireBytes usa LWire — a
+  // diferenca entre os dois E' a economia da compressao.
   PipeValidateMaxPayload(Length(AFrame.Payload), FServer.MaxMessageSize);
   LWire := PipeMaybeCompress(AFrame, FServer.CompressionMinSize);
   FWriteLock.Enter;
@@ -619,9 +632,12 @@ begin
     PipeWriteFrame(FStream, LWire, FServer.MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
     LBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload));
+    LWireBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload));
     PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
     PipeAtomicAdd64(FMessagesSent, 1);
     PipeAtomicAdd64(FServer.FTotalBytesSent, LBytes);
+    PipeAtomicAdd64(FServer.FTotalBytesSentWire, LWireBytes);
     PipeAtomicAdd64(FServer.FTotalMessagesSent, 1);
   finally
     FWriteLock.Leave;
@@ -630,7 +646,7 @@ end;
 
 procedure TPipeServerConnection.SendFrames(const AFrames: TArray<TPipeFrame>);
 var
-  LBytes: UInt64;
+  LBytes, LWireBytes: UInt64;
   LWireFrames: TArray<TPipeFrame>;
   I: Integer;
 begin
@@ -647,11 +663,17 @@ begin
     PipeWriteFrames(FStream, LWireFrames, FServer.MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
     LBytes := 0;
+    LWireBytes := 0;
     for I := 0 to High(AFrames) do
+    begin
       Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrames[I].Payload)));
+      Inc(LWireBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWireFrames[I].Payload)));
+    end;
     PipeAtomicAdd64(FBytesSent, LBytes);
+    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
     PipeAtomicAdd64(FMessagesSent, UInt64(Length(AFrames)));
     PipeAtomicAdd64(FServer.FTotalBytesSent, LBytes);
+    PipeAtomicAdd64(FServer.FTotalBytesSentWire, LWireBytes);
     PipeAtomicAdd64(FServer.FTotalMessagesSent, UInt64(Length(AFrames)));
   finally
     FWriteLock.Leave;
@@ -1572,6 +1594,8 @@ begin
   Result.TotalConnectionsAccepted := PipeAtomicRead64(FTotalConnectionsAccepted);
   Result.TotalBytesSent := PipeAtomicRead64(FTotalBytesSent);
   Result.TotalBytesReceived := PipeAtomicRead64(FTotalBytesReceived);
+  Result.TotalBytesSentWire := PipeAtomicRead64(FTotalBytesSentWire);
+  Result.TotalBytesReceivedWire := PipeAtomicRead64(FTotalBytesReceivedWire);
   Result.TotalMessagesSent := PipeAtomicRead64(FTotalMessagesSent);
   Result.TotalMessagesReceived := PipeAtomicRead64(FTotalMessagesReceived);
   Result.PoolQueueDepth := EventPool.QueueDepth;
@@ -1601,6 +1625,8 @@ begin
   try
     AStats.BytesSent := PipeAtomicRead64(LConn.FBytesSent);
     AStats.BytesReceived := PipeAtomicRead64(LConn.FBytesReceived);
+    AStats.BytesSentWire := PipeAtomicRead64(LConn.FBytesSentWire);
+    AStats.BytesReceivedWire := PipeAtomicRead64(LConn.FBytesReceivedWire);
     AStats.MessagesSent := PipeAtomicRead64(LConn.FMessagesSent);
     AStats.MessagesReceived := PipeAtomicRead64(LConn.FMessagesReceived);
     AStats.ConnectedSinceTick := LConn.FConnectedSinceTick;

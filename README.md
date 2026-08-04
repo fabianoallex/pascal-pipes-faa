@@ -314,6 +314,12 @@ WriteLn('latencia media de request: ', LCliStats.AvgRequestLatencyMs, ' ms');
   `PendingRequests`, e `AvgRequestLatencyMs`/`MaxRequestLatencyMs` — só contam Requests que
   chegaram a ter reply (timeout e erro ficam de fora: são "o servidor não respondeu", uma
   pergunta diferente de "quanto tempo levou").
+- **`BytesSent`/`BytesReceived` vs `BytesSentWire`/`BytesReceivedWire`** (nos três: `Server.
+  ConnectionStats`, `Server.Stats` como `TotalBytesSent/ReceivedWire`, e `Client.Stats`) — os
+  primeiros são o payload LÓGICO (visão do app, o que `CompressionMinSize` NÃO muda); os
+  `*Wire` são o que de fato passou pelo fio, já refletindo a compressão quando ela comprimiu
+  algum frame. `BytesSent - BytesSentWire` é a economia real de banda; sem `CompressionMinSize`
+  ligado os dois pares são sempre idênticos.
 
 ### Ordem por grupo em `pdmPool` (`AGroupKey` de `SendBytes`/`SendText`)
 
@@ -382,9 +388,12 @@ Client.SendText(JsonGrandeERepetitivo); // vai comprimido se compensar
 
 Só `SendBytes`/`SendText`/`Request`/`Publish` (e as versões em lote) são candidatos —
 payload abaixo do mínimo, ou que não compensa (dado já compresso tipo imagem), sai cru sem
-aviso nenhum: é uma otimização silenciosa, não uma garantia de formato no fio. `Stats`
-continuam contando o payload LÓGICO (visão do app), não o tamanho reduzido que passou pelo
-fio. `MaxMessageSize` é validado no payload ORIGINAL antes de comprimir, e a decodificação
+aviso nenhum: é uma otimização silenciosa, não uma garantia de formato no fio. `BytesSent`/
+`BytesReceived` de `Stats` continuam contando o payload LÓGICO (visão do app); quem quer ver
+a economia real de banda usa os campos irmãos `BytesSentWire`/`BytesReceivedWire` (ver seção
+"Métricas/observabilidade" acima) — inclusive do lado de quem SÓ RECEBE, que de outro jeito
+não teria como saber (a descompressão já devolve os bytes lógicos antes do app ver o frame).
+`MaxMessageSize` é validado no payload ORIGINAL antes de comprimir, e a decodificação
 tem proteção contra zip bomb (payload comprimido pequeno que "explode" ao descomprimir):
 o teto é o mesmo `MaxMessageSize`, verificado durante a descompressão, não só no resultado
 final. Racional completo (por que é um kind novo do NPF1 e não um bit de flag) em

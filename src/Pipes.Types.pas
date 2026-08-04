@@ -114,6 +114,12 @@ type
     BytesReceived: UInt64;
     MessagesSent: UInt64;
     MessagesReceived: UInt64;
+    /// Bytes de fato escritos/lidos NO FIO (pos-compressao quando o frame foi
+    /// comprimido; igual a BytesSent/BytesReceived quando nao — ver
+    /// Pipes.Compression). BytesSent - BytesSentWire e' quanto a compressao
+    /// economizou nesta conexao; sempre <= BytesSent/BytesReceived.
+    BytesSentWire: UInt64;
+    BytesReceivedWire: UInt64;
     /// PipeTickMs no instante em que OnClientConnected disparou.
     ConnectedSinceTick: UInt64;
   end;
@@ -131,6 +137,9 @@ type
     TotalConnectionsAccepted: UInt64;
     TotalBytesSent: UInt64;
     TotalBytesReceived: UInt64;
+    /// Bytes de fato escritos/lidos NO FIO — ver TPipeConnStats.BytesSentWire.
+    TotalBytesSentWire: UInt64;
+    TotalBytesReceivedWire: UInt64;
     TotalMessagesSent: UInt64;
     TotalMessagesReceived: UInt64;
     /// Itens aguardando um worker no pool de despacho (EventPool). Em
@@ -150,6 +159,9 @@ type
   TPipeClientStats = record
     BytesSent: UInt64;
     BytesReceived: UInt64;
+    /// Bytes de fato escritos/lidos NO FIO — ver TPipeConnStats.BytesSentWire.
+    BytesSentWire: UInt64;
+    BytesReceivedWire: UInt64;
     MessagesSent: UInt64;
     MessagesReceived: UInt64;
     /// = FReconnectAttempts: tentativas desde a ultima sessao DURAVEL (o
