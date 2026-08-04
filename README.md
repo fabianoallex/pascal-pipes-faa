@@ -400,7 +400,8 @@ opcional separa instalações que dividem a mesma rede (é discriminador, não a
 Alcance é a **sub-rede local**: broadcast não atravessa roteador nem VPN — PDV remoto
 continua com IP configurado + `FailoverAddresses`. A forma dirigida
 `PipeDiscoverServers('192.168.1.10', ...)` sonda um host específico ("o servidor está
-vivo?"). Detalhes e racional em `docs/ARQUITETURA.md` §16.
+vivo?"). Detalhes e racional em `docs/ARQUITETURA.md` §16. Vitrine executável no sample
+**EchoDiscovery** (ver [Samples](#samples-samples)).
 
 ## Recursos
 
@@ -707,6 +708,16 @@ marcados `deprecated` só depois que samples e testes migrarem.
   mensagens de novo — sem reiniciar o cliente, o log passa a mostrar
   `endereço ativo: pipes_faa_backup`. Roteiro completo no cabeçalho de
   `EchoFailoverClient.dpr`.
+- **EchoDiscovery** (só `EchoDiscoveryClient` — reaproveita o `EchoServer.exe` de sempre,
+  com um parâmetro a mais) — vitrine de `Pipes.Discovery` (ver seção "Descoberta de
+  servidor na LAN" acima). Suba `EchoServer.exe *:5300 tcp discover` (o `discover` no fim
+  liga um `TPipeDiscoveryResponder` junto do `Listen`) e depois
+  `EchoDiscoveryClient.exe` sem argumento nenhum: ele sonda a sub-rede por 1s, loga
+  `encontrado: "EchoServer" em <ip>:5300 (ptTcp)` e conecta sozinho, nenhum IP digitado.
+  Com `EchoServer.exe *:5300 tls ..\..\tests\pki mtls discover` +
+  `EchoDiscoveryClient.exe ..\..\tests\pki cli` dá pra ver a distinção do §16.4 na prática:
+  a descoberta só acha o candidato (endereço, transporte, nome) — quem autentica de
+  verdade é o handshake `ptTls`/mTLS que vem a seguir, não a sonda UDP.
 - **EchoSeguro** (`EchoSeguroServer` + `EchoSeguroClient`) — o mesmo eco, mas sobre `ptTls`
   com mTLS: servidor exige certificado de cliente (`CaFile`), cliente apresenta o dele,
   tráfego cifrado ponta a ponta. Usa a PKI de teste versionada em `tests/pki`; um cliente sem
@@ -964,6 +975,8 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing,
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),
                      EchoFailover (FailoverAddresses, reaproveita o EchoServer.exe),
+                     EchoDiscovery (Pipes.Discovery, idem, so' o EchoServer.exe ganha
+                     "discover" na linha de comando),
                      EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (jogo de turno), PingPong (jogo em tempo real),
                      PainelLoja (pub/sub por topico, tres papeis num exe),

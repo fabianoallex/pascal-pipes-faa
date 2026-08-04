@@ -12,13 +12,23 @@ program EchoServer;
     FPC:    fpc -MDelphi -Sh -Fu..\..\src EchoServer.dpr   (ou lazbuild EchoServer.lpi)
     Delphi: abrir EchoServer.dproj no IDE
 
-  Uso: EchoServer [endereco] [tcp|tls [dir-pki] [mtls]]
+  Uso: EchoServer [endereco] [tcp|tls [dir-pki] [mtls]] [discover]
 
     EchoServer                         ptLocal em 'pipes_faa_echo' (padrao)
     EchoServer meu_pipe                ptLocal em 'meu_pipe'
     EchoServer *:5300 tcp              ptTcp em todas as interfaces, porta 5300
     EchoServer *:5300 tls <dir-pki>
     EchoServer *:5300 tls <dir-pki> mtls   exige certificado do cliente
+    EchoServer *:5300 tcp discover     idem, e anuncia a si mesmo na LAN
+    EchoServer *:5300 tls <dir-pki> mtls discover
+
+  'discover', quando presente, e' sempre o ULTIMO parametro (depois de
+  qualquer combinacao acima) e liga um TPipeDiscoveryResponder junto do
+  Listen: o servidor passa a responder por broadcast UDP a quem chamar
+  PipeDiscoverServers (ver sample EchoDiscovery e a secao "Descoberta de
+  servidor na LAN" do README.md). So' faz sentido com tcp/tls — ptLocal nao
+  tem porta de rede para anunciar, e por isso a combinacao e' recusada na
+  hora, antes de tentar o Listen.
 
   <dir-pki> relativo vale a partir do diretorio ATUAL, e os dois compiladores
   deixam o exe em lugares diferentes: do build do FPC (samples\EchoServer) o
@@ -58,13 +68,15 @@ uses
   SyncObjs,
   Pipes.Types,
   Pipes.Framing,
-  Pipes.Server;
+  Pipes.Server,
+  Pipes.Discovery;
 
 type
   { Callbacks sao 'of object': o estado do sample vive nesta classe. }
   TEchoServerApp = class
   private
     FServer: TNamedPipeServer;
+    FResponder: TPipeDiscoveryResponder; // nil quando 'discover' nao foi pedido
     FConsoleLock: TCriticalSection;
     procedure Log(const AMsg: string);
     procedure OnMsg(Sender: TObject; AConnId: TPipeConnectionId;
@@ -79,7 +91,7 @@ type
     constructor Create;
     destructor Destroy; override;
     procedure Run(const AAddress: string; ATransport: TPipeTransport;
-      const APkiDir: string; AMtls: Boolean);
+      const APkiDir: string; AMtls, ADiscover: Boolean);
   end;
 
 constructor TEchoServerApp.Create;
@@ -91,6 +103,7 @@ end;
 destructor TEchoServerApp.Destroy;
 begin
   FServer.Free; // Stop no destructor
+  FResponder.Free; // idem; nil-safe se 'discover' nao foi pedido
   FConsoleLock.Free;
   inherited;
 end;
@@ -164,8 +177,26 @@ begin
   end;
 end;
 
+// Extrai a porta de um endereco 'host:porta' (o formato usado por ptTcp/
+// ptTls neste sample) — e' a porta que o responder de descoberta anuncia,
+// entao precisa ser a MESMA que o TPipeServer esta de fato escutando.
+function PortaDoEndereco(const AAddress: string): Word;
+var
+  LPos, LPorta: Integer;
+begin
+  LPos := LastDelimiter(':', AAddress);
+  if LPos = 0 then
+    raise Exception.Create('endereco "' + AAddress +
+      '" nao tem porta (esperado host:porta para discover)');
+  LPorta := StrToIntDef(Copy(AAddress, LPos + 1, MaxInt), 0);
+  if (LPorta <= 0) or (LPorta > 65535) then
+    raise Exception.Create('nao foi possivel extrair a porta de "' +
+      AAddress + '"');
+  Result := LPorta;
+end;
+
 procedure TEchoServerApp.Run(const AAddress: string;
-  ATransport: TPipeTransport; const APkiDir: string; AMtls: Boolean);
+  ATransport: TPipeTransport; const APkiDir: string; AMtls, ADiscover: Boolean);
 var
   LDir, LFalta: string;
 begin
@@ -224,7 +255,20 @@ begin
   else
     Log('escutando em "' + AAddress + '" (ptLocal) - Enter encerra');
   end;
+  if ADiscover then
+  begin
+    // Criado DEPOIS do Listen: so' anuncia uma porta que ja esta de fato
+    // aceitando conexao. O nome de exibicao e' fixo neste sample; um app
+    // real tende a usar algo como o nome da loja/estacao.
+    FResponder := TPipeDiscoveryResponder.Create(PortaDoEndereco(AAddress),
+      ATransport, 'EchoServer');
+    FResponder.Start;
+    Log('anunciando na LAN (porta de descoberta udp ' +
+      IntToStr(PIPES_DISCOVERY_DEFAULT_PORT) + ') - ache-o com o sample EchoDiscovery');
+  end;
   Readln;
+  if Assigned(FResponder) then
+    FResponder.Stop; // sincrono, idempotente
   FServer.Stop; // sincrono: join de tudo, drena callbacks em voo
   Log('encerrado.');
 end;
@@ -233,38 +277,52 @@ var
   App: TEchoServerApp;
   Address, PkiDir: string;
   Transport: TPipeTransport;
-  Mtls: Boolean;
+  Mtls, Discover: Boolean;
+  LArgCount: Integer;
 begin
   {$IFNDEF FPC}
   ReportMemoryLeaksOnShutdown := True;
   {$ENDIF}
-  if ParamCount >= 1 then
+  LArgCount := ParamCount;
+  // 'discover' e' sempre o ultimo token, em cima de qualquer combinacao de
+  // parametros existente — remove-lo da contagem deixa o resto do parsing
+  // (posicional) intacto.
+  Discover := (LArgCount >= 1) and SameText(ParamStr(LArgCount), 'discover');
+  if Discover then
+    Dec(LArgCount);
+  if LArgCount >= 1 then
     Address := ParamStr(1)
   else
     Address := 'pipes_faa_echo';
   Transport := ptLocal;
   PkiDir := '';
   Mtls := False;
-  if ParamCount >= 2 then
+  if LArgCount >= 2 then
   begin
     if SameText(ParamStr(2), 'tcp') then
       Transport := ptTcp
     else if SameText(ParamStr(2), 'tls') then
     begin
       Transport := ptTls;
-      if ParamCount < 3 then
+      if LArgCount < 3 then
       begin
         Writeln('modo tls exige o diretorio da PKI. ' +
           'Ex.: EchoServer *:5300 tls ..\..\tools\pki-android');
         Halt(2);
       end;
       PkiDir := ParamStr(3);
-      Mtls := (ParamCount >= 4) and SameText(ParamStr(4), 'mtls');
+      Mtls := (LArgCount >= 4) and SameText(ParamStr(4), 'mtls');
     end;
+  end;
+  if Discover and (Transport = ptLocal) then
+  begin
+    Writeln('discover exige tcp ou tls (ptLocal nao tem porta de rede para' +
+      ' anunciar). Ex.: EchoServer *:5300 tcp discover');
+    Halt(2);
   end;
   App := TEchoServerApp.Create;
   try
-    App.Run(Address, Transport, PkiDir, Mtls);
+    App.Run(Address, Transport, PkiDir, Mtls, Discover);
   finally
     App.Free;
   end;

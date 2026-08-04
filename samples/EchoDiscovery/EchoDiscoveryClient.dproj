@@ -1,6 +1,6 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
     <PropertyGroup>
-        <ProjectGuid>{A7C3E9B1-2F64-4D18-9E05-6B71D4C82A39}</ProjectGuid>
+        <ProjectGuid>{E47E570A-B2AD-4D1D-A5C7-A4C44FE07991}</ProjectGuid>
         <ProjectVersion>20.1</ProjectVersion>
         <FrameworkType>None</FrameworkType>
         <Base>True</Base>
@@ -8,8 +8,8 @@
         <Platform Condition="'$(Platform)'==''">Win64</Platform>
         <TargetedPlatforms>3</TargetedPlatforms>
         <AppType>Console</AppType>
-        <MainSource>EchoServer.dpr</MainSource>
-        <ProjectName Condition="'$(ProjectName)'==''">EchoServer</ProjectName>
+        <MainSource>EchoDiscoveryClient.dpr</MainSource>
+        <ProjectName Condition="'$(ProjectName)'==''">EchoDiscoveryClient</ProjectName>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
         <Base>true</Base>
@@ -39,8 +39,7 @@
         <DCC_ExeOutput>.\$(Platform)\$(Config)</DCC_ExeOutput>
         <DCC_Namespace>System;Xml;Data;Datasnap;Web;Soap;$(DCC_Namespace)</DCC_Namespace>
         <DCC_UnitSearchPath>..\..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
-        <DCC_IncludePath>..\..\src;$(DCC_IncludePath)</DCC_IncludePath>
-        <SanitizedProjectName>EchoServer</SanitizedProjectName>
+        <SanitizedProjectName>EchoDiscoveryClient</SanitizedProjectName>
         <UsingDelphiRTL>true</UsingDelphiRTL>
     </PropertyGroup>
     <PropertyGroup Condition="'$(Base_Win32)'!=''">
@@ -74,6 +73,9 @@
         <DCCReference Include="..\..\src\Pipes.Framing.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Windows.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Transport.Tcp.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Transport.Schannel.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Transport.Tls.pas"/>
         <DCCReference Include="..\..\src\Pipes.Base.pas"/>
         <DCCReference Include="..\..\src\Pipes.Server.pas"/>
         <DCCReference Include="..\..\src\Pipes.Client.pas"/>
@@ -96,7 +98,7 @@
         <BorlandProject>
             <Delphi.Personality>
                 <Source>
-                    <Source Name="MainSource">EchoServer.dpr</Source>
+                    <Source Name="MainSource">EchoDiscoveryClient.dpr</Source>
                 </Source>
             </Delphi.Personality>
             <Platforms>

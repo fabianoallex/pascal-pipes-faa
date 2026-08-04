@@ -197,7 +197,7 @@ tests/Unit (Threading/Framing/Topics/Address/Discovery)
     Discovery)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
-samples/ (17 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+samples/ (18 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 
@@ -244,7 +244,7 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | S0-S4 | Métricas/observabilidade: `Stats`/`ConnectionStats`, `PipeAtomicAdd64`, latência de Request — ver `docs/ARQUITETURA.md` §11 | sonnet | concluído |
 | F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
 | A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | concluído, verificado em device (11/11) |
-| D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
+| D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks, sample `EchoDiscovery` (reaproveita o `EchoServer.exe`, so' ganha `discover` na linha de comando) — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
