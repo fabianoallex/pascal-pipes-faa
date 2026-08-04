@@ -22,6 +22,7 @@ uses
   Classes, consoletestrunner, testregistry,
   Pipes.ThreadingTests,
   Pipes.FramingTests,
+  Pipes.CompressionTests,
   Pipes.TopicsTests,
   Pipes.AddressTests,
   Pipes.DiscoveryTests;

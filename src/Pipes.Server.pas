@@ -86,6 +86,7 @@ uses
   Pipes.Types,
   Pipes.Threading,
   Pipes.Framing,
+  Pipes.Compression,
   Pipes.Topics,
   Pipes.Transport,
   Pipes.Base;
@@ -504,6 +505,10 @@ begin
     while True do
     begin
       LFrame := PipeReadFrame(FConn.FStream, FConn.FServer.MaxMessageSize);
+      if LFrame.Kind = pfkCompressed then
+        // Transparente daqui pra baixo: Stats e HandleFrame veem o frame
+        // logico, igual a se nunca tivesse sido comprimido no fio.
+        LFrame := PipeUndoCompress(LFrame, FConn.FServer.MaxMessageSize);
       PipeAtomicWrite64(FConn.FLastReadTick, PipeTickMs);
       PipeAtomicAdd64(FConn.FBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
@@ -602,10 +607,16 @@ end;
 procedure TPipeServerConnection.SendFrame(const AFrame: TPipeFrame);
 var
   LBytes: UInt64;
+  LWire: TPipeFrame;
 begin
+  // Validacao (do payload ORIGINAL) e compressao sao CPU pura, feitas FORA
+  // do write lock: um payload grande comprimindo nao trava outros escritores
+  // desta conexao. Stats usa AFrame (logico), nunca LWire.
+  PipeValidateMaxPayload(Length(AFrame.Payload), FServer.MaxMessageSize);
+  LWire := PipeMaybeCompress(AFrame, FServer.CompressionMinSize);
   FWriteLock.Enter;
   try
-    PipeWriteFrame(FStream, AFrame, FServer.MaxMessageSize);
+    PipeWriteFrame(FStream, LWire, FServer.MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
     LBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload));
     PipeAtomicAdd64(FBytesSent, LBytes);
@@ -620,13 +631,20 @@ end;
 procedure TPipeServerConnection.SendFrames(const AFrames: TArray<TPipeFrame>);
 var
   LBytes: UInt64;
+  LWireFrames: TArray<TPipeFrame>;
   I: Integer;
 begin
   if Length(AFrames) = 0 then
     Exit;
+  SetLength(LWireFrames, Length(AFrames));
+  for I := 0 to High(AFrames) do
+  begin
+    PipeValidateMaxPayload(Length(AFrames[I].Payload), FServer.MaxMessageSize);
+    LWireFrames[I] := PipeMaybeCompress(AFrames[I], FServer.CompressionMinSize);
+  end;
   FWriteLock.Enter;
   try
-    PipeWriteFrames(FStream, AFrames, FServer.MaxMessageSize);
+    PipeWriteFrames(FStream, LWireFrames, FServer.MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
     LBytes := 0;
     for I := 0 to High(AFrames) do
@@ -882,6 +900,8 @@ begin
       HandleClientPublish(AConn, AFrame);
     pfkPing, pfkReply:
       ; // ping: reservado; reply: servidor nao faz requests na v1
+    pfkCompressed:
+      ; // inalcancavel: o reader ja desfez o envelope antes de chamar HandleFrame
   end;
 end;
 

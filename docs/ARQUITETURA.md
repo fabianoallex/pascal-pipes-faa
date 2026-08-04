@@ -1303,3 +1303,86 @@ levanta na hora; `Stop` conclui em < 2s (mesmo teto de M7/H0-H4) e o MESMO objet
 `Start` de novo com a porta liberada. O protocolo puro (encode/decode, comprimentos
 estritos, UTF-8 multibyte, IPv4 em ordem de rede) tem par unitário completo nos dois
 frameworks.
+
+## 17. Compressão de payload (`CompressionMinSize`, `Pipes.Compression.pas`)
+
+Motivação: payloads grandes e compressíveis (JSON verboso, texto repetitivo) pagam banda e
+tempo de fio sem necessidade — deflate opcional reduz os dois quando compensa, sem exigir
+nenhuma dependência nova (§17.2).
+
+### 17.1 `pfkCompressed`: um KIND novo, não um bit de `Flags`
+
+Cogitou-se usar um bit livre em `Flags` (offset 5 do header NPF1 — só os bits 0/1 ocupados,
+por `PIPE_FLAG_ERROR`/`PIPE_FLAG_RETAIN`), mas isso quebraria a garantia que o resto do NPF1
+já dá: hoje, um peer desatualizado que recebe uma capacidade nova FALHA ALTO (`EPipeProtocol`
+"kind desconhecido... peer fala versão mais nova"), nunca interpreta bytes errados — isso
+funciona porque toda extensão anterior (kinds 4-6 do pub/sub, `PIPE_FLAG_RETAIN`) piggybackou
+em kind NOVO. Um bit de `Flags` em `pfkMessage`/`pfkRequest`/`pfkReply` (kinds que existem
+desde o M2) não teria essa proteção: um peer velho processaria o frame normalmente e
+entregaria deflate cru ao app, corrompendo em silêncio — diferente de `PIPE_FLAG_RETAIN`, que
+só é seguro porque só é lido em `pfkPublish` (kind 6), ele mesmo já novo o bastante para cair
+no "kind desconhecido" em qualquer peer anterior a P0.
+
+`pfkCompressed` (kind 7) empacota um frame Message/Request/Reply/Publish inteiro: `Payload =
+[OrigKind:1][OrigFlags:1][Deflate(OrigPayload)]`, `CorrId` = o MESMO `CorrId` do frame
+original — correlação de request/reply e o hash de `AGroupKey` (`Pipes.Threading`)
+atravessam o envelope sem mudança nenhuma. Um peer desatualizado cai no MESMO
+`if LKind > High(TPipeFrameKind)` que já existe em `PipeReadFrame`, o mesmo diagnóstico que
+P0-P4 já usa — zero mecanismo novo de detecção.
+
+### 17.2 Codec: zero dependência nova nos dois compiladores
+
+`Pipes.Compression.pas` delega a `System.ZLib` (Delphi) e `paszlib`/`zstream` (FPC), via
+`{$IFDEF FPC}`. Confirmado nos dois toolchains desta máquina: no FPC, `paszlib`/`zstream` é
+um port 100% Pascal do zlib (`zbase`/`zdeflate`/`zinflate`), sem `external`, compilado direto
+no binário — zero dependência de runtime, nas duas plataformas (Windows e Linux). No Delphi,
+`System.ZLib` é estaticamente linkado no Windows (fora do bloco `{$IFDEF POSIX}` do fonte não
+há `external` nenhum); em Android/Linux (POSIX no sentido do Delphi) a unit linka contra
+`libz.so` do próprio SO — no Android isso é parte do bionic, presente em todo aparelho; no
+Linux desktop é tão universal quanto `libc`. Os dois lados usam o nível de compressão DEFAULT
+do zlib (`zcDefault`/`cldefault` — que o próprio zlib documenta como equivalente a nível 6) e
+janela/cabeçalho zlib padrão, compatíveis entre si nos dois sentidos.
+
+### 17.3 `PipeMaybeCompress`/`PipeUndoCompress`: transparentes para Stats e `MaxMessageSize`
+
+`PipeMaybeCompress(AFrame, AMinSize)` só produz `pfkCompressed` se `AMinSize > 0`
+(`CompressionMinSize`, 0 = desligado por padrão), o kind for elegível (`PipeIsCompressible`:
+Message/Request/Reply/Publish — Ping não tem payload; Subscribe/Unsubscribe/Compressed são
+estruturais), o payload alcançar o mínimo, E o deflate resultante for de fato menor que o
+original (dado já compresso, ex. JPEG, sai cru sem aviso). `Pipes.Server`/`Pipes.Client`
+sempre contabilizam `Stats`/validam `MaxMessageSize` contra o frame ORIGINAL, nunca o
+resultado de `PipeMaybeCompress` — validar/contar o comprimido deixaria um payload lógico
+maior que `MaxMessageSize` passar sempre que comprimisse bem (furando o teto que a property
+documenta) e faria `Stats` mostrar economia de banda em vez do que o app efetivamente enviou.
+A validação/compressão roda FORA do write lock da conexão (é CPU pura): um payload grande
+comprimindo não trava outros escritores da mesma conexão.
+
+No lado de leitura, `PipeUndoCompress` roda logo após `PipeReadFrame`, num único ponto por
+lado (`Pipes.Server`/`Pipes.Client`, na reader thread) — o frame reconstituído segue para
+`Stats`/`HandleFrame` como se nunca tivesse sido comprimido no fio. Os `case AFrame.Kind of`
+que despacham por kind (um em cada unit) ganharam um ramo `pfkCompressed: ;` inalcançável,
+só para o compilador não reclamar de case incompleto — o kind nunca chega até ali porque o
+envelope já foi desfeito antes.
+
+### 17.4 Zip bomb: teto verificado DURANTE a descompressão, não só no resultado
+
+`PipeInflate(ASource, AMaxDecompressedSize)` lê em blocos de 64 KB (`TZDecompressionStream`/
+`TDecompressionStream` sobre um `TMemoryStream`) e soma o total conforme decodifica — um
+payload comprimido pequeno que "explodiria" para gigabytes estoura `EPipeProtocol` assim que
+o total ultrapassa o limite, sem tentar alocar o resultado inteiro primeiro. O teto é sempre
+o MESMO `MaxMessageSize` da conexão (nenhuma property nova para isso), o mesmo raciocínio que
+já protege o `Length` do header NPF1 em `PipeReadFrame`.
+
+### 17.5 Testes
+
+Unitário (`Pipes.CompressionTests`, dual): round-trip deflate/inflate, `PipeMaybeCompress`
+desligado (`AMinSize=0`)/abaixo do mínimo/kind não elegível/payload incompressível — nos
+quatro casos devolve o frame original sem tocar; `CorrId` atravessa sem mudança; round-trip
+completo do envelope restaura Kind/Flags/Payload (inclusive `PIPE_FLAG_ERROR` de
+`ErrorReply`); `PipeUndoCompress` num frame que não é `pfkCompressed` levanta
+`EArgumentException` (erro de uso do chamador); zip bomb (1 MB de zeros comprimido, teto de
+1000 bytes) levanta `EPipeProtocol`. Integração (`Pipes.EndToEndTests`, dual): payload de
+20000 bytes repetitivo nos dois sentidos (cliente→servidor e servidor→cliente) chega íntegro
+depois de decodificado, e `Stats.TotalBytesReceived` bate com o tamanho LÓGICO do texto, não
+o comprimido — prova de que a transparência do §17.3 se sustenta pela pilha real, não só na
+unit pura.

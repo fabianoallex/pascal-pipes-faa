@@ -365,6 +365,31 @@ nele: a PRÓXIMA falha tenta o primário de novo antes de espalhar pelos outros.
 `MaxReconnectAttempts`/`ReconnectDelayMs` continuam contando/espaçando por TENTATIVA, sem
 orçamento separado por endereço.
 
+### Compressão de payload (`CompressionMinSize`)
+
+Deflate opcional para payloads grandes e compressíveis (JSON verboso, texto repetitivo) —
+zero dependência nova: `System.ZLib` no Delphi e `paszlib`/`zstream` no FPC, os dois já vêm
+na instalação padrão. `CompressionMinSize` (em `TPipeServer`/`TPipeClient`, igual
+`MaxMessageSize`) é `0` por padrão — desligado, comportamento idêntico a antes desta
+property existir. Ligar só afeta a PRODUÇÃO local; a decodificação de frames comprimidos
+recebidos do peer é sempre ativa, então dá para ligar de um lado só, ou nos dois em momentos
+diferentes do rollout, sem quebrar nada.
+
+```pascal
+Client.CompressionMinSize := 512; // so' tenta comprimir payload >= 512 bytes
+Client.SendText(JsonGrandeERepetitivo); // vai comprimido se compensar
+```
+
+Só `SendBytes`/`SendText`/`Request`/`Publish` (e as versões em lote) são candidatos —
+payload abaixo do mínimo, ou que não compensa (dado já compresso tipo imagem), sai cru sem
+aviso nenhum: é uma otimização silenciosa, não uma garantia de formato no fio. `Stats`
+continuam contando o payload LÓGICO (visão do app), não o tamanho reduzido que passou pelo
+fio. `MaxMessageSize` é validado no payload ORIGINAL antes de comprimir, e a decodificação
+tem proteção contra zip bomb (payload comprimido pequeno que "explode" ao descomprimir):
+o teto é o mesmo `MaxMessageSize`, verificado durante a descompressão, não só no resultado
+final. Racional completo (por que é um kind novo do NPF1 e não um bit de flag) em
+`docs/ARQUITETURA.md`.
+
 ### Descoberta de servidor na LAN (`Pipes.Discovery`)
 
 "Onde está o servidor?" sem digitar IP: o servidor anuncia a si mesmo com um
@@ -568,6 +593,8 @@ nenhum caso. Para `ptTls` depende do backend:
 TPipeBase (abstrata)
   Address, Transport, KeepAliveSeconds, HeartbeatIntervalMs, Active, DispatchMode,
   MaxMessageSize
+  CompressionMinSize                     // 0 (padrao) = producao desligada; decodificacao
+                                          // de frames recebidos e' sempre ativa
   TlsOptions: TPipeTlsConfig             // só usado em ptTls; lido no Listen/Connect
     CertFile, CertPassword, KeyFile, CaFile, SkipServerVerification, HandshakeTimeoutMs
   OnMessage: TPipeMessageEvent;  OnError: TPipeErrorEvent

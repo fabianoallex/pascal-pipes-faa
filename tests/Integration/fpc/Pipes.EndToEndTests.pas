@@ -91,6 +91,8 @@ type
     procedure SendBytesBatch_Vazio_NaoEnviaNada;
     procedure SendBytesComGrupo_MesmaChave_PreservaOrdemSobPdmPool;
     procedure SendBytesComGrupo_ChavesDiferentes_NaoBloqueiamEntreSi;
+    procedure Compressao_ClienteParaServidor_ChegaIntegroEStatsLogicos;
+    procedure Compressao_ServidorParaCliente_ChegaIntegro;
   end;
 
 implementation
@@ -711,6 +713,78 @@ begin
   // Serializado (bug) levaria ~400ms; em paralelo, ~200ms — folga generosa.
   AssertTrue('chaves diferentes nao processaram em paralelo (parece serializado)',
     PipeTickMs - T0 < 350);
+end;
+
+procedure TPipeEndToEndTests.Compressao_ClienteParaServidor_ChegaIntegroEStatsLogicos;
+var
+  LName, LTexto: string;
+  LStats: TPipeServerStats;
+begin
+  LName := UniquePipeName;
+  FServer := TNamedPipeServer.Create(LName);
+  FServer.OnMessage := OnSrvMessage;
+  FServer.OnClientConnected := OnSrvClientConnected;
+  FServer.Listen;
+
+  FClient := TNamedPipeClient.Create(LName);
+  FClient.CompressionMinSize := 256; // liga a PRODUCAO so' deste lado
+  FClient.Connect(3000);
+  AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
+
+  // Repetitivo e acima do minimo: o cliente vai mandar isto como
+  // pfkCompressed de verdade, nao so' exercitar o caminho desligado.
+  LTexto := StringOfChar('A', 20000);
+  FClient.SendText(LTexto);
+  AssertTrue('mensagem nao chegou ao servidor', WaitCount(FSrvMsgCount, 1, 3000));
+  FLock.Enter;
+  try
+    AssertEquals('payload deveria chegar integro depois de descomprimido no servidor',
+      LTexto, FServerTexts[0]);
+  finally
+    FLock.Leave;
+  end;
+
+  // Stats contam o payload LOGICO (pre-compressao): tem que bater com o
+  // texto original de 20000 bytes, nao com o tamanho reduzido que passou
+  // pelo fio.
+  LStats := FServer.Stats;
+  AssertTrue('Stats deveriam contar o payload logico, nao o comprimido no fio',
+    LStats.TotalBytesReceived >= UInt64(Length(PipeUtf8Encode(LTexto))));
+end;
+
+procedure TPipeEndToEndTests.Compressao_ServidorParaCliente_ChegaIntegro;
+var
+  LName, LTexto: string;
+  LConnId: TPipeConnectionId;
+begin
+  LName := UniquePipeName;
+  FServer := TNamedPipeServer.Create(LName);
+  FServer.CompressionMinSize := 256; // liga a PRODUCAO so' deste lado
+  FServer.OnClientConnected := OnSrvClientConnected;
+  FServer.Listen;
+
+  FClient := TNamedPipeClient.Create(LName);
+  FClient.OnMessage := OnCliMessage;
+  FClient.Connect(3000);
+  AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
+
+  FLock.Enter;
+  try
+    LConnId := FLastConnId;
+  finally
+    FLock.Leave;
+  end;
+
+  LTexto := StringOfChar('B', 20000);
+  FServer.SendText(LConnId, LTexto);
+  AssertTrue('mensagem nao chegou ao cliente', WaitCount(FCliMsgCount, 1, 3000));
+  FLock.Enter;
+  try
+    AssertEquals('payload deveria chegar integro depois de descomprimido no cliente',
+      LTexto, FClientTexts[0]);
+  finally
+    FLock.Leave;
+  end;
 end;
 
 initialization

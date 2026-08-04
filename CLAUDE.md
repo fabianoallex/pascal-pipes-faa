@@ -60,6 +60,17 @@ implementar qualquer milestone novo.
   notificações, nunca vetos — veto no pool reordenaria publicações do mesmo cliente), e
   **a lista de filtros vive na conexão sob `FConnLock`**, não em tabela global
   `tópico → conexões` (é o que faz a assinatura morrer com a conexão, sem vazamento).
+- **Compressão de payload (`CompressionMinSize`, `Pipes.Compression.pas`):** deflate opcional
+  via `System.ZLib`/`paszlib`, zero dependência nova nos dois compiladores. `pfkCompressed`
+  (kind 7 do NPF1) é um KIND novo, não um bit de `Flags` — um peer desatualizado recebendo um
+  bit de `Flags` desconhecido em `pfkMessage`/`pfkRequest`/`pfkReply` (kinds que ele já
+  entende) processaria o frame normalmente e entregaria deflate cru ao app; um kind novo cai
+  no "kind desconhecido" que `PipeReadFrame` já usa, o mesmo diagnóstico alto e claro de
+  P0-P4. `CompressionMinSize = 0` (padrão) desliga só a PRODUÇÃO local; a decodificação de
+  frames comprimidos recebidos é sempre ativa. `Stats`/`MaxMessageSize` sempre olham o
+  payload ORIGINAL, nunca o comprimido; a descompressão tem teto de zip bomb verificado
+  DURANTE a decodificação (streaming), não só no resultado final. Racional completo em
+  `docs/ARQUITETURA.md` §17.
 
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 
@@ -108,7 +119,8 @@ implementar qualquer milestone novo.
 ## API pública (resumo)
 
 `TPipeBase` (abstrata: Address, Transport, TlsOptions, KeepAliveSeconds,
-HeartbeatIntervalMs, Active, DispatchMode, MaxMessageSize, OnMessage, OnError) →
+HeartbeatIntervalMs, Active, DispatchMode, MaxMessageSize, CompressionMinSize, OnMessage,
+OnError) →
 `TPipeServer` (Listen, Stop,
 SendBytes/SendText por ConnId (com `AGroupKey` opcional — ordem de entrega entre
 mensagens da mesma chave em `pdmPool`, ver abaixo), SendBytesBatch (N mensagens, um
@@ -161,6 +173,15 @@ cumulativo entre sessões). Snapshot sob demanda, mesmo molde de `ClientCount`/
 não só deste servidor — só é exclusivo dele em `pdmSerialized`. Latência de Request só
 conta o caminho de SUCESSO (timeout e erro ficam de fora).
 
+Compressão de payload (milestone C0, `docs/ARQUITETURA.md` §17): `CompressionMinSize:
+Cardinal` (em `TPipeBase`, 0 = desligado por padrão) — deflate opcional via
+`Pipes.Compression.pas` (`System.ZLib`/`paszlib`, zero dependência nova) quando o payload
+de `SendBytes`/`SendText`/`Request`/`Publish` (e as versões em lote) alcança o mínimo E
+comprime de fato menor. Liga só a PRODUÇÃO local; a decodificação de `pfkCompressed` (kind 7
+do NPF1) recebido do peer é sempre ativa. `Stats`/`MaxMessageSize` sempre olham o payload
+ORIGINAL, nunca o comprimido — a descompressão tem teto de zip bomb verificado DURANTE a
+decodificação, não só no resultado final.
+
 `TPipeDispatchMode`: `pdmPool` (padrão), `pdmSerialized` (pool de 1 worker, ordem FIFO),
 `pdmMainThread` (TThread.Queue — apps VCL/LCL).
 
@@ -183,6 +204,7 @@ cliente, "veio do cache de retidos" (ao vivo é sempre False, mesmo com retain p
 ```
 src/pipes.inc                    src/Pipes.Threading.pas       src/Pipes.Types.pas
 src/Pipes.Base.pas                src/Pipes.Framing.pas         src/Pipes.Transport.pas
+src/Pipes.Compression.pas        (deflate opcional: System.ZLib/paszlib — ver §17)
 src/Pipes.Topics.pas             (pub/sub: nomes, curingas, envelope — unit PURA)
 src/Pipes.Transport.Windows.pas  src/Pipes.Transport.Posix.pas
 src/Pipes.Transport.Android.pas  (Delphi/Android: ptTcp/ptTls sobre Posix.* + poll)
@@ -245,10 +267,11 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | F0-F3 | Failover de endereço (só `TPipeClient`): `FailoverAddresses`/`ActiveAddress`, `Connect` dividindo orçamento entre endereços, reconexão avançando por tentativa e voltando ao primário em sessão durável — ver `docs/ARQUITETURA.md` §12 | sonnet | concluído |
 | A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | concluído, verificado em device (11/11) |
 | D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks, sample `EchoDiscovery` (reaproveita o `EchoServer.exe`, so' ganha `discover` na linha de comando) — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
+| C0 | Compressão de payload: `Pipes.Compression.pas` (deflate via `System.ZLib`/`paszlib`), `pfkCompressed` (kind 7 do NPF1), `CompressionMinSize` em `TPipeBase`, proteção de zip bomb — ver `docs/ARQUITETURA.md` §17 | sonnet | concluído: verde nos dois compiladores (FPC 115 unit + 113 integração; Delphi/IDE confirmado 2026-08-04) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
-S0-S4/F0-F3.
+S0-S4/F0-F3/C0.
 
 ## Verificação por milestone
 

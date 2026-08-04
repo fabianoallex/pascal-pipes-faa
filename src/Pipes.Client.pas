@@ -83,6 +83,7 @@ uses
   Pipes.Types,
   Pipes.Threading,
   Pipes.Framing,
+  Pipes.Compression,
   Pipes.Topics,
   Pipes.Transport,
   Pipes.Base;
@@ -378,6 +379,8 @@ begin
     while True do
     begin
       LFrame := PipeReadFrame(FClient.FStream, FClient.MaxMessageSize);
+      if LFrame.Kind = pfkCompressed then
+        LFrame := PipeUndoCompress(LFrame, FClient.MaxMessageSize);
       PipeAtomicWrite64(FClient.FLastReadTick, PipeTickMs);
       PipeAtomicAdd64(FClient.FBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
@@ -880,6 +883,8 @@ begin
       end;
     pfkPing, pfkRequest, pfkSubscribe, pfkUnsubscribe:
       ; // ping: reservado; os demais nao existem no sentido servidor -> cliente
+    pfkCompressed:
+      ; // inalcancavel: o reader ja desfez o envelope antes de chamar HandleFrame
   end;
 end;
 
@@ -989,19 +994,22 @@ end;
 
 procedure TPipeClient.Publish(const ATopic: string; const AData: TBytes);
 var
-  LFrame: TPipeFrame;
+  LFrame, LWire: TPipeFrame;
 begin
   if not PipeIsValidTopic(ATopic) then
     raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [ATopic]);
+  LFrame := PipePublishFrame(ATopic, AData, False);
+  PipeValidateMaxPayload(Length(LFrame.Payload), MaxMessageSize);
+  LWire := PipeMaybeCompress(LFrame, CompressionMinSize);
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
-    LFrame := PipePublishFrame(ATopic, AData, False);
-    PipeWriteFrame(FStream, LFrame, MaxMessageSize);
+    PipeWriteFrame(FStream, LWire, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     // Tamanho do payload JA CODIFICADO (topico em UTF-8 + envelope), nao um
     // recalculo manual: Length(ATopic) sozinho mentiria para topico nao-ASCII.
+    // Sempre o de LFrame (logico) — LWire e' so' o que vai no fio.
     PipeAtomicAdd64(FBytesSent,
       PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
     PipeAtomicAdd64(FMessagesSent, 1);
@@ -1017,7 +1025,7 @@ end;
 
 procedure TPipeClient.PublishBatch(const AItems: TArray<TPipePublishItem>);
 var
-  LFrames: TArray<TPipeFrame>;
+  LFrames, LWireFrames: TArray<TPipeFrame>;
   I: Integer;
   LBytes: UInt64;
 begin
@@ -1027,13 +1035,18 @@ begin
     if not PipeIsValidTopic(AItems[I].Topic) then
       raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [AItems[I].Topic]);
   SetLength(LFrames, Length(AItems));
+  SetLength(LWireFrames, Length(AItems));
   for I := 0 to High(AItems) do
+  begin
     LFrames[I] := PipePublishFrame(AItems[I].Topic, AItems[I].Payload, AItems[I].Retain);
+    PipeValidateMaxPayload(Length(LFrames[I].Payload), MaxMessageSize);
+    LWireFrames[I] := PipeMaybeCompress(LFrames[I], CompressionMinSize);
+  end;
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
-    PipeWriteFrames(FStream, LFrames, MaxMessageSize);
+    PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     LBytes := 0;
     for I := 0 to High(LFrames) do
@@ -1093,9 +1106,12 @@ var
   LCorrId: UInt64;
   LSlot: TPipeRpcSlot;
   LStart: UInt64;
+  LWire: TPipeFrame;
 begin
   LStart := PipeTickMs;
   LCorrId := UInt64(Cardinal(PipeAtomicInc(FCorrSeq)));
+  PipeValidateMaxPayload(Length(AData), MaxMessageSize);
+  LWire := PipeMaybeCompress(TPipeFrame.Request(LCorrId, AData), CompressionMinSize);
   LSlot := TPipeRpcSlot.Create;
   try
     FRpcLock.Enter;
@@ -1109,7 +1125,7 @@ begin
       try
         if (not FConnected) or (FStream = nil) then
           raise EPipeClosed.Create('cliente nao esta conectado');
-        PipeWriteFrame(FStream, TPipeFrame.Request(LCorrId, AData), MaxMessageSize);
+        PipeWriteFrame(FStream, LWire, MaxMessageSize);
         PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
         PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
         PipeAtomicAdd64(FMessagesSent, 1);
@@ -1183,13 +1199,17 @@ begin
 end;
 
 procedure TPipeClient.SendBytes(const AData: TBytes; const AGroupKey: string);
+var
+  LWire: TPipeFrame;
 begin
+  PipeValidateMaxPayload(Length(AData), MaxMessageSize);
+  LWire := PipeMaybeCompress(TPipeFrame.Msg(AData, PipeGroupKeyHash(AGroupKey)),
+    CompressionMinSize);
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
-    PipeWriteFrame(FStream, TPipeFrame.Msg(AData, PipeGroupKeyHash(AGroupKey)),
-      MaxMessageSize);
+    PipeWriteFrame(FStream, LWire, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
     PipeAtomicAdd64(FMessagesSent, 1);
@@ -1205,20 +1225,25 @@ end;
 
 procedure TPipeClient.SendBytesBatch(const AItems: TArray<TBytes>);
 var
-  LFrames: TArray<TPipeFrame>;
+  LFrames, LWireFrames: TArray<TPipeFrame>;
   I: Integer;
   LBytes: UInt64;
 begin
   if Length(AItems) = 0 then
     Exit;
   SetLength(LFrames, Length(AItems));
+  SetLength(LWireFrames, Length(AItems));
   for I := 0 to High(AItems) do
+  begin
     LFrames[I] := TPipeFrame.Msg(AItems[I]);
+    PipeValidateMaxPayload(Length(LFrames[I].Payload), MaxMessageSize);
+    LWireFrames[I] := PipeMaybeCompress(LFrames[I], CompressionMinSize);
+  end;
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
-    PipeWriteFrames(FStream, LFrames, MaxMessageSize);
+    PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
     PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
     LBytes := 0;
     for I := 0 to High(LFrames) do

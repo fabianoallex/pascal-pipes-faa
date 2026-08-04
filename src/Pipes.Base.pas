@@ -104,6 +104,7 @@ type
     FHeartbeatIntervalMs: Cardinal;
     FDispatchMode: TPipeDispatchMode;
     FMaxMessageSize: Cardinal;
+    FCompressionMinSize: Cardinal;
     FOnMessage: TPipeMessageEvent;
     FOnError: TPipeErrorEvent;
     FDispatchPool: TPipeThreadPool; // pool privado (pdmSerialized); nil = global
@@ -116,6 +117,7 @@ type
     procedure SetHeartbeatIntervalMs(AValue: Cardinal);
     procedure SetDispatchMode(AValue: TPipeDispatchMode);
     procedure SetMaxMessageSize(AValue: Cardinal);
+    procedure SetCompressionMinSize(AValue: Cardinal);
   protected
     function GetActive: Boolean; virtual; abstract;
     /// Propriedades de configuracao so mudam com o componente inativo.
@@ -196,6 +198,13 @@ type
     property Active: Boolean read GetActive;
     property DispatchMode: TPipeDispatchMode read FDispatchMode write SetDispatchMode;
     property MaxMessageSize: Cardinal read FMaxMessageSize write SetMaxMessageSize;
+    /// Tamanho minimo (bytes) do payload ORIGINAL para tentar comprimir
+    /// (deflate) antes de enviar; 0 desliga (padrao) — so' a PRODUCAO local,
+    /// frames comprimidos recebidos do peer sao sempre decodificados. So'
+    /// Message/Request/Reply/Publish sao candidatos (Ping nunca e'
+    /// comprimido). Ver Pipes.Compression.
+    property CompressionMinSize: Cardinal
+      read FCompressionMinSize write SetCompressionMinSize;
     property OnMessage: TPipeMessageEvent read FOnMessage write FOnMessage;
     property OnError: TPipeErrorEvent read FOnError write FOnError;
   end;
@@ -533,6 +542,7 @@ begin
   FHeartbeatIntervalMs := 0; // desligado por padrao
   FDispatchMode := pdmPool;
   FMaxMessageSize := PIPES_DEFAULT_MAX_MESSAGE_SIZE;
+  FCompressionMinSize := 0; // desligado por padrao
   FGuard := TPipeGuard.Create;
   FTlsConfig := TPipeTlsConfig.Create(Self);
 end;
@@ -589,6 +599,12 @@ begin
   if AValue = 0 then
     raise EPipeError.Create('MaxMessageSize deve ser maior que zero');
   FMaxMessageSize := AValue;
+end;
+
+procedure TPipeBase.SetCompressionMinSize(AValue: Cardinal);
+begin
+  EnsureInactive('CompressionMinSize');
+  FCompressionMinSize := AValue; // 0 = desligado, valor valido (nao um erro)
 end;
 
 function TPipeBase.EventPool: TPipeThreadPool;

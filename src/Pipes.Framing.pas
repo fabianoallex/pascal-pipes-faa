@@ -12,6 +12,7 @@ unit Pipes.Framing;
     offset 0  Magic    4 bytes  'NPF1' (sincronia + versao do protocolo)
     offset 4  Kind     1 byte   0=msg  1=request  2=reply  3=ping (reservado)
                                 4=subscribe  5=unsubscribe  6=publish
+                                7=compressed (envelope, ver abaixo)
     offset 5  Flags    1 byte   bit 0 (PIPE_FLAG_ERROR): reply de erro — o
                                 payload e' a mensagem de erro em UTF-8
                                 bit 1 (PIPE_FLAG_RETAIN): publicacao a reter
@@ -20,11 +21,25 @@ unit Pipes.Framing;
     offset 16 Length   4 bytes  tamanho do payload
     offset 20 Payload  Length bytes (TBytes cru; texto = UTF-8)
 
-  Os kinds 4-6 (pub/sub) entraram depois, SEM mudar o magic: quem os recebe
-  numa versao anterior da lib para no proprio 'kind desconhecido' abaixo, com o
-  stream ainda em sincronia, e a conexao cai com EPipeProtocol em vez de
-  interpretar bytes errados. O nome do topico nao esta aqui e sim dentro do
-  payload, por essa mesma razao — ver o cabecalho de Pipes.Topics.
+  Os kinds 4-6 (pub/sub) e o 7 (compressed) entraram depois, SEM mudar o
+  magic: quem os recebe numa versao anterior da lib para no proprio 'kind
+  desconhecido' abaixo, com o stream ainda em sincronia, e a conexao cai com
+  EPipeProtocol em vez de interpretar bytes errados. O nome do topico nao
+  esta aqui e sim dentro do payload, por essa mesma razao — ver o cabecalho
+  de Pipes.Topics.
+
+  pfkCompressed (kind 7, ver Pipes.Compression) empacota um frame
+  Message/Request/Reply/Publish comprimido (deflate): Payload =
+  [OrigKind:1][OrigFlags:1][Deflate(OrigPayload)], CorrId = o MESMO CorrId
+  do frame original (correlacao de request/reply e hash de AGroupKey
+  atravessam sem mudanca). Deliberadamente um KIND novo, nao um bit em
+  Flags: um peer desatualizado recebendo um bit de Flags desconhecido em
+  pfkMessage/pfkRequest/pfkReply (kinds que ele ja conhece) processaria o
+  frame normalmente e entregaria deflate cru ao app — corrompendo em
+  silencio. Um kind novo cai no 'kind desconhecido' abaixo, o mesmo
+  diagnostico alto e claro que P0-P4 ja usa. So' pfkMessage/pfkRequest/
+  pfkReply/pfkPublish sao candidatos a compressao (Ping nao tem payload;
+  Subscribe/Unsubscribe/Compressed sao estruturais).
 
   Concorrencia: as funcoes desta unit nao tem estado compartilhado. Quem
   serializa escritas concorrentes no MESMO stream e' a camada de cima (write
@@ -52,7 +67,7 @@ type
   { pfkSubscribe/pfkUnsubscribe/pfkPublish carregam o nome do topico no INICIO
     do payload (envelope de Pipes.Topics), nunca no header. }
   TPipeFrameKind = (pfkMessage = 0, pfkRequest = 1, pfkReply = 2, pfkPing = 3,
-    pfkSubscribe = 4, pfkUnsubscribe = 5, pfkPublish = 6);
+    pfkSubscribe = 4, pfkUnsubscribe = 5, pfkPublish = 6, pfkCompressed = 7);
 
   TPipeFrame = record
     Kind: TPipeFrameKind;
@@ -110,6 +125,13 @@ function PipeEncodeFrame(const AFrame: TPipeFrame): TBytes;
 /// estado da conexao). EPipeProtocol para magic invalido, kind desconhecido
 /// ou payload acima de AMaxPayload.
 function PipeReadFrame(AStream: TStream; AMaxPayload: Cardinal): TPipeFrame;
+
+/// Levanta EPipeProtocol se APayloadLen exceder AMaxPayload. Compartilhada
+/// por PipeWriteFrame/PipeWriteFrames e por Pipes.Compression (que precisa
+/// validar o payload ORIGINAL antes de comprimir — validar so' o comprimido
+/// deixaria passar um payload logico maior que AMaxPayload sempre que ele
+/// comprimisse bem, furando o teto que a property documenta).
+procedure PipeValidateMaxPayload(APayloadLen: Integer; AMaxPayload: Cardinal);
 
 /// Escreve o frame no stream, header+payload numa unica chamada Write.
 /// EPipeProtocol se o payload exceder AMaxPayload (falha antes de escrever).
@@ -360,14 +382,19 @@ begin
     ReadExactly(AStream, Result.Payload[0], Integer(LLen));
 end;
 
+procedure PipeValidateMaxPayload(APayloadLen: Integer; AMaxPayload: Cardinal);
+begin
+  if Cardinal(APayloadLen) > AMaxPayload then
+    raise EPipeProtocol.CreateFmt('payload de %d bytes excede o maximo configurado (%u)',
+      [APayloadLen, AMaxPayload]);
+end;
+
 procedure PipeWriteFrame(AStream: TStream; const AFrame: TPipeFrame;
   AMaxPayload: Cardinal);
 var
   LBuf: TBytes;
 begin
-  if Cardinal(Length(AFrame.Payload)) > AMaxPayload then
-    raise EPipeProtocol.CreateFmt('payload de %d bytes excede o maximo configurado (%u)',
-      [Length(AFrame.Payload), AMaxPayload]);
+  PipeValidateMaxPayload(Length(AFrame.Payload), AMaxPayload);
   LBuf := PipeEncodeFrame(AFrame);
   AStream.WriteBuffer(LBuf[0], Length(LBuf));
 end;
@@ -387,9 +414,7 @@ begin
   LTotal := 0;
   for I := 0 to High(AFrames) do
   begin
-    if Cardinal(Length(AFrames[I].Payload)) > AMaxPayload then
-      raise EPipeProtocol.CreateFmt('payload de %d bytes excede o maximo configurado (%u)',
-        [Length(AFrames[I].Payload), AMaxPayload]);
+    PipeValidateMaxPayload(Length(AFrames[I].Payload), AMaxPayload);
     LEncoded[I] := PipeEncodeFrame(AFrames[I]);
     Inc(LTotal, Length(LEncoded[I]));
   end;
