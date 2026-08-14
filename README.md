@@ -663,7 +663,17 @@ Pipes.Json (OPCIONAL — só inclui quem for usar; ver "JSON" abaixo)
   PipeSendJSON(Client/Server, ..., Value)     // wrapper de SendBytes
   PipeRequestJSON(Client, Value, TimeoutMs): TPipeJSONValue  // wrapper de Request
 
-Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls | EPipeJSONError
+Pipes.Commands (OPCIONAL — só inclui quem for usar; ver "Comandos" abaixo)
+  TPipeCommandRouter.RegisterCommand(Comando, Handler, AMinSize = -1, AMaxSize = -1)
+                                          // EPipeCommandError: duplicado, handler nil,
+                                          // nome/limites invalidos (erro de programacao)
+  TPipeCommandRouter.HandleMessage       // mesma assinatura de TPipeMessageEvent;
+                                          // atribua direto a Server/Client.OnMessage
+  OnUnknownCommand; OnInvalidPayload: TPipeCommandEvent  // opcionais, silenciosos
+  PipeEncodeCommandPayload/PipeDecodeCommandPayload(Comando, Corpo)  // envelope manual
+
+Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls |
+          EPipeJSONError | EPipeCommandError
 ```
 
 ### JSON (`Pipes.Json.pas`, opcional)
@@ -704,6 +714,46 @@ begin
   end;
 end;
 ```
+
+### Comandos (`Pipes.Commands.pas`, opcional)
+
+Quando o app trafega várias operações na mesma conexão (`SALVAR_PEDIDO`, `CANCELAR`,
+`PING`, ...), a alternativa a uma cadeia de `if`/`case` dentro de um único `OnMessage` é
+`TPipeCommandRouter`: um `RegisterCommand` por comando, cada um com seu próprio handler.
+Não muda nada no fio — o nome do comando viaja dentro do payload, e `HandleMessage` tem a
+mesma assinatura de `OnMessage`, então basta atribuir direto:
+
+```pascal
+uses Pipes.Server, Pipes.Commands;
+
+var
+  Router: TPipeCommandRouter;
+begin
+  Router := TPipeCommandRouter.Create;
+  Router.RegisterCommand('PING', OnPing);
+  Router.RegisterCommand('SALVAR_PEDIDO', OnSalvarPedido, 1); // AMinSize = 1: corpo nao pode vir vazio
+  Server.OnMessage := Router.HandleMessage;
+  Server.Listen;
+end;
+
+procedure TMeuApp.OnSalvarPedido(Sender: TObject; AConnId: TPipeConnectionId;
+  const ACommand: string; const APayload: TBytes);
+begin
+  // APayload ja' vem SEM o prefixo do envelope, so' o corpo
+end;
+```
+
+Quem envia monta o mesmo envelope com `PipeEncodeCommandPayload('SALVAR_PEDIDO', Dados)` e
+manda por `SendBytes`/`Request` normalmente — não há wrapper de conveniência nesta versão.
+`RegisterCommand` aceita `AMinSize`/`AMaxSize` opcionais (`PIPE_COMMAND_NO_LIMIT`, o padrão,
+desliga o respectivo teto) validados ANTES do handler rodar, e levanta `EPipeCommandError`
+na hora do registro se o comando já existir, o nome for inválido, o handler não estiver
+atribuído ou os limites forem inconsistentes — erro de programação, não de rede. Comando
+sem handler cai em `OnUnknownCommand`; payload fora da faixa ou envelope malformado caem em
+`OnInvalidPayload` — os dois opcionais e silenciosos quando ninguém assina, do mesmo jeito
+que um `OnMessage` sem assinante. Nomes de comando são case-sensitive (mesmo raciocínio dos
+tópicos: não há upcase portátil para UTF-8). Racional completo, inclusive por que é por
+CIMA de `OnMessage` em vez de um kind novo do NPF1, em `docs/ARQUITETURA.md` §18.
 
 ### Compatibilidade com a API anterior
 
@@ -1020,7 +1070,10 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing,
                      rede: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
                      descoberta LAN: Pipes.Discovery (broadcast UDP; complemento, nao transporte)
+                     Pipes.Compression (deflate opcional, CompressionMinSize; kind pfkCompressed)
                      Pipes.Json (bytes<->JSON, OPCIONAL — nao acoplada ao core)
+                     Pipes.Commands (roteador de comandos por nome, OPCIONAL, por
+                     cima de OnMessage — nao acoplada ao core)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),
                      EchoFailover (FailoverAddresses, reaproveita o EchoServer.exe),
@@ -1033,6 +1086,7 @@ samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional)
                      PdvDualScreen (Operador + Cliente),
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
                      GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo),
+                     TransferenciaArquivos (CompressionMinSize e Stats.*Wire, UI VCL/LCL),
                      EchoAndroid (FMX/Android, so Delphi)
 tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
 tests/Android/       suite de DEVICE do backend Android (loopback; sem par dual-compiler)

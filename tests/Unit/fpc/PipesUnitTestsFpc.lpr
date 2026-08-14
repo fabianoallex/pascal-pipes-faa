@@ -24,6 +24,7 @@ uses
   Pipes.FramingTests,
   Pipes.CompressionTests,
   Pipes.TopicsTests,
+  Pipes.CommandsTests,
   Pipes.AddressTests,
   Pipes.DiscoveryTests;
 

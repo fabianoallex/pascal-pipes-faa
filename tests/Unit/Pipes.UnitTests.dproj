@@ -169,10 +169,12 @@
         <DCCReference Include="..\..\src\Pipes.Framing.pas"/>
         <DCCReference Include="..\..\src\Pipes.Compression.pas"/>
         <DCCReference Include="..\..\src\Pipes.Topics.pas"/>
+        <DCCReference Include="..\..\src\Pipes.Commands.pas"/>
         <DCCReference Include="Pipes.ThreadingTests.pas"/>
         <DCCReference Include="Pipes.FramingTests.pas"/>
         <DCCReference Include="Pipes.CompressionTests.pas"/>
         <DCCReference Include="Pipes.TopicsTests.pas"/>
+        <DCCReference Include="Pipes.CommandsTests.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Windows.pas"/>
         <DCCReference Include="..\..\src\Pipes.Transport.Tcp.pas"/>

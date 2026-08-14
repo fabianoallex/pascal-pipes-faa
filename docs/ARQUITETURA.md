@@ -1425,3 +1425,104 @@ chamada, mesmo número) — importante para a aritmética de `TotalBytesSentWire
 comparável a `TotalBytesSent` mesmo numa conexão com muito tráfego de controle/heartbeat e
 pouca mensagem comprimível: se o Wire só contasse os frames elegíveis, a razão "quanto a
 compressão economizou" ficaria artificialmente otimista.
+
+## 18. Roteador de comandos por nome (`Pipes.Commands.pas`)
+
+Motivação: um app que carrega várias operações na mesma conexão (`SALVAR_PEDIDO`,
+`CANCELAR`, `PING`, ...) acaba com uma cadeia de `if`/`case` crescendo dentro de um único
+`OnMessage`, cada ramo desviando para uma função diferente. `TPipeCommandRouter` troca essa
+cadeia por um `RegisterCommand` por comando — dicionário nome→handler, decorando o evento
+que já existe.
+
+### 18.1 Por cima de `OnMessage`, não um kind novo do NPF1
+
+Diferente de Pub/sub (§9) e Compressão (§17), que precisaram de kind novo porque a decisão
+acontece ANTES do app ver o frame — fanout para quem assinou, descompressão antes de
+`HandleFrame` —, comandos são só uma forma de organizar o que o app já ia receber em
+`OnMessage`. Não há decisão de roteamento na reader thread, não há nada que outro peer
+precise entender no fio: o nome do comando é conteúdo de aplicação, não protocolo de
+transporte. Por isso `TPipeCommandRouter.HandleMessage` tem a MESMA assinatura de
+`TPipeMessageEvent` — `Server.OnMessage := Router.HandleMessage;` direto, sem wrapper, sem
+mudança em `Pipes.Base`/`Pipes.Server`/`Pipes.Client`. Como `Pipes.Json`, a unit é OPCIONAL:
+o core não a conhece, só o inverso, e quem não usa comandos não paga nada por ela.
+
+### 18.2 Envelope: mesmo layout binário de `Pipes.Topics`, função própria
+
+`PipeEncodeCommandPayload`/`PipeDecodeCommandPayload` usam o MESMO layout que
+`PipeEncodeTopicPayload`/`PipeDecodeTopicPayload` (§9.3 e a "Envelope" no cabeçalho de
+`Pipes.Topics.pas`): `u16 LE` com o tamanho do nome, nome UTF-8, corpo. A coincidência é só
+de forma — tópico (assunto de uma publicação, roteado pelo servidor) e comando (operação
+pedida, roteado dentro do próprio app) são conceitos de domínios diferentes, e a decisão foi
+NÃO importar a função de `Pipes.Topics` para dentro de `Pipes.Commands`: um acoplamento
+"comandos precisa de tópicos" só para reaproveitar um layout de bytes seria pior que
+duplicar quatro dezenas de linhas — a mesma lógica de "três linhas parecidas é melhor que
+abstração prematura" que já rege o resto da lib.
+
+### 18.3 Registro versus mensagem: `raise` de um lado, evento do outro
+
+`RegisterCommand` levanta `EPipeCommandError` na hora — nome vazio ou acima de
+`PIPE_MAX_COMMAND_BYTES`, handler não atribuído, `AMinSize`/`AMaxSize` inválidos ou
+`AMaxSize < AMinSize`, comando já registrado. São todos erro de PROGRAMAÇÃO (o dev está
+montando o router, tipicamente no `Create`/`Setup` do app), nunca de rede — por isso falham
+cedo, no primeiro `RegisterCommand` malformado, e não silenciosamente no primeiro frame que
+chegar.
+
+`HandleMessage` é o oposto: NUNCA levanta. Envelope malformado, comando sem handler
+registrado ou payload fora da faixa `MinSize`/`MaxSize` chamam `OnInvalidPayload`/
+`OnUnknownCommand` — eventos opcionais, silenciosos quando ninguém assina, do mesmo jeito
+que um `OnMessage` sem assinante não faz nada. A razão não é estética: `HandleMessage` roda
+DENTRO do work item que já despacha `OnMessage` (`TPipeMessageWork.Execute`, em
+`Pipes.Base.pas`), e uma exceção ali NÃO chega a `OnError` — `TPipePoolWorker.Execute`
+(`Pipes.Threading.pas`) engole qualquer exceção de callback de usuário para não derrubar o
+worker, exatamente como faria com um bug dentro do `OnMessage` do próprio dev. Se
+`HandleMessage` levantasse em vez de chamar um evento, o descarte de um comando
+desconhecido ou de um payload malformado desapareceria em silêncio total — o mesmo problema
+que motivou o evento em vez do `raise`.
+
+### 18.4 Validação de tamanho roda ANTES do handler
+
+`RegisterCommand(ACommand, AHandler, AMinSize, AMaxSize)` — os dois tetos são opcionais
+(`PIPE_COMMAND_NO_LIMIT`, o padrão, desliga o respectivo lado) e são checados contra o
+CORPO (já sem o prefixo do envelope) antes do handler rodar. É barato — uma comparação de
+`Length` — e evita que cada handler comece com o mesmo "payload curto demais" na primeira
+linha; quem quiser validação de FORMATO (schema, tipos de campo) continua fazendo isso
+dentro do próprio handler, porque isso é decisão de aplicação, não de transporte — a mesma
+fronteira que já mantém `Pipes.Json` fora do core.
+
+### 18.5 Nomes de comando são case-sensitive
+
+Mesmo raciocínio do §9.4/topic: não há upcase portátil para UTF-8, e um casamento
+dependente de locale seria pior que um sensível a caixa. `TDictionary<string, ...>` com o
+comparador padrão já resolve isso sem código extra — o mesmo mecanismo que
+`Pipes.Server.FRetained` (tópicos retidos) já usa.
+
+### 18.6 Escopo desta primeira rodada
+
+De propósito reduzido, a pedido do usuário: só registro (com detecção de duplicado) e
+limites de tamanho. Ficou de fora, não esquecido:
+
+- `UnregisterCommand` — nenhum caso de uso concreto ainda pedia remover um comando depois de
+  registrado.
+- `SendCommand` de conveniência em `TPipeClient`/`TPipeServer` — hoje quem envia monta o
+  envelope com `PipeEncodeCommandPayload` e chama `SendBytes` direto; um wrapper fino pode
+  entrar depois sem quebrar nada.
+- Roteamento do lado `OnRequest`/`TPipeRequestEvent` (request-reply por comando) — o desenho
+  é análogo (troca só a assinatura do handler, que ganha `out AReply: TBytes`), mas é uma
+  segunda superfície que merece sua própria rodada de decisão em vez de entrar de carona
+  nesta.
+
+### 18.7 Testes
+
+Unitário (`Pipes.CommandsTests`, dual): registro simples, e cada um dos quatro jeitos de
+`RegisterCommand` levantar `EPipeCommandError` (nome vazio, nome longo demais, handler nil,
+limites inconsistentes) mais o quinto (comando duplicado); despacho para o handler certo
+com o payload já sem prefixo; comando desconhecido chamando `OnUnknownCommand` (e não
+levantando quando não há assinante); payload abaixo/acima da faixa chamando
+`OnInvalidPayload` sem chamar o handler; payload exatamente nos limites chamando o handler;
+envelope malformado chamando `OnInvalidPayload` com `ACommand = ''`; round-trip do envelope,
+layout binário, corpo vazio, nome não-ASCII (tamanho em bytes UTF-8, não em caracteres,
+mesmo caso de `Pipes.TopicsTests.Envelope_TopicoNaoAscii`) e as duas formas de payload
+truncado levantando `EPipeProtocol`. Verificado nos dois compiladores (FPC via
+`PipesUnitTestsFpc.exe --all --format=plain`, 138/138; Delphi/DUnitX, 138/138, sem leak).
+Sem sample dedicado nesta rodada — a unit é pequena o bastante para o uso ficar claro pelos
+próprios testes e pelo exemplo no README.

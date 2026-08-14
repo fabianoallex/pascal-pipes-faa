@@ -57,6 +57,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="Pipes.CommandsTests.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="Pipes.DiscoveryTests.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>

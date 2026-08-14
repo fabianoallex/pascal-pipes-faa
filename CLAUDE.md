@@ -71,6 +71,18 @@ implementar qualquer milestone novo.
   payload ORIGINAL, nunca o comprimido; a descompressão tem teto de zip bomb verificado
   DURANTE a decodificação (streaming), não só no resultado final. Racional completo em
   `docs/ARQUITETURA.md` §17.
+- **Roteador de comandos por nome (`Pipes.Commands.pas`):** unit OPCIONAL, por CIMA de
+  `OnMessage` — `TPipeCommandRouter.HandleMessage` tem a mesma assinatura de
+  `TPipeMessageEvent`, sem kind novo no NPF1 (o nome do comando é conteúdo de aplicação, não
+  protocolo de transporte, diferente de Pub/Sub e Compressão). Envelope reaproveita o layout
+  binário de `Pipes.Topics` (u16 LE + UTF-8 + corpo) como função PRÓPRIA, não importada — são
+  domínios diferentes, só a forma coincide. `RegisterCommand` levanta `EPipeCommandError` na
+  hora (nome/limites inválidos, handler nil, comando duplicado — erro de programação);
+  `HandleMessage` NUNCA levanta — comando desconhecido e payload fora da faixa
+  `AMinSize`/`AMaxSize` caem em `OnUnknownCommand`/`OnInvalidPayload`, opcionais e
+  silenciosos, porque uma exceção ali seria engolida em silêncio pelo pool sem chegar a
+  `OnError` (mesmo contrato de qualquer bug dentro do `OnMessage` do próprio dev). Racional
+  completo em `docs/ARQUITETURA.md` §18.
 
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 
@@ -185,6 +197,14 @@ do NPF1) recebido do peer é sempre ativa. `Stats`/`MaxMessageSize` sempre olham
 ORIGINAL, nunca o comprimido — a descompressão tem teto de zip bomb verificado DURANTE a
 decodificação, não só no resultado final.
 
+Roteador de comandos por nome (`Pipes.Commands.pas`, `docs/ARQUITETURA.md` §18):
+`TPipeCommandRouter.RegisterCommand(Comando, Handler, AMinSize = -1, AMaxSize = -1)` —
+dicionário nome→handler por CIMA de `OnMessage`, opt-in, sem kind novo no NPF1.
+`HandleMessage` tem a mesma assinatura de `TPipeMessageEvent` (atribua direto a
+`Server.OnMessage`/`Client.OnMessage`). Escopo desta primeira rodada: só registro (com
+detecção de duplicado) e limites de tamanho — `UnregisterCommand`, `SendCommand` de
+conveniência e roteamento por comando do lado `OnRequest` ficaram de fora, não esquecidos.
+
 `TPipeDispatchMode`: `pdmPool` (padrão), `pdmSerialized` (pool de 1 worker, ordem FIFO),
 `pdmMainThread` (TThread.Queue — apps VCL/LCL).
 
@@ -217,7 +237,9 @@ src/Pipes.Client.pas             src/Pipes.Server.pas
 src/Pipes.Discovery.pas          (descoberta LAN por broadcast UDP — complemento, não
                                   transporte; NÃO depende de Pipes.Transport — ver §16)
 src/Pipes.Json.pas                (bytes<->JSON OPCIONAL: System.JSON/fpjson — ver README.md)
-tests/Unit (Threading/Framing/Topics/Address/Discovery)
+src/Pipes.Commands.pas            (roteador de comandos por nome OPCIONAL, por cima de
+                                  OnMessage — ver §18)
+tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery)
   + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json/Failover/
     Discovery)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
@@ -271,10 +293,11 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | A0-A3 | Delphi Android (`ptTcp`/`ptTls`, `ptLocal` fora de escopo): define `PIPES_ANDROID`, backend sobre as units `Posix.*` + `poll` (self-pipe, igual ao Linux), TLS via OpenSSL sem opt-in, `samples/EchoAndroid` + `tests/Android` — ver `docs/ARQUITETURA.md` §13 | opus | concluído, verificado em device (11/11) |
 | D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks, sample `EchoDiscovery` (reaproveita o `EchoServer.exe`, so' ganha `discover` na linha de comando) — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
 | C0 | Compressão de payload: `Pipes.Compression.pas` (deflate via `System.ZLib`/`paszlib`), `pfkCompressed` (kind 7 do NPF1), `CompressionMinSize` em `TPipeBase`, `BytesSentWire`/`BytesReceivedWire` em `Stats`, proteção de zip bomb — ver `docs/ARQUITETURA.md` §17 | sonnet | concluído: verde nos dois compiladores (FPC 115 unit + 117 integração; Delphi/IDE confirmado 2026-08-04, extensão de Stats verificada só no FPC até aqui) |
+| CMD0 | Roteador de comandos por nome: `Pipes.Commands.pas` (`TPipeCommandRouter`, opt-in por cima de `OnMessage`, sem kind novo no NPF1), `RegisterCommand` com detecção de duplicado e limites `AMinSize`/`AMaxSize`, `OnUnknownCommand`/`OnInvalidPayload` — ver `docs/ARQUITETURA.md` §18 | sonnet | concluído: verde nos dois compiladores (FPC 138/138 via `PipesUnitTestsFpc.exe`; Delphi/DUnitX 138/138, sem leak, confirmado 2026-08-14). Escopo reduzido de propósito: sem `UnregisterCommand`, `SendCommand` de conveniência nem roteamento do lado `OnRequest` |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
-S0-S4/F0-F3/C0.
+S0-S4/F0-F3/C0/CMD0.
 
 ## Verificação por milestone
 

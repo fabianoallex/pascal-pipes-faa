@@ -368,6 +368,35 @@ client stuck on it: the NEXT failure tries the primary again before spreading to
 `MaxReconnectAttempts`/`ReconnectDelayMs` still count/space per ATTEMPT, with no separate
 per-address budget.
 
+### Payload compression (`CompressionMinSize`)
+
+Optional deflate for large, compressible payloads (verbose JSON, repetitive text) — zero
+new dependency: `System.ZLib` on Delphi and `paszlib`/`zstream` on FPC, both already part of
+the standard install. `CompressionMinSize` (on `TPipeServer`/`TPipeClient`, just like
+`MaxMessageSize`) is `0` by default — off, behaviour identical to before this property
+existed. Turning it on only affects local PRODUCTION; decoding compressed frames received
+from the peer is always active, so you can turn it on on one side only, or on both at
+different points of a rollout, without breaking anything.
+
+```pascal
+Client.CompressionMinSize := 512; // only tries to compress payloads >= 512 bytes
+Client.SendText(LargeRepetitiveJson); // goes out compressed if it pays off
+```
+
+Only `SendBytes`/`SendText`/`Request`/`Publish` (and their batch versions) are candidates —
+a payload below the minimum, or one that doesn't pay off (already-compressed data like an
+image), goes out raw with no warning at all: it's a silent optimization, not a wire-format
+guarantee. `Stats`'s `BytesSent`/`BytesReceived` keep counting the LOGICAL payload (the
+app's view); whoever wants to see the real bandwidth savings uses the sibling fields
+`BytesSentWire`/`BytesReceivedWire` (see the "Metrics/observability" section above) —
+including on the side that only RECEIVES, which otherwise would have no way to know
+(decompression already returns the logical bytes before the app sees the frame).
+`MaxMessageSize` is validated against the ORIGINAL payload before compressing, and decoding
+is protected against zip bombs (a small compressed payload that "explodes" when
+decompressed): the ceiling is the same `MaxMessageSize`, checked during decompression, not
+just on the final result. Full rationale (why it's a new NPF1 kind and not a flag bit) in
+`docs/ARCHITECTURE.en.md`.
+
 ### LAN server discovery (`Pipes.Discovery`)
 
 "Where is the server?" without typing an IP: the server announces itself with a
@@ -573,6 +602,8 @@ project's requirements (or use `lazbuild --add-package-link packages\pipes_faa.l
 TPipeBase (abstract)
   Address, Transport, KeepAliveSeconds, HeartbeatIntervalMs, Active, DispatchMode,
   MaxMessageSize
+  CompressionMinSize                     // 0 (default) = production off; decoding of
+                                          // received frames is always active
   TlsOptions: TPipeTlsConfig             // only used by ptTls; read at Listen/Connect
     CertFile, CertPassword, KeyFile, CaFile, SkipServerVerification, HandshakeTimeoutMs
   OnMessage: TPipeMessageEvent;  OnError: TPipeErrorEvent
@@ -625,7 +656,24 @@ Pipes.Topics (pure unit, also useful outside the lib)
   PipeTopicMatches(Filter, Topic); PipeIsValidTopic; PipeIsValidTopicFilter
   TPipePublishItem = record Topic; Payload: TBytes; Retain: Boolean; end  // see PublishBatch
 
-Exceptions: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls
+Pipes.Json (OPTIONAL — only included by whoever uses it; see "JSON" below)
+  TPipeJSONValue                         // = TJSONValue (Delphi) / TJSONData (FPC)
+  PipeBytesToJSON(Data): TPipeJSONValue  // parse; EPipeJSONError if invalid/empty
+  PipeJSONToBytes(Value): TBytes         // serializes; does not free Value
+  PipeSendJSON(Client/Server, ..., Value)     // wrapper over SendBytes
+  PipeRequestJSON(Client, Value, TimeoutMs): TPipeJSONValue  // wrapper over Request
+
+Pipes.Commands (OPTIONAL — only included by whoever uses it; see "Commands" below)
+  TPipeCommandRouter.RegisterCommand(Command, Handler, AMinSize = -1, AMaxSize = -1)
+                                          // EPipeCommandError: duplicate, nil handler,
+                                          // invalid name/limits (programming error)
+  TPipeCommandRouter.HandleMessage       // same signature as TPipeMessageEvent;
+                                          // assign directly to Server/Client.OnMessage
+  OnUnknownCommand; OnInvalidPayload: TPipeCommandEvent  // optional, silent
+  PipeEncodeCommandPayload/PipeDecodeCommandPayload(Command, Body)  // manual envelope
+
+Exceptions: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls |
+            EPipeJSONError | EPipeCommandError
 ```
 
 ### JSON (`Pipes.Json.pas`, optional)
@@ -667,6 +715,47 @@ begin
 end;
 ```
 
+### Commands (`Pipes.Commands.pas`, optional)
+
+When the app carries several operations over the same connection (`SAVE_ORDER`, `CANCEL`,
+`PING`, ...), the alternative to an `if`/`case` chain inside a single `OnMessage` is
+`TPipeCommandRouter`: one `RegisterCommand` per command, each with its own handler. Nothing
+changes on the wire — the command name travels inside the payload, and `HandleMessage` has
+the same signature as `OnMessage`, so you just assign it directly:
+
+```pascal
+uses Pipes.Server, Pipes.Commands;
+
+var
+  Router: TPipeCommandRouter;
+begin
+  Router := TPipeCommandRouter.Create;
+  Router.RegisterCommand('PING', OnPing);
+  Router.RegisterCommand('SAVE_ORDER', OnSaveOrder, 1); // AMinSize = 1: body cannot be empty
+  Server.OnMessage := Router.HandleMessage;
+  Server.Listen;
+end;
+
+procedure TMyApp.OnSaveOrder(Sender: TObject; AConnId: TPipeConnectionId;
+  const ACommand: string; const APayload: TBytes);
+begin
+  // APayload already comes WITHOUT the envelope prefix, just the body
+end;
+```
+
+Whoever sends builds the same envelope with `PipeEncodeCommandPayload('SAVE_ORDER', Data)`
+and sends it through `SendBytes`/`Request` as usual — there is no convenience wrapper in
+this version. `RegisterCommand` takes optional `AMinSize`/`AMaxSize` (`PIPE_COMMAND_NO_LIMIT`,
+the default, turns off the respective ceiling), validated BEFORE the handler runs, and
+raises `EPipeCommandError` right at registration if the command already exists, the name is
+invalid, the handler isn't assigned, or the limits are inconsistent — a programming error,
+not a network one. A command with no handler falls through to `OnUnknownCommand`; a payload
+outside the range or a malformed envelope falls through to `OnInvalidPayload` — both
+optional and silent when nobody subscribes, the same way an `OnMessage` with no subscriber
+does nothing. Command names are case-sensitive (same reasoning as topics: there is no
+portable UTF-8 upcase). Full rationale, including why it sits on top of `OnMessage` instead
+of being a new NPF1 kind, in `docs/ARCHITECTURE.en.md` §18.
+
 ### Compatibility with the previous API
 
 The old names remain valid and compile unchanged — `TNamedPipeBase`, `TNamedPipeServer`
@@ -707,6 +796,16 @@ marked `deprecated` only after samples and tests migrate.
   messages again — without restarting the client, the log switches to
   `endereço ativo: pipes_faa_backup`. Full script in the header of
   `EchoFailoverClient.dpr`.
+- **EchoDiscovery** (just `EchoDiscoveryClient` — it reuses the usual `EchoServer.exe`, with
+  one extra argument) — showcase for `Pipes.Discovery` (see the "LAN server discovery"
+  section above). Start `EchoServer.exe *:5300 tcp discover` (the trailing `discover` turns
+  on a `TPipeDiscoveryResponder` alongside `Listen`), then run `EchoDiscoveryClient.exe`
+  with no argument at all: it probes the subnet for 1s, logs a line naming the server found
+  at its address/transport and connects on its own, no IP typed in. With
+  `EchoServer.exe *:5300 tls ..\..\tests\pki mtls discover` +
+  `EchoDiscoveryClient.exe ..\..\tests\pki cli` you can see §16.4's distinction in practice:
+  discovery only finds the candidate (address, transport, name) — what actually
+  authenticates is the `ptTls`/mTLS handshake that follows, not the UDP probe.
 - **EchoAndroid** — **Android** client (FMX, Delphi only) for `EchoServer`: connects over
   `ptTcp` or `ptTls`, sends text and shows the reply. A showcase of what changes on a
   phone — `pdmMainThread`, `Connect` off the main thread, `HeartbeatIntervalMs` on (sleeping
@@ -894,6 +993,20 @@ marked `deprecated` only after samples and tests migrate.
   the Publish field — the router's view; as a client, it shows your own, editable. 2-minute
   walkthrough in the header of
   [`MonitorTopicos.dpr`](samples/MonitorTopicos/MonitorTopicos.dpr).
+- **TransferenciaArquivos** — file transfer with a **UI** (VCL on Delphi, LCL on Lazarus,
+  same source), a showcase for `CompressionMinSize` and `Stats`'s `*Wire` fields. One
+  instance `Ser servidor` (saves what arrives into `recebidos/`), the other `Ser cliente`
+  (`Selecionar...` picks the file, `Enviar arquivo` sends it). The "Compress" checkbox is
+  only editable BEFORE connecting — it locks afterward, the same rule as `MaxMessageSize`
+  (`EnsureInactive`) — and shows in practice why it's a new NPF1 kind, not a `Flags` bit:
+  turning it on on one side only doesn't break anything on the other. Each send logs the
+  real savings on BOTH sides: the client via the delta in `Client.Stats` (`BytesSent` vs
+  `BytesSentWire`) before/after `SendBytes`, and the server via
+  `ConnectionStats.BytesReceivedWire` — the only way for whoever only RECEIVES to see the
+  savings, since decompression returns the logical payload before `OnMessage` runs (opaque
+  by design). The file protocol itself belongs only to this sample (not the lib): a raw
+  `[NameLength][UTF8Name][Bytes]` envelope over `SendBytes`, the whole file in memory — no
+  chunking, not production streaming.
 
 ## Tests
 
@@ -972,7 +1085,10 @@ src/                 library (Pipes.Types, Pipes.Framing,
                      network: Pipes.Transport.Tcp
                      TLS: Pipes.Transport.Tls (facade) + .Schannel / .OpenSSL (backends)
                      LAN discovery: Pipes.Discovery (UDP broadcast; a complement, not a transport)
+                     Pipes.Compression (optional deflate, CompressionMinSize; pfkCompressed kind)
                      Pipes.Json (bytes<->JSON, OPTIONAL - not coupled to the core)
+                     Pipes.Commands (command router by name, OPTIONAL, on top of
+                     OnMessage - not coupled to the core)
 packages/            pipes_faa.lpk (Lazarus package)
 samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, ChatSeguro,
                      PontosECaixas (turn-based game), PingPong (real-time game),
@@ -983,6 +1099,9 @@ samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, C
                      GatewaySeguro (ptTls -> ptLocal, server + client in one process),
                      EchoJson (Pipes.Json.pas, optional),
                      EchoFailover (FailoverAddresses, reuses EchoServer.exe),
+                     EchoDiscovery (Pipes.Discovery, same idea, just EchoServer.exe
+                     gains "discover" on the command line),
+                     TransferenciaArquivos (CompressionMinSize and Stats.*Wire, VCL/LCL UI),
                      EchoAndroid (FMX/Android, Delphi only)
 tests/               Unit + Integration (DUnitX and FPCUnit, mirrored)
 tests/Android/       DEVICE suite for the Android backend (loopback; no dual-compiler pair)

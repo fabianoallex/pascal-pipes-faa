@@ -1340,3 +1340,225 @@ ICMP accident of §16.6); two responders on distinct ports don't leak into each 
 M7/H0-H4) and the SAME object can `Start` again with the port released. The pure protocol
 (encode/decode, strict lengths, multibyte UTF-8, network-order IPv4) has a full unit-test
 pair in both frameworks.
+
+## 17. Payload compression (`CompressionMinSize`, `Pipes.Compression.pas`)
+
+Motivation: large, compressible payloads (verbose JSON, repetitive text) pay bandwidth and
+wire time unnecessarily — optional deflate cuts both when it's worth it, with no new
+dependency required (§17.2).
+
+### 17.1 `pfkCompressed`: a new KIND, not a `Flags` bit
+
+Using a free bit in `Flags` (offset 5 of the NPF1 header — only bits 0/1 occupied, by
+`PIPE_FLAG_ERROR`/`PIPE_FLAG_RETAIN`) was considered, but that would break a guarantee the
+rest of NPF1 already gives: today, an out-of-date peer that receives a new capability FAILS
+LOUDLY (`EPipeProtocol` "unknown kind... peer speaks a newer version"), never interprets the
+wrong bytes — that works because every previous extension (pub/sub kinds 4-6,
+`PIPE_FLAG_RETAIN`) piggybacked on a NEW kind. A `Flags` bit on `pfkMessage`/`pfkRequest`/
+`pfkReply` (kinds that have existed since M2) would not have that protection: an old peer
+would process the frame normally and hand raw deflate to the app, silently corrupting it —
+unlike `PIPE_FLAG_RETAIN`, which is only safe because it's only read on `pfkPublish`
+(kind 6), itself already new enough to hit "unknown kind" on any peer older than P0.
+
+`pfkCompressed` (kind 7) wraps a whole Message/Request/Reply/Publish frame: `Payload =
+[OrigKind:1][OrigFlags:1][Deflate(OrigPayload)]`, `CorrId` = the SAME `CorrId` as the
+original frame — request/reply correlation and the `AGroupKey` hash (`Pipes.Threading`)
+cross the envelope unchanged. An out-of-date peer hits the SAME `if LKind >
+High(TPipeFrameKind)` that already exists in `PipeReadFrame`, the same diagnostic P0-P4
+already uses — zero new detection mechanism.
+
+### 17.2 Codec: zero new dependency on either compiler
+
+`Pipes.Compression.pas` delegates to `System.ZLib` (Delphi) and `paszlib`/`zstream` (FPC),
+via `{$IFDEF FPC}`. Confirmed on both toolchains on this machine: on FPC, `paszlib`/
+`zstream` is a 100% Pascal port of zlib (`zbase`/`zdeflate`/`zinflate`), no `external`,
+compiled straight into the binary — zero runtime dependency on either platform (Windows and
+Linux). On Delphi, `System.ZLib` is statically linked on Windows (outside the source's
+`{$IFDEF POSIX}` block there is no `external` at all); on Android/Linux (POSIX in Delphi's
+sense) the unit links against the OS's own `libz.so` — on Android that's part of bionic,
+present on every device; on desktop Linux it's as universal as `libc`. Both sides use
+zlib's DEFAULT compression level (`zcDefault`/`cldefault` — which zlib itself documents as
+equivalent to level 6) and the standard zlib window/header, compatible with each other in
+both directions.
+
+### 17.3 `PipeMaybeCompress`/`PipeUndoCompress`: transparent to Stats and `MaxMessageSize`
+
+`PipeMaybeCompress(AFrame, AMinSize)` only produces `pfkCompressed` if `AMinSize > 0`
+(`CompressionMinSize`, `0` = off by default), the kind is eligible (`PipeIsCompressible`:
+Message/Request/Reply/Publish — Ping has no payload; Subscribe/Unsubscribe/Compressed are
+structural), the payload reaches the minimum, AND the resulting deflate is actually smaller
+than the original (already-compressed data, e.g. JPEG, goes out raw with no warning).
+`Pipes.Server`/`Pipes.Client` always validate `MaxMessageSize` against the ORIGINAL frame,
+never `PipeMaybeCompress`'s result — validating the compressed one would let a logical
+payload bigger than `MaxMessageSize` through whenever it compressed well, punching a hole in
+the ceiling the property documents. `Stats.BytesSent/BytesReceived` follow the same rule
+(ORIGINAL payload); the sibling pair `BytesSentWire/BytesReceivedWire` is what measures what
+actually crossed the wire — see §17.6. Validation/compression runs OUTSIDE the connection's
+write lock (it's pure CPU): a large payload compressing does not block other writers on the
+same connection.
+
+On the read side, `PipeUndoCompress` runs right after `PipeReadFrame`, at a single point per
+side (`Pipes.Server`/`Pipes.Client`, on the reader thread) — the reconstituted frame goes on
+to `Stats`/`HandleFrame` as if it had never been compressed on the wire. The `case
+AFrame.Kind of` dispatches by kind (one in each unit) gained an unreachable `pfkCompressed:
+;` branch, only so the compiler doesn't complain about an incomplete case — the kind never
+reaches that point because the envelope was already undone before.
+
+### 17.4 Zip bomb: the ceiling is checked DURING decompression, not just on the result
+
+`PipeInflate(ASource, AMaxDecompressedSize)` reads in 64 KB blocks
+(`TZDecompressionStream`/`TDecompressionStream` over a `TMemoryStream`) and sums the total
+as it decodes — a small compressed payload that would "explode" to gigabytes raises
+`EPipeProtocol` as soon as the total goes past the limit, without trying to allocate the
+whole result first. The ceiling is always the connection's SAME `MaxMessageSize` (no new
+property for this), the same reasoning that already protects the NPF1 header's `Length` in
+`PipeReadFrame`.
+
+### 17.5 Tests
+
+Unit (`Pipes.CompressionTests`, dual): deflate/inflate round-trip; `PipeMaybeCompress`
+off (`AMinSize=0`)/below the minimum/ineligible kind/incompressible payload — in all four
+cases returns the original frame untouched; `CorrId` crosses unchanged; a full envelope
+round-trip restores Kind/Flags/Payload (including `PIPE_FLAG_ERROR` from `ErrorReply`);
+`PipeUndoCompress` on a frame that isn't `pfkCompressed` raises `EArgumentException` (a
+caller usage error); a zip bomb (1 MB of zeros compressed, 1000-byte ceiling) raises
+`EPipeProtocol`. Integration (`Pipes.EndToEndTests`, dual): a 20000-byte repetitive payload
+in both directions (client→server and server→client) arrives intact once decoded, and
+`Stats.TotalBytesReceived` matches the text's LOGICAL size, not the compressed one — proof
+that §17.3's transparency holds through the real stack, not just in the pure unit.
+`Pipes.StatsTests` (dual) covers the §17.6 extension: without `CompressionMinSize`,
+`BytesSentWire`/`BytesReceivedWire` are IDENTICAL to the logical fields, on both sides; with
+compression on and a compressible payload, `BytesSentWire < BytesSent` on the client and
+`BytesReceivedWire < BytesReceived` on the server (per-connection AND in the aggregate
+`Stats`), with only the client turning on `CompressionMinSize` — decoding (and therefore
+Wire counting) on the server side doesn't depend on it being configured too.
+
+### 17.6 `BytesSentWire`/`BytesReceivedWire`: aggregate visibility without breaking transparency
+
+After closing out C0, it became clear that whoever only RECEIVES had no way at all to know
+that compression was saving bandwidth — unlike whoever SENDS, who could at least run
+`PipeDeflate` again locally to estimate. The cause is §17.3's own transparency:
+`PipeUndoCompress` already returns the logical frame before `HandleFrame`/`OnMessage` runs,
+so no application code (not even the server) ever sees the raw `pfkCompressed` envelope.
+
+The option discarded was making compression visible per message (one more parameter on
+`OnMessage`, or a new event) — that would leak a transport decision into the application
+API, exactly the kind of coupling the `pfkCompressed` kind's design (§17.1) was built to
+AVOID. The option adopted was to extend `Stats` (S0-S4, §11), which already operates at
+exactly that level — aggregate, cumulative, no per-message hook: `TPipeConnStats`/
+`TPipeServerStats`/`TPipeClientStats` gained `BytesSentWire`/`BytesReceivedWire` (and
+`TotalBytesSentWire`/`TotalBytesReceivedWire` in the server aggregate) as SIBLING fields to
+the existing ones, never replacements — `BytesSent`/`BytesReceived` keep being the LOGICAL
+payload, exactly as documented before, and every piece of code that already reads `Stats`
+today doesn't change behaviour.
+
+Mechanics: at the same points that already compute `LWire`/`LWireFrames` (write) or capture
+the frame before `PipeUndoCompress` (read), plus one `PipeAtomicAdd64` — identical cost to
+what S0-S4 already pays per frame, no new lock. For kinds that are never compressed (Ping,
+Subscribe/Unsubscribe), the Wire value always equals the logical one by construction (same
+call, same number) — important so the `TotalBytesSentWire` arithmetic stays comparable to
+`TotalBytesSent` even on a connection with lots of control/heartbeat traffic and little
+compressible messaging: if Wire only counted eligible frames, the "how much compression
+saved" ratio would come out artificially optimistic.
+
+## 18. Command router by name (`Pipes.Commands.pas`)
+
+Motivation: an app carrying several operations over the same connection (`SAVE_ORDER`,
+`CANCEL`, `PING`, ...) ends up with an `if`/`case` chain growing inside a single
+`OnMessage`, each branch dispatching to a different function. `TPipeCommandRouter` swaps
+that chain for one `RegisterCommand` per command — a name→handler dictionary decorating the
+event that already exists.
+
+### 18.1 On top of `OnMessage`, not a new NPF1 kind
+
+Unlike topic pub/sub (§9) and compression (§17), which needed a new kind because the
+decision happens BEFORE the app sees the frame — fanout to subscribers, decompression
+before `HandleFrame` —, commands are just a way of organizing what the app was already
+going to receive in `OnMessage`. There is no routing decision on the reader thread, nothing
+another peer needs to understand on the wire: the command name is application content, not
+transport protocol. That's why `TPipeCommandRouter.HandleMessage` has the SAME signature as
+`TPipeMessageEvent` — `Server.OnMessage := Router.HandleMessage;` directly, no wrapper, no
+change to `Pipes.Base`/`Pipes.Server`/`Pipes.Client`. Like `Pipes.Json`, the unit is
+OPTIONAL: the core doesn't know about it, only the reverse, and whoever doesn't use commands
+pays nothing for it.
+
+### 18.2 Envelope: the same binary layout as `Pipes.Topics`, its own function
+
+`PipeEncodeCommandPayload`/`PipeDecodeCommandPayload` use the SAME layout as
+`PipeEncodeTopicPayload`/`PipeDecodeTopicPayload` (§9.3 and the "Envelope" note in
+`Pipes.Topics.pas`'s header): a `u16 LE` name length, UTF-8 name, body. The coincidence is
+only in shape — a topic (the subject of a publication, routed by the server) and a command
+(a requested operation, routed inside the app itself) are different domain concepts, and the
+decision was NOT to import the function from `Pipes.Topics` into `Pipes.Commands`: coupling
+"commands needs topics" just to reuse a byte layout would be worse than duplicating four
+dozen lines — the same "three similar lines beats a premature abstraction" reasoning that
+already governs the rest of the lib.
+
+### 18.3 Registration versus message: `raise` on one side, an event on the other
+
+`RegisterCommand` raises `EPipeCommandError` right away — empty name or over
+`PIPE_MAX_COMMAND_BYTES`, unassigned handler, invalid `AMinSize`/`AMaxSize`, `AMaxSize <
+AMinSize`, or a command already registered. All of these are PROGRAMMING errors (the dev is
+assembling the router, typically in the app's `Create`/`Setup`), never network errors — so
+they fail early, on the first malformed `RegisterCommand`, not silently on the first frame
+that arrives.
+
+`HandleMessage` is the opposite: it NEVER raises. A malformed envelope, a command with no
+registered handler, or a payload outside the `MinSize`/`MaxSize` range call
+`OnInvalidPayload`/`OnUnknownCommand` — optional events, silent when nobody subscribes, the
+same way an `OnMessage` with no subscriber does nothing. The reason isn't stylistic:
+`HandleMessage` runs INSIDE the work item that already dispatches `OnMessage`
+(`TPipeMessageWork.Execute`, in `Pipes.Base.pas`), and an exception there does NOT reach
+`OnError` — `TPipePoolWorker.Execute` (`Pipes.Threading.pas`) swallows any exception from a
+user callback so it doesn't take down the worker, exactly as it would with a bug inside the
+dev's own `OnMessage`. If `HandleMessage` raised instead of calling an event, discarding an
+unknown command or a malformed payload would vanish in total silence — the same problem that
+motivated the event instead of the `raise`.
+
+### 18.4 Size validation runs BEFORE the handler
+
+`RegisterCommand(ACommand, AHandler, AMinSize, AMaxSize)` — both ceilings are optional
+(`PIPE_COMMAND_NO_LIMIT`, the default, turns off the respective side) and are checked
+against the BODY (already without the envelope prefix) before the handler runs. It's
+cheap — one `Length` comparison — and saves every handler from starting with the same
+"payload too short" first line; whoever wants FORMAT validation (schema, field types) still
+does that inside the handler itself, because that's an application decision, not a
+transport one — the same boundary that already keeps `Pipes.Json` out of the core.
+
+### 18.5 Command names are case-sensitive
+
+Same reasoning as §9.4/topics: there is no portable UTF-8 upcase, and a locale-dependent
+match would be worse than a case-sensitive one. `TDictionary<string, ...>` with the default
+comparer already handles this with no extra code — the same mechanism
+`Pipes.Server.FRetained` (retained topics) already uses.
+
+### 18.6 Scope of this first round
+
+Deliberately narrow, at the user's request: only registration (with duplicate detection)
+and size limits. Left out, not forgotten:
+
+- `UnregisterCommand` — no concrete use case yet asked for removing a command after
+  registration.
+- A `SendCommand` convenience wrapper on `TPipeClient`/`TPipeServer` — today the sender
+  builds the envelope with `PipeEncodeCommandPayload` and calls `SendBytes` directly; a thin
+  wrapper can land later without breaking anything.
+- Routing on the `OnRequest`/`TPipeRequestEvent` side (request-reply by command) — the
+  design is analogous (only the handler signature changes, gaining `out AReply: TBytes`),
+  but it's a second surface that deserves its own round of decisions instead of riding
+  along with this one.
+
+### 18.7 Tests
+
+Unit (`Pipes.CommandsTests`, dual): plain registration, and each of the four ways
+`RegisterCommand` raises `EPipeCommandError` (empty name, name too long, nil handler,
+inconsistent limits) plus the fifth (duplicate command); dispatch to the right handler with
+the payload already stripped of its prefix; an unknown command calling
+`OnUnknownCommand` (and not raising when nobody subscribes); a payload below/above the
+range calling `OnInvalidPayload` without calling the handler; a payload exactly at the
+limits calling the handler; a malformed envelope calling `OnInvalidPayload` with `ACommand =
+''`; envelope round-trip, binary layout, empty body, non-ASCII name (size in UTF-8 bytes,
+not characters, same case as `Pipes.TopicsTests.Envelope_TopicoNaoAscii`), and both forms of
+truncated payload raising `EPipeProtocol`. Verified on both compilers (FPC via
+`PipesUnitTestsFpc.exe --all --format=plain`, 138/138; Delphi/DUnitX, 138/138, no leaks). No
+dedicated sample this round — the unit is small enough that usage is clear from the tests
+themselves and the README example.
