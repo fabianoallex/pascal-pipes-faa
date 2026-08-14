@@ -83,6 +83,22 @@ implementar qualquer milestone novo.
   silenciosos, porque uma exceção ali seria engolida em silêncio pelo pool sem chegar a
   `OnError` (mesmo contrato de qualquer bug dentro do `OnMessage` do próprio dev). Racional
   completo em `docs/ARQUITETURA.md` §18.
+- **Endereço do cliente (`TPipeServer.TryClientAddress`):** `TryPeerAddress` no contrato
+  abstrato `TPipeEndpoint` (`Pipes.Transport.pas`), mesmo padrão de `TryPeerIdentity` —
+  `False` por padrão, sobrescrito onde faz sentido. `ptLocal` (Named Pipe/UDS) sempre `False`
+  (sem endereço de rede); `ptTcp`/`ptTls` devolvem `'ip:porta'` via `getpeername`, com layout
+  de `sockaddr` declarado à mão (`TPipeRawSockAddrIn`/`In6`/`Storage` em
+  `Pipes.Transport.pas`, reaproveitado por Windows e POSIX) pelo mesmo motivo de
+  `TPipeAddrInfo` já existir: cada compilador tipa `sockaddr` de um jeito incompatível com o
+  outro. No POSIX a MESMA classe (`TPipePosixEndpoint`) serve UDS e TCP; a família devolvida
+  por `getpeername` (`AF_INET`/`AF_INET6` vs. `AF_UNIX`) já é o discriminador, sem subclasse
+  nova. `FAddresses`/`FAddressOrder` em `Pipes.Server.pas` espelham `FIdentities`/
+  `FIdentityOrder` (mesmo teto `PIPES_RECENT_IDENTITIES`, mesma sobrevivência a
+  `OnClientDisconnected`) — duplicado de propósito, não generalizado num cache único.
+  Windows e POSIX/Linux implementados e com `TryPeerAddress` verificado em FPC/Win64 +
+  Delphi/DUnitX; POSIX compila mas não foi executado (sem toolchain Linux nesta máquina,
+  mesma limitação de §16); Android fica fora desta rodada. Racional completo em
+  `docs/ARQUITETURA.md` §19.
 
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 
@@ -137,7 +153,8 @@ OnError) →
 SendBytes/SendText por ConnId (com `AGroupKey` opcional — ordem de entrega entre
 mensagens da mesma chave em `pdmPool`, ver abaixo), SendBytesBatch (N mensagens, um
 Write só, ordem preservada), Broadcast, DisconnectClient, ClientCount/ClientIds
-(só conexões estabelecidas), TryClientIdentity (identidade do par mTLS), MaxClients,
+(só conexões estabelecidas), TryClientIdentity (identidade do par mTLS),
+TryClientAddress ('ip:porta' em ptTcp/ptTls, False em ptLocal — ver §19), MaxClients,
 OnClientConnected/Disconnected, OnRequest, Stats/ConnectionStats — métricas, ver abaixo)
 e `TPipeClient` (Connect, Disconnect, SendBytes/SendText (idem `AGroupKey`), SendBytesBatch,
 Request/RequestText síncrono com timeout, AutoReconnect, MaxReconnectAttempts,
@@ -241,7 +258,7 @@ src/Pipes.Commands.pas            (roteador de comandos por nome OPCIONAL, por c
                                   OnMessage — ver §18)
 tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery)
   + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json/Failover/
-    Discovery)
+    Discovery/PeerAddress)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
 samples/ (20 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
@@ -294,10 +311,11 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks, sample `EchoDiscovery` (reaproveita o `EchoServer.exe`, so' ganha `discover` na linha de comando) — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
 | C0 | Compressão de payload: `Pipes.Compression.pas` (deflate via `System.ZLib`/`paszlib`), `pfkCompressed` (kind 7 do NPF1), `CompressionMinSize` em `TPipeBase`, `BytesSentWire`/`BytesReceivedWire` em `Stats`, proteção de zip bomb — ver `docs/ARQUITETURA.md` §17 | sonnet | concluído: verde nos dois compiladores (FPC 115 unit + 117 integração; Delphi/IDE confirmado 2026-08-04, extensão de Stats verificada só no FPC até aqui) |
 | CMD0 | Roteador de comandos por nome: `Pipes.Commands.pas` (`TPipeCommandRouter`, opt-in por cima de `OnMessage`, sem kind novo no NPF1), `RegisterCommand` com detecção de duplicado e limites `AMinSize`/`AMaxSize`, `OnUnknownCommand`/`OnInvalidPayload` — ver `docs/ARQUITETURA.md` §18 | sonnet | concluído: verde nos dois compiladores (FPC 138/138 via `PipesUnitTestsFpc.exe`; Delphi/DUnitX 138/138, sem leak, confirmado 2026-08-14). Escopo reduzido de propósito: sem `UnregisterCommand`, `SendCommand` de conveniência nem roteamento do lado `OnRequest` |
+| ADDR0 | Endereço do cliente: `TryPeerAddress` no contrato `TPipeEndpoint` (mesmo padrão de `TryPeerIdentity`), `TPipeServer.TryClientAddress`, backends Windows e POSIX via `getpeername` com `sockaddr` declarado à mão — ver `docs/ARQUITETURA.md` §19 | sonnet | concluído: FPC/Win64 verde (unit 138/138 + integração 121/121, suíte `Pipes.PeerAddressTests`); Delphi/DUnitX pendente de confirmação do usuário. POSIX/Linux compila mas não foi executado (sem toolchain local); `Pipes.Transport.Android` fora desta rodada |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
-S0-S4/F0-F3/C0/CMD0.
+S0-S4/F0-F3/C0/CMD0/ADDR0.
 
 ## Verificação por milestone
 

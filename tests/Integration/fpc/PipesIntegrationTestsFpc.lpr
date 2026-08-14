@@ -24,6 +24,7 @@ uses
   Pipes.TlsTests,
   Pipes.HeartbeatTests,
   Pipes.StatsTests,
+  Pipes.PeerAddressTests,
   Pipes.JsonTests,
   Pipes.FailoverTests,
   Pipes.DiscoveryTests;

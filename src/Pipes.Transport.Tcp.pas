@@ -79,6 +79,7 @@ type
     procedure WriteExactly(const ABuffer; ACount: Integer); override;
     procedure CloseAbort; override;
     procedure SetIoDeadline(ATimeoutMs: Cardinal); override;
+    function TryPeerAddress(out AAddress: string): Boolean; override;
   end;
 
   TPipeTcpWinListener = class(TPipeListener)
@@ -232,6 +233,7 @@ const
   // PIPE_WSA_INVALID_EVENT e' (WSAEVENT)NULL; a unit WinSock2 do FPC 3.2.2 nao a
   // declara.
   PIPE_WSA_INVALID_EVENT = 0;
+  PIPE_AF_INET6 = 23; // valor do Windows; o Linux usa 10 (ver Pipes.Transport.Posix)
 
 // bind/connect declarados localmente: a WinSock2 do FPC os tipa como
 // TSockAddrIn, o que impediria passar o sockaddr_in6 devolvido pelo
@@ -241,6 +243,11 @@ function pipe_bind(ASocket: TSocket; AAddr: Pointer;
   ANameLen: Integer): Integer; stdcall; external 'ws2_32.dll' name 'bind';
 function pipe_connect(ASocket: TSocket; AAddr: Pointer;
   ANameLen: Integer): Integer; stdcall; external 'ws2_32.dll' name 'connect';
+// getpeername: mesmo motivo de bind/connect acima — a WinSock2 do FPC tipa o
+// parametro como TSockAddrIn, pequeno demais para um sockaddr_in6.
+function pipe_getpeername(ASocket: TSocket; AAddr: Pointer;
+  var ANameLen: Integer): Integer; stdcall;
+  external 'ws2_32.dll' name 'getpeername';
 
 type
   { Layout fixo do WSANETWORKEVENTS (FD_MAX_EVENTS = 10). Declarado aqui pelo
@@ -373,6 +380,34 @@ end;
 procedure TPipeTcpWinEndpoint.SetIoDeadline(ATimeoutMs: Cardinal);
 begin
   FIoTimeoutMs := ATimeoutMs;
+end;
+
+function TPipeTcpWinEndpoint.TryPeerAddress(out AAddress: string): Boolean;
+var
+  LStorage: TPipeRawSockAddrStorage;
+  LLen: Integer;
+begin
+  AAddress := '';
+  Result := False;
+  if PipeAtomicGet(FClosed) <> 0 then
+    Exit;
+  FillChar(LStorage, SizeOf(LStorage), 0);
+  LLen := SizeOf(LStorage);
+  if pipe_getpeername(FSocket, @LStorage, LLen) <> 0 then
+    Exit; // melhor esforco: endpoint num estado que nao responde, log segue sem IP
+  case LStorage.Family of
+    PIPE_AF_INET:
+      AAddress := Format('%d.%d.%d.%d:%d',
+        [LStorage.V4.sin_addr[0], LStorage.V4.sin_addr[1],
+         LStorage.V4.sin_addr[2], LStorage.V4.sin_addr[3],
+         Swap(LStorage.V4.sin_port)]);
+    PIPE_AF_INET6:
+      AAddress := Format('[%s]:%d',
+        [PipeFormatIPv6(LStorage.V6.sin6_addr), Swap(LStorage.V6.sin6_port)]);
+  else
+    Exit;
+  end;
+  Result := True;
 end;
 
 procedure TPipeTcpWinEndpoint.WaitReadyOrStop(const AOp: string);

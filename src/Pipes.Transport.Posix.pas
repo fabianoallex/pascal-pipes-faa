@@ -57,6 +57,11 @@ type
     procedure WriteExactly(const ABuffer; ACount: Integer); override;
     procedure CloseAbort; override;
     procedure SetIoDeadline(ATimeoutMs: Cardinal); override;
+    /// So' devolve True para um fd de socket de rede (AF_INET/AF_INET6); esta
+    /// classe tambem serve o AF_UNIX de ptLocal, e um UDS nao tem endereco IP
+    /// — a checagem de familia abaixo e' o que distingue os dois casos sem
+    /// precisar de uma segunda classe so' para isso.
+    function TryPeerAddress(out AAddress: string): Boolean; override;
   end;
 
   TPipePosixListener = class(TPipeListener)
@@ -93,6 +98,14 @@ const
   PIPE_SHUT_RDWR = 2;
   PIPE_MSG_NOSIGNAL = $4000;
   PIPE_LISTEN_BACKLOG = 128;
+  PIPE_AF_INET6 = 10; // valor do Linux; o Windows usa 23 (ver Pipes.Transport.Tcp)
+
+// getpeername declarado localmente (mesmo motivo do bind/connect em
+// Pipes.Transport.Tcp.pas): o endereco trafega como ponteiro opaco + tamanho
+// para o buffer de Pipes.TPipeRawSockAddrStorage caber, seja qual for a
+// familia devolvida pelo kernel.
+function pipe_getpeername(AFd: cint; AAddr: Pointer;
+  var ANameLen: LongWord): cint; cdecl; external 'c' name 'getpeername';
 
 procedure RaiseIoError(const AOp: string; AErr: cint);
 begin
@@ -163,6 +176,34 @@ end;
 procedure TPipePosixEndpoint.SetIoDeadline(ATimeoutMs: Cardinal);
 begin
   FIoTimeoutMs := ATimeoutMs;
+end;
+
+function TPipePosixEndpoint.TryPeerAddress(out AAddress: string): Boolean;
+var
+  LStorage: TPipeRawSockAddrStorage;
+  LLen: LongWord;
+begin
+  AAddress := '';
+  Result := False;
+  if PipeAtomicGet(FClosed) <> 0 then
+    Exit;
+  FillChar(LStorage, SizeOf(LStorage), 0);
+  LLen := SizeOf(LStorage);
+  if pipe_getpeername(FFd, @LStorage, LLen) <> 0 then
+    Exit; // melhor esforco: fd num estado que nao responde, log segue sem IP
+  case LStorage.Family of
+    PIPE_AF_INET:
+      AAddress := Format('%d.%d.%d.%d:%d',
+        [LStorage.V4.sin_addr[0], LStorage.V4.sin_addr[1],
+         LStorage.V4.sin_addr[2], LStorage.V4.sin_addr[3],
+         Swap(LStorage.V4.sin_port)]);
+    PIPE_AF_INET6:
+      AAddress := Format('[%s]:%d',
+        [PipeFormatIPv6(LStorage.V6.sin6_addr), Swap(LStorage.V6.sin6_port)]);
+  else
+    Exit; // AF_UNIX (ptLocal sobre esta mesma classe): sem endereco IP
+  end;
+  Result := True;
 end;
 
 procedure TPipePosixEndpoint.WaitReadyOrStop(AEvents: SmallInt; const AOp: string);

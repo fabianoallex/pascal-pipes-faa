@@ -74,6 +74,12 @@ type
     /// So faz sentido chamar DEPOIS de Handshake: antes dele o par ainda nao
     /// apresentou nada.
     function TryPeerIdentity(out AIdentity: TPipePeerIdentity): Boolean; virtual;
+    /// Endereco IP:porta do par do outro lado, formato 'host:porta' (IPv6
+    /// entre colchetes, mesma convencao de PipeParseHostPort). False nos
+    /// transportes sem rede — Named Pipe/UDS (ptLocal) nao tem endereco IP,
+    /// so' um handle/fd local; nao ha "ainda nao chegou" aqui, e' sempre
+    /// assim para esse transporte.
+    function TryPeerAddress(out AAddress: string): Boolean; virtual;
   end;
 
   { Ponto de escuta do servidor. }
@@ -87,6 +93,38 @@ type
     procedure Close; virtual; abstract;
   end;
 
+  { Buffer cru para getpeername (TryPeerAddress dos backends TCP/TLS):
+    sockaddr_in/sockaddr_in6 tem o MESMO layout de campos no Windows e no
+    POSIX (familia + porta em network byte order + endereco) — so' a
+    constante da familia do IPv6 diverge entre eles (23 no Windows, 10 no
+    Linux), e cada backend usa a sua. Declarado aqui, e nao importado da unit
+    de socket de cada compilador, pelo mesmo motivo de TPipeAddrInfo em
+    Pipes.Transport.Tcp.pas: layout que precisa ser IGUAL nos dois lados nao
+    pode depender de como cada unit o tipa — e fica AQUI (nao em cada backend)
+    justamente para servir aos dois sem duplicar a struct. }
+  TPipeRawSockAddrIn = record
+    sin_family: Word;
+    sin_port: Word;               // network byte order (big-endian)
+    sin_addr: array[0..3] of Byte;
+    sin_zero: array[0..7] of Byte;
+  end;
+
+  TPipeRawSockAddrIn6 = record
+    sin6_family: Word;
+    sin6_port: Word;               // network byte order
+    sin6_flowinfo: LongWord;
+    sin6_addr: array[0..15] of Byte;
+    sin6_scope_id: LongWord;
+  end;
+
+  TPipeRawSockAddrStorage = record
+  case Integer of
+    0: (Family: Word);
+    1: (V4: TPipeRawSockAddrIn);
+    2: (V6: TPipeRawSockAddrIn6);
+    3: (Pad: array[0..127] of Byte); // folga (sockaddr_storage real e' assim)
+  end;
+
   { Adapta um TPipeEndpoint como TStream para PipeReadFrame/PipeWriteFrame.
     Nao e' dono do endpoint. Nao-seekable (Seek devolve 0). }
   TPipeEndpointStream = class(TStream)
@@ -98,6 +136,18 @@ type
     function Write(const Buffer; Count: Longint): Longint; override;
     function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
   end;
+
+const
+  /// Familia IPv4 do socket: mesmo valor no Windows e no POSIX, ao contrario
+  /// de IPv6 (23 no Windows, 10 no Linux — por isso cada backend declara a
+  /// sua propria constante de familia v6).
+  PIPE_AF_INET = 2;
+
+/// 'aaaa:bbbb:...' (8 grupos hex, sem zeros a esquerda), sem a compressao de
+/// zeros ('::') do formato canonico — mais verboso, mas continua um IPv6
+/// valido e reconectavel, o suficiente para log/exibicao em TryPeerAddress
+/// sem o codigo extra de achar o maior grupo de zeros consecutivos.
+function PipeFormatIPv6(const AAddr: array of Byte): string;
 
 // --- Fabricas por plataforma -------------------------------------------------
 
@@ -183,6 +233,27 @@ begin
   Finalize(AIdentity);
   FillChar(AIdentity, SizeOf(AIdentity), 0);
   Result := False;
+end;
+
+function TPipeEndpoint.TryPeerAddress(out AAddress: string): Boolean;
+begin
+  AAddress := '';
+  Result := False;
+end;
+
+function PipeFormatIPv6(const AAddr: array of Byte): string;
+var
+  I: Integer;
+  LGroup: Word;
+begin
+  Result := '';
+  for I := 0 to 7 do
+  begin
+    LGroup := (Word(AAddr[I * 2]) shl 8) or AAddr[I * 2 + 1];
+    if I > 0 then
+      Result := Result + ':';
+    Result := Result + LowerCase(IntToHex(LGroup, 1));
+  end;
 end;
 
 { TPipeEndpointStream }

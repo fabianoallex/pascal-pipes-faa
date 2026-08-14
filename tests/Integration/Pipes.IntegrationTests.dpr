@@ -27,6 +27,7 @@ uses
   Pipes.TlsTests in 'Pipes.TlsTests.pas',
   Pipes.HeartbeatTests in 'Pipes.HeartbeatTests.pas',
   Pipes.StatsTests in 'Pipes.StatsTests.pas',
+  Pipes.PeerAddressTests in 'Pipes.PeerAddressTests.pas',
   Pipes.Json in '..\..\src\Pipes.Json.pas',
   Pipes.JsonTests in 'Pipes.JsonTests.pas',
   Pipes.FailoverTests in 'Pipes.FailoverTests.pas',

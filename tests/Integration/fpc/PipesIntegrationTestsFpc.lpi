@@ -66,6 +66,9 @@
       </Unit>
       <Unit>
         <Filename Value="Pipes.StatsTests.pas"/>
+      </Unit>
+      <Unit>
+        <Filename Value="Pipes.PeerAddressTests.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>

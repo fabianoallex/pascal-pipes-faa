@@ -185,6 +185,7 @@
         <DCCReference Include="Pipes.TlsTests.pas"/>
         <DCCReference Include="Pipes.HeartbeatTests.pas"/>
         <DCCReference Include="Pipes.StatsTests.pas"/>
+        <DCCReference Include="Pipes.PeerAddressTests.pas"/>
         <DCCReference Include="..\..\src\Pipes.Json.pas"/>
         <DCCReference Include="Pipes.JsonTests.pas"/>
         <DCCReference Include="Pipes.FailoverTests.pas"/>

@@ -108,6 +108,9 @@ type
     procedure Handshake; override;
     function TryPeerIdentity(
       out AIdentity: TPipePeerIdentity): Boolean; override;
+    /// Endereco nao e' coisa de TLS: sempre delega ao endpoint TCP de baixo,
+    /// nos dois backends (Schannel/OpenSSL) e mesmo antes do Handshake.
+    function TryPeerAddress(out AAddress: string): Boolean; override;
     function Read(var ABuffer; ACount: Integer): Integer; override;
     procedure WriteExactly(const ABuffer; ACount: Integer); override;
     procedure CloseAbort; override;
@@ -288,6 +291,11 @@ begin
     Exit(FServerTls.TryPeerIdentity(AIdentity));
   {$ENDIF}
   Result := inherited TryPeerIdentity(AIdentity);
+end;
+
+function TPipeTlsEndpoint.TryPeerAddress(out AAddress: string): Boolean;
+begin
+  Result := FInner.TryPeerAddress(AAddress);
 end;
 
 destructor TPipeTlsEndpoint.Destroy;

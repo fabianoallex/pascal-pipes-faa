@@ -1562,3 +1562,91 @@ truncated payload raising `EPipeProtocol`. Verified on both compilers (FPC via
 `PipesUnitTestsFpc.exe --all --format=plain`, 138/138; Delphi/DUnitX, 138/138, no leaks). No
 dedicated sample this round — the unit is small enough that usage is clear from the tests
 themselves and the README example.
+
+## 19. Client address (`TryClientAddress`)
+
+Motivation: an app logging connections (audit, diagnostics) only had `AConnId` to identify
+who connected — an opaque number with no meaning outside the process. On `ptTcp`/`ptTls`,
+even without mTLS, the peer's IP is already available on the socket; it just wasn't exposed.
+
+### 19.1 `TryPeerAddress` on the abstract contract, not just a server-side hack
+
+Follows the SAME pattern as `TryPeerIdentity` (see `TPipeEndpoint` in
+`Pipes.Transport.pas`): a virtual method on the abstract class, `Result := False` by
+default, and each backend overrides where it makes sense. `ptLocal` (Windows
+`TPipeWinEndpoint`, POSIX `TPipePosixEndpoint` over an `AF_UNIX` fd) overrides nothing —
+inherits the `False` — because a Named Pipe/UDS has no concept of a network address, just a
+local handle/fd. `TPipeTlsEndpoint.TryPeerAddress` always delegates to the underlying TCP
+endpoint (`FInner`), on both backends (Schannel/OpenSSL) and even BEFORE `Handshake` —
+unlike `TryPeerIdentity`, address isn't certificate content, it's a socket property.
+
+### 19.2 `TPipeRawSockAddrIn`/`TPipeRawSockAddrIn6`: a hand-declared struct, and why
+
+`getpeername` returns a `sockaddr` whose real layout depends on the family (`AF_INET` vs.
+`AF_INET6`), and each compiler's socket unit types this incompatibly with the other — the
+same problem that already led `Pipes.Transport.Tcp.pas` to hand-declare `TPipeAddrInfo` for
+`getaddrinfo` instead of trusting `WinSock2`/`Sockets` (see that unit's header). The
+solution here is the same: `TPipeRawSockAddrIn`/`TPipeRawSockAddrIn6`/
+`TPipeRawSockAddrStorage` (`Pipes.Transport.pas`) are the raw byte layout — family as a
+`Word`, port in network byte order, address as a byte array — that is **identical** between
+Windows and POSIX (only the VALUE of the IPv6 family constant diverges: 23 on Windows, 10 on
+Linux, each backend with its own). `pipe_getpeername` is declared locally in each backend
+(`Pipes.Transport.Tcp.pas` for Windows, `Pipes.Transport.Posix.pas` for POSIX), the same
+idiom as `pipe_bind`/`pipe_connect`: the address travels as an opaque pointer + size, so the
+buffer fits whatever family the kernel returns.
+
+The structs and `PipeFormatIPv6` (formats without the canonical `::` zero-compression — more
+verbose, but still a valid, reconnectable IPv6, good enough for logging) live in
+`Pipes.Transport.pas` — not in `Pipes.Transport.Tcp.pas`, even though that's the unit
+implementing Windows's TCP backend — because `Pipes.Transport.Posix.pas` (the POSIX
+backend) also needs them for its OWN `TryPeerAddress`, and both units already depend on
+`Pipes.Transport`.
+
+### 19.3 The same class serves both UDS and TCP on POSIX: family is the discriminator
+
+`TPipePosixEndpoint` (`Pipes.Transport.Posix.pas`) wraps both an `AF_UNIX` socket
+(`ptLocal`) and an `AF_INET`/`AF_INET6` one (`ptTcp`, assembled in
+`Pipes.Transport.Tcp.pas` with ownership handed off to this class — see that unit's header)
+— it's the SAME class, with no flag or subclass to tell the fd's origin apart.
+`TryPeerAddress` doesn't need that flag: it calls `getpeername` unconditionally and only
+recognizes `PIPE_AF_INET`/`PIPE_AF_INET6` in the `case`; an `AF_UNIX` socket returns a
+family other than those two and falls through to the `else` (`Result := False`) by the same
+mechanism, with no extra code. The family check DOES the job a second class would, with one
+fewer line.
+
+### 19.4 `FAddresses`/`FAddressOrder`: the same lifecycle as `FIdentities`, deliberately duplicated
+
+`TPipeServer.PublishEstablished` (called by the reader thread after `Handshake`, before
+`OnClientConnected`) now also calls `AConn.FEndpoint.TryPeerAddress` and stores the result
+in its OWN dictionary (`FAddresses`/`FAddressOrder`), with the SAME oldest-first eviction and
+the SAME `PIPES_RECENT_IDENTITIES` ceiling as `FIdentities`/`FIdentityOrder` — the reason to
+exist is identical: the address needs to survive `OnClientDisconnected` to answer "where did
+whoever left come from?", and connection cleanup has no guaranteed order relative to that
+event (same rationale as `FIdentities`, see `Pipes.Server.pas`'s header). The decision was to
+duplicate the dictionary/list/eviction rather than generalize the two into a single metadata
+cache: it's more total code, but each mechanism stays additive and isolated — the pattern
+`TPipeKeyedDispatcher` (§15.2) and other extensions to this lib already follow, instead of
+reopening a structure that already works to accommodate a second piece of data.
+
+### 19.5 Platform coverage: Windows and POSIX/Linux implemented, Android out of this round
+
+Windows and POSIX (Linux) have `TryPeerAddress` implemented and verified — FPC/Win64
+(`PipesIntegrationTestsFpc.exe`, `Pipes.PeerAddressTests` suite) and Delphi/DUnitX. The
+POSIX branch **compiles** (same discipline as always: symbols are hand-declared, with no
+dependency on any version quirk of the `Sockets` unit), but was **not exercised** this
+round — this development machine has no Linux toolchain, the same limitation already noted
+for other POSIX parts of this project (see §16, LAN discovery). `Pipes.Transport.Android`
+did not gain `TryPeerAddress` this round: it's a separate platform axis (§13), and the
+request that motivated this feature was about logging on a desktop server.
+
+### 19.6 Tests
+
+Integration (`Pipes.PeerAddressTests`, dual): a connected `ptTcp` client returns
+`'127.0.0.1:<ephemeral port>'` (only checks the port is a number > 0, never a fixed value —
+the OS picks it); `ptLocal` returns `False` with an empty string; a nonexistent `AConnId`
+returns `False` (same case as `ConnectionStats`); and the address is still queryable AFTER
+`OnClientDisconnected` fires, proving §19.4's survival. The first three wait for
+`ServerStats.ClientCount` to reach 1 before reading `ClientIds` — the client-side `Connect`
+returns before `PublishEstablished` runs on the server, a real race that
+`Pipes.StatsTests` already avoids the same way (`WaitCount` before reading any
+`ClientIds`/`Stats`).

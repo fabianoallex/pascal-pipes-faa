@@ -100,6 +100,29 @@ Verification happens on a device: there is no dual-compiler pair (FPC does not c
 Android in this project). The device suite lives in `tests/Android/`. Full rationale in
 [`docs/ARCHITECTURE.en.md`](docs/ARCHITECTURE.en.md) §13.
 
+### Client address (`TryClientAddress`)
+
+On `ptTcp`/`ptTls` (with or without mTLS) the server knows where each client came from:
+
+```pascal
+procedure TForm1.ClientConnected(Sender: TObject; AConnId: TPipeConnectionId);
+var
+  LAddress: string;
+begin
+  if Server.TryClientAddress(AConnId, LAddress) then
+    FileLog('pipe-connection', 'Client connected: ' + LAddress)
+  else
+    FileLog('pipe-connection', 'Client connected: ' + AConnId.ToString); // ptLocal
+end;
+```
+
+`False` on `ptLocal`: a Named Pipe/UDS has no IP address, just a local handle/fd — it isn't
+"hasn't arrived yet", it's always like that for that transport. The address comes as
+`'ip:port'` (IPv6 in brackets, the same convention as the `Address` you pass to `Connect`
+yourself) and **survives the client leaving**, the same criterion as `TryClientIdentity`
+right below — it lets you answer "where did whoever left come from?" inside
+`OnClientDisconnected` itself.
+
 ### TLS (`ptTls`)
 
 `ptTls` is the same TCP socket with TLS on top: same `Address` format, same threading
@@ -629,6 +652,7 @@ TPipeServer
   DisconnectClient(ConnId)               // asynchronous and idempotent
   ClientCount; ClientIds                 // only ESTABLISHED connections
   TryClientIdentity(ConnId, out Ident)   // who it is, from the validated mTLS certificate
+  TryClientAddress(ConnId, out Addr)     // 'ip:port'; False on ptLocal (no IP address)
   MaxClients                             // resource limit: counts handshaking connections
   OnClientConnected/OnClientDisconnected: TPipeConnectionEvent
   OnRequest: TPipeRequestEvent           // (const ARequest: TBytes; out AReply: TBytes)

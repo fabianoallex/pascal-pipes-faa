@@ -98,6 +98,29 @@ Verificação é em aparelho: não há par dual-compiler (o FPC não compila par
 projeto). A suíte de device fica em `tests/Android/`. Racional completo em
 [`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §13.
 
+### Endereço do cliente (`TryClientAddress`)
+
+Em `ptTcp`/`ptTls` (com ou sem mTLS) o servidor sabe de onde cada cliente veio:
+
+```pascal
+procedure TForm1.ClienteConectou(Sender: TObject; AConnId: TPipeConnectionId);
+var
+  LEndereco: string;
+begin
+  if Servidor.TryClientAddress(AConnId, LEndereco) then
+    FileLog('pipe-connection', 'Cliente conectado: ' + LEndereco)
+  else
+    FileLog('pipe-connection', 'Cliente conectado: ' + AConnId.ToString); // ptLocal
+end;
+```
+
+`False` em `ptLocal`: Named Pipe/UDS não tem endereço IP, só um handle/fd local — não é
+"ainda não chegou", é sempre assim para esse transporte. O endereço vem no formato
+`'ip:porta'` (IPv6 entre colchetes, mesma convenção do `Address` que você mesmo passa para
+`Connect`) e **sobrevive à saída do cliente**, mesmo critério de `TryClientIdentity` logo
+abaixo — dá para responder "de onde veio quem saiu?" dentro do próprio
+`OnClientDisconnected`.
+
 ### TLS (`ptTls`)
 
 `ptTls` é o mesmo socket TCP com TLS por cima: mesmo formato de `Address`, mesmas
@@ -629,6 +652,7 @@ TPipeServer
   DisconnectClient(ConnId)               // assíncrono e idempotente
   ClientCount; ClientIds                 // só conexões ESTABELECIDAS
   TryClientIdentity(ConnId, out Ident)   // quem é, pelo certificado mTLS validado
+  TryClientAddress(ConnId, out Addr)     // 'ip:porta'; False em ptLocal (sem endereco IP)
   MaxClients                             // limite de recurso: conta as em handshake
   OnClientConnected/OnClientDisconnected: TPipeConnectionEvent
   OnRequest: TPipeRequestEvent           // (const ARequest: TBytes; out AReply: TBytes)

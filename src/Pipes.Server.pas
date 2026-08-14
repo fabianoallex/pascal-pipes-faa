@@ -180,6 +180,11 @@ type
     // sobrevive, e o que limita a memoria e' o teto abaixo.
     FIdentities: TDictionary<TPipeConnectionId, TPipePeerIdentity>;
     FIdentityOrder: TList<TPipeConnectionId>; // ordem de chegada, p/ despejo
+    // Endereco IP:porta do par, mesmo ciclo de vida/rationale de FIdentities
+    // acima (sobrevive a saida do cliente, mesmo teto PIPES_RECENT_IDENTITIES)
+    // — so que aqui False e' o normal em ptLocal, nao uma excecao rara.
+    FAddresses: TDictionary<TPipeConnectionId, string>;
+    FAddressOrder: TList<TPipeConnectionId>;
     FConnLock: TCriticalSection;
     FNextConnId: TPipeConnectionId; // sob FConnLock
     FActive: Boolean;
@@ -311,6 +316,12 @@ type
     /// cair, e uma excecao ali obrigaria try/except dentro do laco.
     function TryClientIdentity(AConnId: TPipeConnectionId;
       out AIdentity: TPipePeerIdentity): Boolean;
+    /// Endereco 'ip:porta' do cliente (ptTcp/ptTls). False em ptLocal (Named
+    /// Pipe/UDS nao tem endereco de rede) — mesmo criterio Try* de
+    /// TryClientIdentity, inclusive sobrevivendo a saida do cliente para
+    /// responder "de onde veio quem saiu?" dentro de OnClientDisconnected.
+    function TryClientAddress(AConnId: TPipeConnectionId;
+      out AAddress: string): Boolean;
     /// Snapshot agregado (cumulativo desde o Listen; sobrevive a conexoes que
     /// ja cairam). Ver a ressalva de TPipeServerStats.PoolQueueDepth sobre o
     /// pool GLOBAL em pdmPool.
@@ -750,6 +761,8 @@ begin
   FConnections := TDictionary<TPipeConnectionId, TPipeServerConnection>.Create;
   FIdentities := TDictionary<TPipeConnectionId, TPipePeerIdentity>.Create;
   FIdentityOrder := TList<TPipeConnectionId>.Create;
+  FAddresses := TDictionary<TPipeConnectionId, string>.Create;
+  FAddressOrder := TList<TPipeConnectionId>.Create;
   FRetained := TDictionary<string, TBytes>.Create;
   FRetainedOrder := TList<string>.Create;
   FConnLock := TCriticalSection.Create;
@@ -766,6 +779,8 @@ begin
   FConnections.Free;
   FIdentities.Free;
   FIdentityOrder.Free;
+  FAddresses.Free;
+  FAddressOrder.Free;
   FRetained.Free;
   FRetainedOrder.Free;
   FConnLock.Free;
@@ -1523,17 +1538,19 @@ end;
 procedure TPipeServer.PublishEstablished(AConn: TPipeServerConnection);
 var
   LIdentity: TPipePeerIdentity;
-  LHas: Boolean;
+  LAddress: string;
+  LHasIdentity, LHasAddress: Boolean;
 begin
-  // A consulta ao endpoint fica FORA do FConnLock: ela nao faz IO (a
-  // identidade ja foi extraida durante o handshake e so' esta guardada), mas
-  // segurar o lock das conexoes enquanto se chama codigo do transporte
-  // inverteria a ordem "lista de conexoes -> transporte" que o resto da unit
-  // respeita.
-  LHas := AConn.FEndpoint.TryPeerIdentity(LIdentity);
+  // A consulta ao endpoint fica FORA do FConnLock: ela nao faz IO (identidade
+  // e endereco ja foram extraidos durante o handshake/accept e so' estao
+  // guardados), mas segurar o lock das conexoes enquanto se chama codigo do
+  // transporte inverteria a ordem "lista de conexoes -> transporte" que o
+  // resto da unit respeita.
+  LHasIdentity := AConn.FEndpoint.TryPeerIdentity(LIdentity);
+  LHasAddress := AConn.FEndpoint.TryPeerAddress(LAddress);
   FConnLock.Enter;
   try
-    if LHas then
+    if LHasIdentity then
     begin
       FIdentities.AddOrSetValue(AConn.Id, LIdentity);
       FIdentityOrder.Add(AConn.Id);
@@ -1543,6 +1560,16 @@ begin
       begin
         FIdentities.Remove(FIdentityOrder[0]);
         FIdentityOrder.Delete(0);
+      end;
+    end;
+    if LHasAddress then
+    begin
+      FAddresses.AddOrSetValue(AConn.Id, LAddress);
+      FAddressOrder.Add(AConn.Id);
+      while FAddressOrder.Count > PIPES_RECENT_IDENTITIES do
+      begin
+        FAddresses.Remove(FAddressOrder[0]);
+        FAddressOrder.Delete(0);
       end;
     end;
     AConn.FEstablished := True;
@@ -1582,6 +1609,19 @@ begin
     // e' justamente o que permite responder "quem saiu?" dentro do
     // OnClientDisconnected.
     Result := FIdentities.TryGetValue(AConnId, AIdentity);
+  finally
+    FConnLock.Leave;
+  end;
+end;
+
+function TPipeServer.TryClientAddress(AConnId: TPipeConnectionId;
+  out AAddress: string): Boolean;
+begin
+  AAddress := '';
+  FConnLock.Enter;
+  try
+    // Mesmo criterio de TryClientIdentity: nao exige conexao viva.
+    Result := FAddresses.TryGetValue(AConnId, AAddress);
   finally
     FConnLock.Leave;
   end;
