@@ -37,7 +37,23 @@ unit Pipes.Commands;
   Registro (RegisterCommand) e' o oposto: nome invalido, handler nil,
   limites inconsistentes ou comando duplicado sao erro de PROGRAMACAO, nao
   de rede — por isso levantam EPipeCommandError na hora do registro, nao no
-  primeiro frame que chegar. }
+  primeiro frame que chegar.
+
+  RegisterRequestCommand/HandleRequest fazem o mesmo roteamento do lado
+  request-reply (TPipeServer.OnRequest/TPipeRequestEvent) — registro proprio
+  (RegisterRequestCommand), dicionario proprio (nome de comando de mensagem e
+  de request NAO colidem: chegam por kinds diferentes no fio, pfkMessage vs
+  pfkRequest/pfkReply, antes de qualquer lookup). O contrato de erro e' o
+  OPOSTO do de HandleMessage, de proposito: HandleRequest LEVANTA em comando
+  desconhecido ou payload fora da faixa (nao ha OnUnknownCommand/
+  OnInvalidPayload do lado do request), porque TPipeServer.ExecuteRequest ja'
+  captura QUALQUER excecao de dentro de OnRequest e a transforma em reply de
+  erro pro cliente (Pipes.Server.pas, mesmo caminho que EchoJsonServer ja usa
+  de proposito com EPipeJSONError) — reaproveitar esse mecanismo e' mais
+  simples do que reinventar um "silencio" que nao existe no request-reply
+  (o worker sempre manda ALGUMA resposta, nunca nada). O reply em si nao leva
+  envelope: quem chamou Request ja sabe qual comando mandou, entao AReply
+  continua TBytes cru. }
 
 interface
 
@@ -61,6 +77,13 @@ type
   TPipeCommandEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
     const ACommand: string; const APayload: TBytes) of object;
 
+  /// Handler de um comando do lado request-reply. Mesma ideia de
+  /// TPipeCommandEvent, mas com a assinatura de TPipeRequestEvent: o retorno
+  /// em AReply vira o frame de resposta (RAW, sem envelope — quem chamou
+  /// Request ja sabe qual comando mandou).
+  TPipeCommandRequestEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
+    const ACommand: string; const APayload: TBytes; out AReply: TBytes) of object;
+
   /// Erro de PROGRAMACAO em RegisterCommand (nome invalido, handler nil,
   /// limites inconsistentes, comando duplicado) — nunca levantada a partir
   /// de um frame recebido.
@@ -74,22 +97,43 @@ type
     MaxSize: Integer;
   end;
 
+  /// Idem TPipeCommandEntry, para o registro do lado request-reply.
+  TPipeCommandRequestEntry = record
+    Handler: TPipeCommandRequestEvent;
+    MinSize: Integer;
+    MaxSize: Integer;
+  end;
+
   TPipeCommandRouter = class
   private
     FCommands: TDictionary<string, TPipeCommandEntry>;
+    FRequestCommands: TDictionary<string, TPipeCommandRequestEntry>;
     FOnUnknownCommand: TPipeCommandEvent;
     FOnInvalidPayload: TPipeCommandEvent;
+    procedure ValidateRegistration(const ACommand: string;
+      AHandlerAssigned, AAlreadyRegistered: Boolean;
+      AMinSize, AMaxSize: Integer);
   public
     constructor Create;
     destructor Destroy; override;
 
-    /// Registra o handler de ACommand. Levanta EPipeCommandError se: o nome
-    /// for vazio ou passar de PIPE_MAX_COMMAND_BYTES; AHandler nao estiver
-    /// atribuido; AMinSize/AMaxSize forem negativos fora de
-    /// PIPE_COMMAND_NO_LIMIT, ou AMaxSize < AMinSize; ou ACommand ja'
-    /// estiver registrado NESTE router.
+    /// Registra o handler de ACommand (lado OnMessage). Levanta
+    /// EPipeCommandError se: o nome for vazio ou passar de
+    /// PIPE_MAX_COMMAND_BYTES; AHandler nao estiver atribuido; AMinSize/
+    /// AMaxSize forem negativos fora de PIPE_COMMAND_NO_LIMIT, ou
+    /// AMaxSize < AMinSize; ou ACommand ja' estiver registrado NESTE
+    /// registro (o registro de request, abaixo, e' independente — o mesmo
+    /// nome pode existir nos dois sem conflito).
     procedure RegisterCommand(const ACommand: string;
       AHandler: TPipeCommandEvent;
+      AMinSize: Integer = PIPE_COMMAND_NO_LIMIT;
+      AMaxSize: Integer = PIPE_COMMAND_NO_LIMIT);
+
+    /// Registra o handler de ACommand do lado request-reply (TPipeServer.
+    /// OnRequest). Mesmas validacoes/EPipeCommandError de RegisterCommand,
+    /// contra um registro PROPRIO (ver HandleRequest).
+    procedure RegisterRequestCommand(const ACommand: string;
+      AHandler: TPipeCommandRequestEvent;
       AMinSize: Integer = PIPE_COMMAND_NO_LIMIT;
       AMaxSize: Integer = PIPE_COMMAND_NO_LIMIT);
 
@@ -98,13 +142,24 @@ type
     procedure HandleMessage(Sender: TObject; AConnId: TPipeConnectionId;
       const AData: TBytes);
 
+    /// Compativel com TPipeRequestEvent — atribua direto a
+    /// Server.OnRequest (ver cabecalho da unit). AO CONTRARIO de
+    /// HandleMessage, LEVANTA (EPipeProtocol) em envelope malformado,
+    /// comando sem handler registrado ou payload fora da faixa MinSize/
+    /// MaxSize: TPipeServer.ExecuteRequest ja' transforma qualquer excecao
+    /// vinda daqui em reply de erro para o cliente, entao nao ha
+    /// OnUnknownCommand/OnInvalidPayload deste lado.
+    procedure HandleRequest(Sender: TObject; AConnId: TPipeConnectionId;
+      const ARequest: TBytes; out AReply: TBytes);
+
     /// Envelope decodificou mas nao ha handler para o comando. Opcional; sem
-    /// assinante a mensagem e' descartada em silencio.
+    /// assinante a mensagem e' descartada em silencio. So' se aplica a
+    /// HandleMessage — HandleRequest sempre levanta (ver acima).
     property OnUnknownCommand: TPipeCommandEvent
       read FOnUnknownCommand write FOnUnknownCommand;
     /// Envelope malformado (ACommand vem vazio) OU payload fora da faixa
     /// MinSize/MaxSize do comando. Opcional, mesmo silencio de
-    /// OnUnknownCommand quando nao atribuido.
+    /// OnUnknownCommand quando nao atribuido. So' se aplica a HandleMessage.
     property OnInvalidPayload: TPipeCommandEvent
       read FOnInvalidPayload write FOnInvalidPayload;
   end;
@@ -174,18 +229,22 @@ constructor TPipeCommandRouter.Create;
 begin
   inherited Create;
   FCommands := TDictionary<string, TPipeCommandEntry>.Create;
+  FRequestCommands := TDictionary<string, TPipeCommandRequestEntry>.Create;
 end;
 
 destructor TPipeCommandRouter.Destroy;
 begin
   FCommands.Free;
+  FRequestCommands.Free;
   inherited Destroy;
 end;
 
-procedure TPipeCommandRouter.RegisterCommand(const ACommand: string;
-  AHandler: TPipeCommandEvent; AMinSize, AMaxSize: Integer);
-var
-  LEntry: TPipeCommandEntry;
+// Validacoes comuns a RegisterCommand/RegisterRequestCommand — o que muda
+// entre os dois (tipo do handler, qual dicionario) fica com o chamador, que
+// ja sabe se o handler esta atribuido e se o nome ja existe NO SEU PROPRIO
+// registro (os dois registros sao independentes, ver cabecalho da unit).
+procedure TPipeCommandRouter.ValidateRegistration(const ACommand: string;
+  AHandlerAssigned, AAlreadyRegistered: Boolean; AMinSize, AMaxSize: Integer);
 begin
   if ACommand = '' then
     raise EPipeCommandError.Create('nome de comando vazio');
@@ -193,7 +252,7 @@ begin
     raise EPipeCommandError.CreateFmt(
       'nome de comando "%s" excede o maximo de %d bytes',
       [ACommand, PIPE_MAX_COMMAND_BYTES]);
-  if not Assigned(AHandler) then
+  if not AHandlerAssigned then
     raise EPipeCommandError.CreateFmt(
       'comando "%s" registrado sem handler', [ACommand]);
   if (AMinSize <> PIPE_COMMAND_NO_LIMIT) and (AMinSize < 0) then
@@ -207,12 +266,34 @@ begin
     raise EPipeCommandError.CreateFmt(
       'AMaxSize (%d) menor que AMinSize (%d) para o comando "%s"',
       [AMaxSize, AMinSize, ACommand]);
-  if FCommands.ContainsKey(ACommand) then
+  if AAlreadyRegistered then
     raise EPipeCommandError.CreateFmt('comando "%s" ja registrado', [ACommand]);
+end;
+
+procedure TPipeCommandRouter.RegisterCommand(const ACommand: string;
+  AHandler: TPipeCommandEvent; AMinSize, AMaxSize: Integer);
+var
+  LEntry: TPipeCommandEntry;
+begin
+  ValidateRegistration(ACommand, Assigned(AHandler),
+    FCommands.ContainsKey(ACommand), AMinSize, AMaxSize);
   LEntry.Handler := AHandler;
   LEntry.MinSize := AMinSize;
   LEntry.MaxSize := AMaxSize;
   FCommands.Add(ACommand, LEntry);
+end;
+
+procedure TPipeCommandRouter.RegisterRequestCommand(const ACommand: string;
+  AHandler: TPipeCommandRequestEvent; AMinSize, AMaxSize: Integer);
+var
+  LEntry: TPipeCommandRequestEntry;
+begin
+  ValidateRegistration(ACommand, Assigned(AHandler),
+    FRequestCommands.ContainsKey(ACommand), AMinSize, AMaxSize);
+  LEntry.Handler := AHandler;
+  LEntry.MinSize := AMinSize;
+  LEntry.MaxSize := AMaxSize;
+  FRequestCommands.Add(ACommand, LEntry);
 end;
 
 procedure TPipeCommandRouter.HandleMessage(Sender: TObject;
@@ -251,6 +332,32 @@ begin
   end;
 
   LEntry.Handler(Sender, AConnId, LCommand, LBody);
+end;
+
+procedure TPipeCommandRouter.HandleRequest(Sender: TObject;
+  AConnId: TPipeConnectionId; const ARequest: TBytes; out AReply: TBytes);
+var
+  LCommand: string;
+  LBody: TBytes;
+  LEntry: TPipeCommandRequestEntry;
+begin
+  // Envelope malformado propaga como esta: EPipeProtocol de
+  // PipeDecodeCommandPayload ja tem a mensagem certa, e ExecuteRequest vai
+  // capturar do mesmo jeito que qualquer excecao daqui pra baixo.
+  PipeDecodeCommandPayload(ARequest, LCommand, LBody);
+
+  if not FRequestCommands.TryGetValue(LCommand, LEntry) then
+    raise EPipeProtocol.CreateFmt('comando desconhecido: "%s"', [LCommand]);
+
+  if ((LEntry.MinSize <> PIPE_COMMAND_NO_LIMIT) and
+      (Length(LBody) < LEntry.MinSize)) or
+     ((LEntry.MaxSize <> PIPE_COMMAND_NO_LIMIT) and
+      (Length(LBody) > LEntry.MaxSize)) then
+    raise EPipeProtocol.CreateFmt(
+      'payload de %d byte(s) fora da faixa aceita pelo comando "%s"',
+      [Length(LBody), LCommand]);
+
+  LEntry.Handler(Sender, AConnId, LCommand, LBody, AReply);
 end;
 
 end.

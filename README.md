@@ -694,6 +694,12 @@ Pipes.Commands (OPCIONAL — só inclui quem for usar; ver "Comandos" abaixo)
   TPipeCommandRouter.HandleMessage       // mesma assinatura de TPipeMessageEvent;
                                           // atribua direto a Server/Client.OnMessage
   OnUnknownCommand; OnInvalidPayload: TPipeCommandEvent  // opcionais, silenciosos
+  TPipeCommandRouter.RegisterRequestCommand(Comando, Handler, AMinSize = -1, AMaxSize = -1)
+                                          // registro PROPRIO, independente do de mensagem
+  TPipeCommandRouter.HandleRequest       // mesma assinatura de TPipeRequestEvent;
+                                          // atribua direto a Server.OnRequest — LEVANTA
+                                          // (EPipeProtocol) em comando desconhecido/payload
+                                          // invalido, ao contrario de HandleMessage
   PipeEncodeCommandPayload/PipeDecodeCommandPayload(Comando, Corpo)  // envelope manual
 
 Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls |
@@ -779,6 +785,31 @@ que um `OnMessage` sem assinante. Nomes de comando são case-sensitive (mesmo ra
 tópicos: não há upcase portátil para UTF-8). Racional completo, inclusive por que é por
 CIMA de `OnMessage` em vez de um kind novo do NPF1, em `docs/ARQUITETURA.md` §18.
 
+O mesmo roteador também cobre o lado request-reply, com registro e método PRÓPRIOS
+(`RegisterRequestCommand`/`HandleRequest`, independentes de `RegisterCommand`/
+`HandleMessage` — o mesmo nome de comando pode existir nos dois sem conflito, porque
+`OnMessage`/`OnRequest` já chegam por kinds diferentes no fio):
+
+```pascal
+Router.RegisterRequestCommand('SOMAR', OnSomarRequest, 1); // AMinSize = 1
+Server.OnRequest := Router.HandleRequest; // mesma assinatura de TPipeRequestEvent
+
+procedure TMeuApp.OnSomarRequest(Sender: TObject; AConnId: TPipeConnectionId;
+  const ACommand: string; const APayload: TBytes; out AReply: TBytes);
+begin
+  AReply := ...; // vira o reply; SEM envelope — quem chamou Request ja sabe o comando
+end;
+```
+
+O contrato de erro é o OPOSTO do lado mensagem, de propósito: `HandleRequest` LEVANTA
+(`EPipeProtocol`) em comando desconhecido ou payload fora da faixa, em vez de chamar
+`OnUnknownCommand`/`OnInvalidPayload` — não há esses eventos deste lado. A razão é que
+`TPipeServer.ExecuteRequest` já transforma QUALQUER exceção vinda do `OnRequest` num reply
+de erro para o cliente (o `Request` do lado cliente relança como `EPipeError`), o mesmo
+caminho que o sample `EchoJsonServer` já usa de propósito com `EPipeJSONError` — e, ao
+contrário de `OnMessage`, um `Request` sempre recebe ALGUMA resposta, então não existe um
+"silêncio" equivalente para reaproveitar. Racional completo em `docs/ARQUITETURA.md` §18.8.
+
 ### Compatibilidade com a API anterior
 
 Os nomes antigos continuam válidos e compilam sem alteração — `TNamedPipeBase`,
@@ -809,6 +840,16 @@ marcados `deprecated` só depois que samples e testes migrarem.
   síncrono, com o total calculado pelo servidor no reply. Mostra também a única parte que
   `Pipes.Json.pas` não esconde: montar/ler o valor (`AddPair` vs `Add`, `GetValue<T>` vs
   `Get`) é `{$IFDEF FPC}` local ao sample, atrás de duas funções pequenas (`JStr`/`JInt`).
+- **EchoCommand** (`EchoCommandServer` + `EchoCommandClient`) — vitrine de
+  `TPipeCommandRouter` dos dois lados (ver seção "Comandos" acima): comandos
+  fire-and-forget (`PING`/`ECO` no servidor, `PONG`/`ECO_OK` no cliente, via `OnMessage`) e
+  um comando request-reply (`SOMAR`, via `OnRequest`/`Request`), cada um com seu próprio
+  handler em vez de uma cadeia de `if`. Digite `ping`/`eco <texto>` para os assíncronos,
+  `?soma <a> <b>` para o RPC síncrono (soma dois inteiros) — e `?ping` para ver o caminho de
+  "comando desconhecido" do lado request-reply de propósito: `PING` só está registrado do
+  lado mensagem, então pedi-lo como `Request` levanta `EPipeError` no cliente. `SendCommand`
+  de conveniência continua fora desta versão, então o envio é `PipeEncodeCommandPayload` +
+  `SendBytes`/`Request` direto no app.
 - **EchoFailover** (só `EchoFailoverClient` — reaproveita o `EchoServer.exe` de sempre, rodado
   duas vezes) — vitrine de `FailoverAddresses`/`ActiveAddress` (ver seção "Failover de
   endereço" acima). Suba `EchoServer.exe pipes_faa_primario` e
@@ -1100,6 +1141,7 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing,
                      cima de OnMessage — nao acoplada ao core)
 packages/            pipes_faa.lpk (pacote Lazarus)
 samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),
+                     EchoCommand (Pipes.Commands.pas, opcional),
                      EchoFailover (FailoverAddresses, reaproveita o EchoServer.exe),
                      EchoDiscovery (Pipes.Discovery, idem, so' o EchoServer.exe ganha
                      "discover" na linha de comando),

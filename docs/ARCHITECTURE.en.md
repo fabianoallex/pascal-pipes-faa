@@ -1540,12 +1540,11 @@ and size limits. Left out, not forgotten:
 - `UnregisterCommand` — no concrete use case yet asked for removing a command after
   registration.
 - A `SendCommand` convenience wrapper on `TPipeClient`/`TPipeServer` — today the sender
-  builds the envelope with `PipeEncodeCommandPayload` and calls `SendBytes` directly; a thin
-  wrapper can land later without breaking anything.
-- Routing on the `OnRequest`/`TPipeRequestEvent` side (request-reply by command) — the
-  design is analogous (only the handler signature changes, gaining `out AReply: TBytes`),
-  but it's a second surface that deserves its own round of decisions instead of riding
-  along with this one.
+  builds the envelope with `PipeEncodeCommandPayload` and calls `SendBytes`/`Request`
+  directly; a thin wrapper can land later without breaking anything.
+
+Routing on the `OnRequest`/`TPipeRequestEvent` side (request-reply by command) got its own
+round of decisions — see §18.8.
 
 ### 18.7 Tests
 
@@ -1558,10 +1557,58 @@ range calling `OnInvalidPayload` without calling the handler; a payload exactly 
 limits calling the handler; a malformed envelope calling `OnInvalidPayload` with `ACommand =
 ''`; envelope round-trip, binary layout, empty body, non-ASCII name (size in UTF-8 bytes,
 not characters, same case as `Pipes.TopicsTests.Envelope_TopicoNaoAscii`), and both forms of
-truncated payload raising `EPipeProtocol`. Verified on both compilers (FPC via
-`PipesUnitTestsFpc.exe --all --format=plain`, 138/138; Delphi/DUnitX, 138/138, no leaks). No
-dedicated sample this round — the unit is small enough that usage is clear from the tests
-themselves and the README example.
+truncated payload raising `EPipeProtocol`. No dedicated sample this round — the unit is
+small enough that usage is clear from the tests themselves and the README example.
+
+### 18.8 Request-reply side routing (`RegisterRequestCommand`/`HandleRequest`)
+
+Motivation: the CMD0 round (§18.1-18.7) deliberately left out routing on the
+`OnRequest`/`TPipeRequestEvent` side, because the handler signature changes (it gains
+`out AReply: TBytes`) and that deserved its own decision instead of riding along. This
+section closes that decision.
+
+**Its own registry, not a union with the message one.** `RegisterRequestCommand` validates
+with the SAME private `ValidateRegistration` that `RegisterCommand` already used (empty/too
+long name, nil handler, inconsistent limits, duplicate command — factored out in this round
+just to avoid duplicating the five checks), but stores into its OWN `TDictionary`
+(`FRequestCommands`), independent of the `FCommands` that `HandleMessage` looks up. A
+command can share the SAME name across both registries without an `EPipeCommandError` for
+duplicates — there is no possible ambiguity, because `OnMessage`/`OnRequest` already arrive
+through different NPF1 kinds (`pfkMessage` vs `pfkRequest`) before any lookup in the router.
+The `EchoCommand` sample showcases this independence on purpose: `PING` is only registered
+on the message side, and asking for `?ping` (a Request) from the client triggers the
+request-reply "unknown command" path, not the `OnMessage` handler.
+
+**`HandleRequest` RAISES — a contract deliberately OPPOSITE to `HandleMessage`'s.** An
+unknown command or a payload outside the `MinSize`/`MaxSize` range raises `EPipeProtocol`
+directly, unlike `HandleMessage`, which calls `OnUnknownCommand`/`OnInvalidPayload` and
+never raises. The reason isn't inconsistency: `TPipeServer.ExecuteRequest`
+(`Pipes.Server.pas`) already catches ANY exception raised from inside the `OnRequest`
+callback and turns it into an error reply for the client — the same path the
+`EchoJsonServer` sample already uses on purpose with `EPipeJSONError`. Reusing that existing
+mechanism is simpler than reinventing a "silence" that makes no sense in request-reply:
+unlike `OnMessage` (fire-and-forget, where "do nothing" is a valid response), `ExecuteRequest`
+ALWAYS sends some response to the client — a success or error reply, never nothing. That is
+why there is no `OnUnknownCommand`/`OnInvalidPayload` equivalent on the request side: the
+client is already informed via `EPipeError` from `Request`'s return
+(`'servidor respondeu erro: ' + <exception message>`), and there would be no way to
+"silence" that without breaking the contract that every `Request` gets a response.
+
+**No envelope on the reply.** Only the REQUEST uses `PipeEncodeCommandPayload` (command name
++ body) — whoever called `Request` already knows which command they sent, so
+`AReply: TBytes` stays raw, with no `PipeDecodeCommandPayload` on the receiving side.
+
+**Tests:** 9 new cases (request-side registration mirroring the 4 relevant ones from
+`RegisterCommand`, plus proof that the same name in both registries does not conflict;
+dispatch covering a registered command with a reply, an unknown command, a payload outside
+the range, a payload at the limits, and a malformed envelope — the last four checking
+`Assert.WillRaise`/`AssertException(EPipeProtocol, ...)` instead of events). Suite total:
+147 (was 138). Verified on both compilers: FPC/Win64
+(`PipesUnitTestsFpc.exe --all --format=plain`, 147/147, 0 errors/failures) and Delphi/DUnitX
+(147/147 unit + 121/121 integration, 0 leaks/failures/errors, confirmed by the user on
+2026-08-15). The `EchoCommand` sample (`samples/EchoCommand/`) gained the `SOMAR` command
+(request-reply, sums two integers) and the `?ping` scenario (unknown command on the request
+side) — verified end-to-end on FPC/Win64 (real server + client).
 
 ## 19. Client address (`TryClientAddress`)
 

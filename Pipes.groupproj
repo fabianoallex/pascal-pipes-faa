@@ -34,6 +34,12 @@
         <Projects Include="samples\EchoJson\EchoJsonClient.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="samples\EchoCommand\EchoCommandServer.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="samples\EchoCommand\EchoCommandClient.dproj">
+            <Dependencies/>
+        </Projects>
         <Projects Include="samples\EchoFailover\EchoFailoverClient.dproj">
             <Dependencies/>
         </Projects>
@@ -170,6 +176,24 @@
     </Target>
     <Target Name="EchoJsonClient:Make">
         <MSBuild Projects="samples\EchoJson\EchoJsonClient.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="EchoCommandServer">
+        <MSBuild Projects="samples\EchoCommand\EchoCommandServer.dproj"/>
+    </Target>
+    <Target Name="EchoCommandServer:Clean">
+        <MSBuild Projects="samples\EchoCommand\EchoCommandServer.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EchoCommandServer:Make">
+        <MSBuild Projects="samples\EchoCommand\EchoCommandServer.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="EchoCommandClient">
+        <MSBuild Projects="samples\EchoCommand\EchoCommandClient.dproj"/>
+    </Target>
+    <Target Name="EchoCommandClient:Clean">
+        <MSBuild Projects="samples\EchoCommand\EchoCommandClient.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EchoCommandClient:Make">
+        <MSBuild Projects="samples\EchoCommand\EchoCommandClient.dproj" Targets="Make"/>
     </Target>
     <Target Name="EchoFailoverClient">
         <MSBuild Projects="samples\EchoFailover\EchoFailoverClient.dproj"/>
@@ -417,13 +441,13 @@
     <!-- PipesAndroidDeviceTests e EchoAndroid ficam fora dos tres alvos
          agregados abaixo de proposito (ver o comentario no ItemGroup). -->
     <Target Name="Build">
-        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoJsonServer;EchoJsonClient;EchoFailoverClient;EchoDiscoveryClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PingPong;PongCheck;PainelLoja;MonitorTopicos;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente;ServicoLocal;GatewaySeguro;ClienteRemoto;TransferenciaArquivos"/>
+        <CallTarget Targets="Pipes_UnitTests;Pipes_IntegrationTests;EchoServer;EchoClient;EchoJsonServer;EchoJsonClient;EchoCommandServer;EchoCommandClient;EchoFailoverClient;EchoDiscoveryClient;EchoSeguroServer;EchoSeguroClient;ChatSeguro;ChatVcl;PontosECaixas;PingPong;PongCheck;PainelLoja;MonitorTopicos;PdvOperador;PdvCliente;FilaServidor;FilaCliente;DespachoServidor;DespachoWorker;ServicoInstavel;ClienteResiliente;RpcConcorrenteServidor;RpcConcorrenteCliente;ServicoLocal;GatewaySeguro;ClienteRemoto;TransferenciaArquivos"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoJsonServer:Clean;EchoJsonClient:Clean;EchoFailoverClient:Clean;EchoDiscoveryClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PontosECaixas:Clean;PingPong:Clean;PongCheck:Clean;PainelLoja:Clean;MonitorTopicos:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean;ServicoLocal:Clean;GatewaySeguro:Clean;ClienteRemoto:Clean;TransferenciaArquivos:Clean"/>
+        <CallTarget Targets="Pipes_UnitTests:Clean;Pipes_IntegrationTests:Clean;EchoServer:Clean;EchoClient:Clean;EchoJsonServer:Clean;EchoJsonClient:Clean;EchoCommandServer:Clean;EchoCommandClient:Clean;EchoFailoverClient:Clean;EchoDiscoveryClient:Clean;EchoSeguroServer:Clean;EchoSeguroClient:Clean;ChatSeguro:Clean;ChatVcl:Clean;PontosECaixas:Clean;PingPong:Clean;PongCheck:Clean;PainelLoja:Clean;MonitorTopicos:Clean;PdvOperador:Clean;PdvCliente:Clean;FilaServidor:Clean;FilaCliente:Clean;DespachoServidor:Clean;DespachoWorker:Clean;ServicoInstavel:Clean;ClienteResiliente:Clean;RpcConcorrenteServidor:Clean;RpcConcorrenteCliente:Clean;ServicoLocal:Clean;GatewaySeguro:Clean;ClienteRemoto:Clean;TransferenciaArquivos:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoJsonServer:Make;EchoJsonClient:Make;EchoFailoverClient:Make;EchoDiscoveryClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PontosECaixas:Make;PingPong:Make;PongCheck:Make;PainelLoja:Make;MonitorTopicos:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make;ServicoLocal:Make;GatewaySeguro:Make;ClienteRemoto:Make;TransferenciaArquivos:Make"/>
+        <CallTarget Targets="Pipes_UnitTests:Make;Pipes_IntegrationTests:Make;EchoServer:Make;EchoClient:Make;EchoJsonServer:Make;EchoJsonClient:Make;EchoCommandServer:Make;EchoCommandClient:Make;EchoFailoverClient:Make;EchoDiscoveryClient:Make;EchoSeguroServer:Make;EchoSeguroClient:Make;ChatSeguro:Make;ChatVcl:Make;PontosECaixas:Make;PingPong:Make;PongCheck:Make;PainelLoja:Make;MonitorTopicos:Make;PdvOperador:Make;PdvCliente:Make;FilaServidor:Make;FilaCliente:Make;DespachoServidor:Make;DespachoWorker:Make;ServicoInstavel:Make;ClienteResiliente:Make;RpcConcorrenteServidor:Make;RpcConcorrenteCliente:Make;ServicoLocal:Make;GatewaySeguro:Make;ClienteRemoto:Make;TransferenciaArquivos:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

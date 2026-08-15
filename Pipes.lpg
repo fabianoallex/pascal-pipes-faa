@@ -32,6 +32,16 @@
           <Mode Name="Default"/>
         </BuildModes>
       </Target>
+      <Target FileName="samples\EchoCommand\EchoCommandServer.lpi">
+        <BuildModes>
+          <Mode Name="Default"/>
+        </BuildModes>
+      </Target>
+      <Target FileName="samples\EchoCommand\EchoCommandClient.lpi">
+        <BuildModes>
+          <Mode Name="Default"/>
+        </BuildModes>
+      </Target>
       <Target FileName="samples\EchoFailover\EchoFailoverClient.lpi">
         <BuildModes>
           <Mode Name="Default"/>

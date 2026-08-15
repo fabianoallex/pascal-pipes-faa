@@ -694,6 +694,12 @@ Pipes.Commands (OPTIONAL — only included by whoever uses it; see "Commands" be
   TPipeCommandRouter.HandleMessage       // same signature as TPipeMessageEvent;
                                           // assign directly to Server/Client.OnMessage
   OnUnknownCommand; OnInvalidPayload: TPipeCommandEvent  // optional, silent
+  TPipeCommandRouter.RegisterRequestCommand(Command, Handler, AMinSize = -1, AMaxSize = -1)
+                                          // its OWN registry, independent of the message one
+  TPipeCommandRouter.HandleRequest       // same signature as TPipeRequestEvent;
+                                          // assign directly to Server.OnRequest — RAISES
+                                          // (EPipeProtocol) on unknown command/invalid
+                                          // payload, unlike HandleMessage
   PipeEncodeCommandPayload/PipeDecodeCommandPayload(Command, Body)  // manual envelope
 
 Exceptions: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls |
@@ -780,6 +786,31 @@ does nothing. Command names are case-sensitive (same reasoning as topics: there 
 portable UTF-8 upcase). Full rationale, including why it sits on top of `OnMessage` instead
 of being a new NPF1 kind, in `docs/ARCHITECTURE.en.md` §18.
 
+The same router also covers the request-reply side, with its OWN registry and method
+(`RegisterRequestCommand`/`HandleRequest`, independent of `RegisterCommand`/`HandleMessage`
+— the same command name can exist in both without conflict, because `OnMessage`/`OnRequest`
+already arrive through different wire kinds):
+
+```pascal
+Router.RegisterRequestCommand('SUM', OnSumRequest, 1); // AMinSize = 1
+Server.OnRequest := Router.HandleRequest; // same signature as TPipeRequestEvent
+
+procedure TMyApp.OnSumRequest(Sender: TObject; AConnId: TPipeConnectionId;
+  const ACommand: string; const APayload: TBytes; out AReply: TBytes);
+begin
+  AReply := ...; // becomes the reply; NO envelope — the Request caller already knows the command
+end;
+```
+
+The error contract is the OPPOSITE of the message side, on purpose: `HandleRequest` RAISES
+(`EPipeProtocol`) on an unknown command or a payload outside the range, instead of calling
+`OnUnknownCommand`/`OnInvalidPayload` — those events don't exist on this side. The reason is
+that `TPipeServer.ExecuteRequest` already turns ANY exception coming from `OnRequest` into
+an error reply for the client (the client-side `Request` re-raises it as `EPipeError`), the
+same path the `EchoJsonServer` sample already uses on purpose with `EPipeJSONError` — and,
+unlike `OnMessage`, a `Request` always gets SOME response, so there is no equivalent
+"silence" to reuse. Full rationale in `docs/ARCHITECTURE.en.md` §18.8.
+
 ### Compatibility with the previous API
 
 The old names remain valid and compile unchanged — `TNamedPipeBase`, `TNamedPipeServer`
@@ -811,6 +842,17 @@ marked `deprecated` only after samples and tests migrate.
   one part `Pipes.Json.pas` does not hide: building/reading the value (`AddPair` vs `Add`,
   `GetValue<T>` vs `Get`) is a `{$IFDEF FPC}` local to the sample, behind two small
   functions (`JStr`/`JInt`).
+- **EchoCommand** (`EchoCommandServer` + `EchoCommandClient`) — showcase for
+  `TPipeCommandRouter` on both sides (see the "Commands" section above): fire-and-forget
+  commands (`PING`/`ECO` on the server, `PONG`/`ECO_OK` on the client, via `OnMessage`) and
+  a request-reply command (`SOMAR`, via `OnRequest`/`Request`), each with its own handler
+  instead of an `if` chain. Type `ping`/`eco <text>` for the asynchronous ones, `?soma <a>
+  <b>` for the synchronous RPC (adds two integers, keyboard prompts are in Portuguese in
+  this sample) — and `?ping` to see the request-reply "unknown command" path on purpose:
+  `PING` is only registered on the message side, so asking for it as a `Request` raises
+  `EPipeError` on the client. A convenience `SendCommand` is still out of scope in this
+  version, so sending stays `PipeEncodeCommandPayload` + `SendBytes`/`Request` directly in
+  the app.
 - **EchoFailover** (just `EchoFailoverClient` — it reuses the usual `EchoServer.exe`, run
   twice) — showcase for `FailoverAddresses`/`ActiveAddress` (see the "Address failover"
   section above). Start `EchoServer.exe pipes_faa_primario` and
@@ -1122,6 +1164,7 @@ samples/             EchoServer, EchoClient, EchoSeguro (TLS + mTLS), ChatVcl, C
                      FilaImpressao, DespachoTarefas, ServicoInstavel, RpcConcorrente,
                      GatewaySeguro (ptTls -> ptLocal, server + client in one process),
                      EchoJson (Pipes.Json.pas, optional),
+                     EchoCommand (Pipes.Commands.pas, optional),
                      EchoFailover (FailoverAddresses, reuses EchoServer.exe),
                      EchoDiscovery (Pipes.Discovery, same idea, just EchoServer.exe
                      gains "discover" on the command line),

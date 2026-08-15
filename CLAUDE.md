@@ -81,8 +81,15 @@ implementar qualquer milestone novo.
   `HandleMessage` NUNCA levanta — comando desconhecido e payload fora da faixa
   `AMinSize`/`AMaxSize` caem em `OnUnknownCommand`/`OnInvalidPayload`, opcionais e
   silenciosos, porque uma exceção ali seria engolida em silêncio pelo pool sem chegar a
-  `OnError` (mesmo contrato de qualquer bug dentro do `OnMessage` do próprio dev). Racional
-  completo em `docs/ARQUITETURA.md` §18.
+  `OnError` (mesmo contrato de qualquer bug dentro do `OnMessage` do próprio dev). O mesmo
+  router também cobre o lado request-reply (`RegisterRequestCommand`/`HandleRequest`,
+  registro PRÓPRIO, independente do de mensagem — mesmo nome pode existir nos dois sem
+  conflito, já que `OnMessage`/`OnRequest` chegam por kinds diferentes do NPF1) com contrato
+  de erro OPOSTO de propósito: `HandleRequest` LEVANTA (`EPipeProtocol`) em vez de eventos,
+  porque `TPipeServer.ExecuteRequest` já transforma qualquer exceção do `OnRequest` em reply
+  de erro pro cliente — reaproveitar isso é mais simples do que inventar um "silêncio" que
+  não existe no request-reply (`Request` sempre recebe alguma resposta). Racional completo
+  em `docs/ARQUITETURA.md` §18, incluindo §18.8 para o lado request-reply.
 - **Endereço do cliente (`TPipeServer.TryClientAddress`):** `TryPeerAddress` no contrato
   abstrato `TPipeEndpoint` (`Pipes.Transport.pas`), mesmo padrão de `TryPeerIdentity` —
   `False` por padrão, sobrescrito onde faz sentido. `ptLocal` (Named Pipe/UDS) sempre `False`
@@ -218,9 +225,13 @@ Roteador de comandos por nome (`Pipes.Commands.pas`, `docs/ARQUITETURA.md` §18)
 `TPipeCommandRouter.RegisterCommand(Comando, Handler, AMinSize = -1, AMaxSize = -1)` —
 dicionário nome→handler por CIMA de `OnMessage`, opt-in, sem kind novo no NPF1.
 `HandleMessage` tem a mesma assinatura de `TPipeMessageEvent` (atribua direto a
-`Server.OnMessage`/`Client.OnMessage`). Escopo desta primeira rodada: só registro (com
-detecção de duplicado) e limites de tamanho — `UnregisterCommand`, `SendCommand` de
-conveniência e roteamento por comando do lado `OnRequest` ficaram de fora, não esquecidos.
+`Server.OnMessage`/`Client.OnMessage`). `RegisterRequestCommand`/`HandleRequest` (§18.8)
+fazem o mesmo do lado request-reply, com registro PRÓPRIO (mesmo nome pode existir nos dois
+sem conflito) e `HandleRequest` atribuível a `Server.OnRequest`; ao contrário de
+`HandleMessage`, LEVANTA (`EPipeProtocol`) em comando desconhecido/payload inválido, porque
+`ExecuteRequest` já transforma isso em reply de erro — não há `OnUnknownCommand`/
+`OnInvalidPayload` deste lado. Escopo restante fora desta rodada: `UnregisterCommand` e
+`SendCommand` de conveniência.
 
 `TPipeDispatchMode`: `pdmPool` (padrão), `pdmSerialized` (pool de 1 worker, ordem FIFO),
 `pdmMainThread` (TThread.Queue — apps VCL/LCL).
@@ -311,11 +322,13 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | D0 | Descoberta de servidor na LAN: `Pipes.Discovery` (NPD1 sobre broadcast UDP), `TPipeDiscoveryResponder` + `PipeDiscoverServers`, testes unit+integração nos dois frameworks, sample `EchoDiscovery` (reaproveita o `EchoServer.exe`, so' ganha `discover` na linha de comando) — ver `docs/ARQUITETURA.md` §16 | fable | concluído: verde nos dois compiladores no Win64 (FPC 102 unit + 113 integração; Delphi confirmado 2026-08-03). FPC/Linux pendente (ramo POSIX ainda sem compilador; sem toolchain local) |
 | C0 | Compressão de payload: `Pipes.Compression.pas` (deflate via `System.ZLib`/`paszlib`), `pfkCompressed` (kind 7 do NPF1), `CompressionMinSize` em `TPipeBase`, `BytesSentWire`/`BytesReceivedWire` em `Stats`, proteção de zip bomb — ver `docs/ARQUITETURA.md` §17 | sonnet | concluído: verde nos dois compiladores (FPC 115 unit + 117 integração; Delphi/IDE confirmado 2026-08-04, extensão de Stats verificada só no FPC até aqui) |
 | CMD0 | Roteador de comandos por nome: `Pipes.Commands.pas` (`TPipeCommandRouter`, opt-in por cima de `OnMessage`, sem kind novo no NPF1), `RegisterCommand` com detecção de duplicado e limites `AMinSize`/`AMaxSize`, `OnUnknownCommand`/`OnInvalidPayload` — ver `docs/ARQUITETURA.md` §18 | sonnet | concluído: verde nos dois compiladores (FPC 138/138 via `PipesUnitTestsFpc.exe`; Delphi/DUnitX 138/138, sem leak, confirmado 2026-08-14). Escopo reduzido de propósito: sem `UnregisterCommand`, `SendCommand` de conveniência nem roteamento do lado `OnRequest` |
+| CMD1 | Roteamento por comando do lado request-reply: `RegisterRequestCommand`/`HandleRequest` (`TPipeRequestEvent`, registro PRÓPRIO independente do de mensagem), contrato de erro OPOSTO de propósito (`HandleRequest` LEVANTA em vez de eventos, reaproveitando que `ExecuteRequest` já transforma exceção em reply de erro) — ver `docs/ARQUITETURA.md` §18.8. Sample `EchoCommand` ganhou o comando `SOMAR` e o cenário `?ping` (comando desconhecido do lado request) | sonnet | concluído: verde nos dois compiladores (FPC 147/147 via `PipesUnitTestsFpc.exe`, eram 138; Delphi/DUnitX 147/147 unit + 121/121 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-15). Sample verificado ponta a ponta no FPC |
 | ADDR0 | Endereço do cliente: `TryPeerAddress` no contrato `TPipeEndpoint` (mesmo padrão de `TryPeerIdentity`), `TPipeServer.TryClientAddress`, backends Windows e POSIX via `getpeername` com `sockaddr` declarado à mão — ver `docs/ARQUITETURA.md` §19 | sonnet | concluído: FPC/Win64 verde (unit 138/138 + integração 121/121, suíte `Pipes.PeerAddressTests`); Delphi/DUnitX pendente de confirmação do usuário. POSIX/Linux compila mas não foi executado (sem toolchain local); `Pipes.Transport.Android` fora desta rodada |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
-S0-S4/F0-F3/C0/CMD0/ADDR0.
+S0-S4/F0-F3/C0/CMD0/CMD1/ADDR0. CMD1 depende de CMD0 (mesma unit, `HandleRequest` reaproveita
+`ValidateRegistration` já fatorada).
 
 ## Verificação por milestone
 

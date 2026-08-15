@@ -26,6 +26,7 @@ type
     FLastConnId: TPipeConnectionId;
     FLastCommand: string;
     FLastPayload: TBytes;
+    FLastReply: TBytes;
 
     procedure Reset;
     procedure OnPing(Sender: TObject; AConnId: TPipeConnectionId;
@@ -34,6 +35,8 @@ type
       const ACommand: string; const APayload: TBytes);
     procedure OnInvalid(Sender: TObject; AConnId: TPipeConnectionId;
       const ACommand: string; const APayload: TBytes);
+    procedure OnSomaRequest(Sender: TObject; AConnId: TPipeConnectionId;
+      const ACommand: string; const APayload: TBytes; out AReply: TBytes);
 
     procedure DoRegisterNomeVazio;
     procedure DoRegisterNomeMuitoLongo;
@@ -45,6 +48,11 @@ type
     procedure DoDecodeTruncado;
     procedure DoDecodeLenMaiorQuePayload;
     procedure DoEncodeNomeAcimaDoMaximo;
+    procedure DoRegisterRequestNomeVazio;
+    procedure DoRegisterRequestDuplicado;
+    procedure DoHandleRequestComandoDesconhecido;
+    procedure DoHandleRequestPayloadAbaixoDoMinimo;
+    procedure DoHandleRequestEnvelopeMalformado;
   published
     // --- registro ---
     procedure Registro_Simples_NaoLevanta;
@@ -72,6 +80,17 @@ type
     procedure Envelope_PayloadCurto_Levanta;
     procedure Envelope_CommandLenMaiorQuePayload_Levanta;
     procedure Envelope_NomeAcimaDoMaximo_Levanta;
+    // --- registro (request) ---
+    procedure RegistroRequest_Simples_NaoLevanta;
+    procedure RegistroRequest_NomeVazio_Levanta;
+    procedure RegistroRequest_Duplicado_Levanta;
+    procedure RegistroRequest_MesmoNomeDoRegistroDeMensagem_NaoConflita;
+    // --- despacho (request) ---
+    procedure HandleRequest_ComandoRegistrado_ChamaHandlerEDevolveReply;
+    procedure HandleRequest_ComandoDesconhecido_Levanta;
+    procedure HandleRequest_PayloadAbaixoDoMinimo_Levanta;
+    procedure HandleRequest_PayloadNosLimites_ChamaHandler;
+    procedure HandleRequest_EnvelopeMalformado_Levanta;
   end;
 
 implementation
@@ -108,6 +127,7 @@ begin
   FLastConnId := 0;
   FLastCommand := '';
   FLastPayload := nil;
+  FLastReply := nil;
 end;
 
 procedure TPipeCommandsTests.OnPing(Sender: TObject; AConnId: TPipeConnectionId;
@@ -134,6 +154,18 @@ begin
   FInvalidCalled := True;
   FLastCommand := ACommand;
   FLastPayload := APayload;
+end;
+
+procedure TPipeCommandsTests.OnSomaRequest(Sender: TObject; AConnId: TPipeConnectionId;
+  const ACommand: string; const APayload: TBytes; out AReply: TBytes);
+begin
+  FHandlerCalled := True;
+  FLastSender := Sender;
+  FLastConnId := AConnId;
+  FLastCommand := ACommand;
+  FLastPayload := APayload;
+  AReply := MakeBytes([Length(APayload)]); // reply simples so' pra provar que chegou
+  FLastReply := AReply;
 end;
 
 procedure TPipeCommandsTests.DoRegisterNomeVazio;
@@ -190,6 +222,38 @@ end;
 procedure TPipeCommandsTests.DoEncodeNomeAcimaDoMaximo;
 begin
   PipeEncodeCommandPayload(StringOfChar('a', PIPE_MAX_COMMAND_BYTES + 1), nil);
+end;
+
+procedure TPipeCommandsTests.DoRegisterRequestNomeVazio;
+begin
+  FRouter.RegisterRequestCommand('', OnSomaRequest);
+end;
+
+procedure TPipeCommandsTests.DoRegisterRequestDuplicado;
+begin
+  FRouter.RegisterRequestCommand('SOMA', OnSomaRequest);
+end;
+
+procedure TPipeCommandsTests.DoHandleRequestComandoDesconhecido;
+var
+  LReply: TBytes;
+begin
+  FRouter.HandleRequest(Self, 1, PipeEncodeCommandPayload('DESCONHECIDO', nil), LReply);
+end;
+
+procedure TPipeCommandsTests.DoHandleRequestPayloadAbaixoDoMinimo;
+var
+  LReply: TBytes;
+begin
+  FRouter.HandleRequest(Self, 1,
+    PipeEncodeCommandPayload('SOMA', MakeBytes([1, 2])), LReply);
+end;
+
+procedure TPipeCommandsTests.DoHandleRequestEnvelopeMalformado;
+var
+  LReply: TBytes;
+begin
+  FRouter.HandleRequest(Self, 1, MakeBytes([5]), LReply); // nem o u16 cabe
 end;
 
 { --- registro --- }
@@ -477,6 +541,133 @@ end;
 procedure TPipeCommandsTests.Envelope_NomeAcimaDoMaximo_Levanta;
 begin
   AssertException(EPipeProtocol, DoEncodeNomeAcimaDoMaximo);
+end;
+
+{ --- registro (request) --- }
+
+procedure TPipeCommandsTests.RegistroRequest_Simples_NaoLevanta;
+begin
+  FRouter := TPipeCommandRouter.Create;
+  try
+    FRouter.RegisterRequestCommand('SOMA', OnSomaRequest);
+  finally
+    FRouter.Free;
+  end;
+end;
+
+procedure TPipeCommandsTests.RegistroRequest_NomeVazio_Levanta;
+begin
+  FRouter := TPipeCommandRouter.Create;
+  try
+    AssertException(EPipeCommandError, DoRegisterRequestNomeVazio);
+  finally
+    FRouter.Free;
+  end;
+end;
+
+procedure TPipeCommandsTests.RegistroRequest_Duplicado_Levanta;
+begin
+  FRouter := TPipeCommandRouter.Create;
+  try
+    FRouter.RegisterRequestCommand('SOMA', OnSomaRequest);
+    AssertException(EPipeCommandError, DoRegisterRequestDuplicado);
+  finally
+    FRouter.Free;
+  end;
+end;
+
+procedure TPipeCommandsTests.RegistroRequest_MesmoNomeDoRegistroDeMensagem_NaoConflita;
+begin
+  // Os dois registros (mensagem/request) sao independentes: o mesmo nome
+  // pode existir nos dois sem EPipeCommandError de duplicado.
+  FRouter := TPipeCommandRouter.Create;
+  try
+    FRouter.RegisterCommand('PING', OnPing);
+    FRouter.RegisterRequestCommand('PING', OnSomaRequest);
+  finally
+    FRouter.Free;
+  end;
+end;
+
+{ --- despacho (request) --- }
+
+procedure TPipeCommandsTests.HandleRequest_ComandoRegistrado_ChamaHandlerEDevolveReply;
+var
+  LSender: TObject;
+  LReply: TBytes;
+begin
+  Reset;
+  FRouter := TPipeCommandRouter.Create;
+  LSender := TObject.Create;
+  try
+    FRouter.RegisterRequestCommand('SOMA', OnSomaRequest);
+    FRouter.HandleRequest(LSender, 7,
+      PipeEncodeCommandPayload('SOMA', MakeBytes([1, 2, 3])), LReply);
+    AssertTrue(FHandlerCalled);
+    AssertTrue(LSender = FLastSender);
+    EqualInt(7, FLastConnId);
+    AssertEquals('SOMA', FLastCommand);
+    EqualInt(3, Length(FLastPayload));
+    EqualInt(1, Length(LReply));
+    EqualByte(3, LReply[0]);
+  finally
+    FRouter.Free;
+    LSender.Free;
+  end;
+end;
+
+procedure TPipeCommandsTests.HandleRequest_ComandoDesconhecido_Levanta;
+begin
+  Reset;
+  FRouter := TPipeCommandRouter.Create;
+  try
+    AssertException(EPipeProtocol, DoHandleRequestComandoDesconhecido);
+    AssertFalse(FHandlerCalled);
+  finally
+    FRouter.Free;
+  end;
+end;
+
+procedure TPipeCommandsTests.HandleRequest_PayloadAbaixoDoMinimo_Levanta;
+begin
+  Reset;
+  FRouter := TPipeCommandRouter.Create;
+  try
+    FRouter.RegisterRequestCommand('SOMA', OnSomaRequest, 3, PIPE_COMMAND_NO_LIMIT);
+    AssertException(EPipeProtocol, DoHandleRequestPayloadAbaixoDoMinimo);
+    AssertFalse(FHandlerCalled);
+  finally
+    FRouter.Free;
+  end;
+end;
+
+procedure TPipeCommandsTests.HandleRequest_PayloadNosLimites_ChamaHandler;
+var
+  LReply: TBytes;
+begin
+  Reset;
+  FRouter := TPipeCommandRouter.Create;
+  try
+    FRouter.RegisterRequestCommand('SOMA', OnSomaRequest, 2, 2);
+    FRouter.HandleRequest(Self, 1,
+      PipeEncodeCommandPayload('SOMA', MakeBytes([1, 2])), LReply);
+    AssertTrue(FHandlerCalled);
+    EqualInt(2, Length(FLastPayload));
+  finally
+    FRouter.Free;
+  end;
+end;
+
+procedure TPipeCommandsTests.HandleRequest_EnvelopeMalformado_Levanta;
+begin
+  Reset;
+  FRouter := TPipeCommandRouter.Create;
+  try
+    AssertException(EPipeProtocol, DoHandleRequestEnvelopeMalformado);
+    AssertFalse(FHandlerCalled);
+  finally
+    FRouter.Free;
+  end;
 end;
 
 initialization
