@@ -53,7 +53,15 @@ unit Pipes.Commands;
   simples do que reinventar um "silencio" que nao existe no request-reply
   (o worker sempre manda ALGUMA resposta, nunca nada). O reply em si nao leva
   envelope: quem chamou Request ja sabe qual comando mandou, entao AReply
-  continua TBytes cru. }
+  continua TBytes cru.
+
+  PipeSendCommand/PipeSendCommandText/PipeRequestCommand/
+  PipeRequestCommandText sao wrappers finos sobre SendBytes/Request que so'
+  poupam o PipeEncodeCommandPayload repetido em quem manda comando toda hora
+  — mesma ideia de PipeSendJSON/PipeRequestJSON em Pipes.Json.pas, ate' a
+  mesma dupla de overloads (Client / Server+AConnId) para o lado
+  fire-and-forget. Nao mudam nada em TPipeClient/TPipeServer: esta unit
+  depende deles, nunca o contrario. Ver docs/ARQUITETURA.md §18.9. }
 
 interface
 
@@ -61,7 +69,9 @@ uses
   SysUtils,
   Generics.Collections,
   Pipes.Types,
-  Pipes.Framing;
+  Pipes.Framing,
+  Pipes.Client,
+  Pipes.Server;
 
 const
   /// Desliga o respectivo teto de tamanho em RegisterCommand.
@@ -171,6 +181,35 @@ function PipeEncodeCommandPayload(const ACommand: string;
 /// inteiro — pode vir da rede, e' entrada hostil por definicao.
 procedure PipeDecodeCommandPayload(const APayload: TBytes; out ACommand: string;
   out ABody: TBytes);
+
+{ Wrappers finos sobre SendBytes/SendText/Request — so' poupam o
+  PipeEncodeCommandPayload repetido em quem manda/pede comando toda hora (ver
+  cabecalho da unit e docs/ARQUITETURA.md §18.9). }
+
+procedure PipeSendCommand(AClient: TPipeClient; const ACommand: string;
+  const ABody: TBytes; const AGroupKey: string = ''); overload;
+procedure PipeSendCommand(AServer: TPipeServer; AConnId: TPipeConnectionId;
+  const ACommand: string; const ABody: TBytes;
+  const AGroupKey: string = ''); overload;
+
+procedure PipeSendCommandText(AClient: TPipeClient; const ACommand: string;
+  const ABody: string; const AGroupKey: string = ''); overload;
+procedure PipeSendCommandText(AServer: TPipeServer; AConnId: TPipeConnectionId;
+  const ACommand: string; const ABody: string;
+  const AGroupKey: string = ''); overload;
+
+/// Como Request, mas monta o envelope de comando antes de mandar. AReply
+/// devolvido e' RAW (sem envelope) — quem chamou ja sabe o que pediu, mesmo
+/// contrato de TPipeCommandRequestEvent (ver HandleRequest). Mesmas
+/// excecoes de Request (EPipeTimeout/EPipeClosed/EPipeError), mais
+/// EPipeProtocol se ACommand exceder PIPE_MAX_COMMAND_BYTES.
+function PipeRequestCommand(AClient: TPipeClient; const ACommand: string;
+  const ABody: TBytes; ATimeoutMs: Cardinal = 30000): TBytes;
+
+/// Como PipeRequestCommand, com corpo e resposta em texto (UTF-8) — mesmo
+/// padrao de TPipeClient.RequestText.
+function PipeRequestCommandText(AClient: TPipeClient; const ACommand: string;
+  const ABody: string; ATimeoutMs: Cardinal = 30000): string;
 
 implementation
 
@@ -358,6 +397,45 @@ begin
       [Length(LBody), LCommand]);
 
   LEntry.Handler(Sender, AConnId, LCommand, LBody, AReply);
+end;
+
+{ --- wrappers de conveniencia --- }
+
+procedure PipeSendCommand(AClient: TPipeClient; const ACommand: string;
+  const ABody: TBytes; const AGroupKey: string); overload;
+begin
+  AClient.SendBytes(PipeEncodeCommandPayload(ACommand, ABody), AGroupKey);
+end;
+
+procedure PipeSendCommand(AServer: TPipeServer; AConnId: TPipeConnectionId;
+  const ACommand: string; const ABody: TBytes; const AGroupKey: string); overload;
+begin
+  AServer.SendBytes(AConnId, PipeEncodeCommandPayload(ACommand, ABody), AGroupKey);
+end;
+
+procedure PipeSendCommandText(AClient: TPipeClient; const ACommand: string;
+  const ABody: string; const AGroupKey: string); overload;
+begin
+  PipeSendCommand(AClient, ACommand, PipeUtf8Encode(ABody), AGroupKey);
+end;
+
+procedure PipeSendCommandText(AServer: TPipeServer; AConnId: TPipeConnectionId;
+  const ACommand: string; const ABody: string; const AGroupKey: string); overload;
+begin
+  PipeSendCommand(AServer, AConnId, ACommand, PipeUtf8Encode(ABody), AGroupKey);
+end;
+
+function PipeRequestCommand(AClient: TPipeClient; const ACommand: string;
+  const ABody: TBytes; ATimeoutMs: Cardinal): TBytes;
+begin
+  Result := AClient.Request(PipeEncodeCommandPayload(ACommand, ABody), ATimeoutMs);
+end;
+
+function PipeRequestCommandText(AClient: TPipeClient; const ACommand: string;
+  const ABody: string; ATimeoutMs: Cardinal): string;
+begin
+  Result := PipeUtf8Decode(
+    PipeRequestCommand(AClient, ACommand, PipeUtf8Encode(ABody), ATimeoutMs));
 end;
 
 end.

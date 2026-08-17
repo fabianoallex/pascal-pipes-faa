@@ -1503,9 +1503,10 @@ limites de tamanho. Ficou de fora, não esquecido:
 
 - `UnregisterCommand` — nenhum caso de uso concreto ainda pedia remover um comando depois de
   registrado.
-- `SendCommand` de conveniência em `TPipeClient`/`TPipeServer` — hoje quem envia monta o
-  envelope com `PipeEncodeCommandPayload` e chama `SendBytes`/`Request` direto; um wrapper
-  fino pode entrar depois sem quebrar nada.
+- `SendCommand`/`RequestCommand` de conveniência em `TPipeClient`/`TPipeServer` — hoje quem
+  envia monta o envelope com `PipeEncodeCommandPayload` e chama `SendBytes`/`Request` direto;
+  um wrapper fino pode entrar depois sem quebrar nada. **Fechado em rodada posterior — ver
+  §18.9.**
 
 Roteamento do lado `OnRequest`/`TPipeRequestEvent` (request-reply por comando) ganhou sua
 própria rodada de decisão — ver §18.8.
@@ -1573,6 +1574,46 @@ faixa, payload nos limites e envelope malformado — os quatro últimos verifica
 Sample `EchoCommand` (`samples/EchoCommand/`) ganhou o comando `SOMAR` (request-reply, soma
 dois inteiros) e o cenário `?ping` (comando desconhecido do lado request) — verificado ponta
 a ponta no FPC/Win64 (servidor + cliente reais).
+
+### 18.9 `PipeSendCommand`/`PipeRequestCommand`: o `SendCommand` de conveniência que ficou de fora no §18.6
+
+Motivação: o padrão de uso real de comandos é sempre "monta o envelope, manda" —
+`PipeEncodeCommandPayload(ACommand, ABody)` seguido de `SendBytes`/`Request` aparecia
+repetido em toda chamada, tanto no app do usuário quanto no próprio sample `EchoCommand`.
+O §18.6 deixou esse wrapper de fora de propósito por falta de uso concreto; motivo revogado
+quando o usuário pediu exatamente esse helper para um cliente VCL que consulta um comando
+`CONSULTA_NFE` via `Request` síncrono.
+
+**Mesmo molde de `PipeSendJSON`/`PipeRequestJSON` (`Pipes.Json.pas`), não um mecanismo
+novo.** `PipeSendCommand` tem dois overloads — `(AClient, ACommand, ABody, AGroupKey = '')` e
+`(AServer, AConnId, ACommand, ABody, AGroupKey = '')` — espelhando exatamente os overloads de
+`PipeSendJSON`; `PipeRequestCommand` só existe do lado `TPipeClient`, porque `Request` só
+existe lá. As variantes `PipeSendCommandText`/`PipeRequestCommandText` fazem o
+`PipeUtf8Encode`/`PipeUtf8Decode` do corpo, mesmo padrão de `SendText`/`RequestText` — não
+de `Pipes.Json` (JSON não tem uma forma "texto cru" própria, comando tem, porque o corpo de
+um comando é `TBytes` genérico, não necessariamente JSON).
+
+**Reply de `PipeRequestCommand` continua RAW.** Assim como `HandleRequest` não decodifica o
+pedido como envelope na resposta (§18.8, "Reply sem envelope"), `PipeRequestCommand` não
+decodifica o `AReply` recebido — quem chamou já sabe qual comando pediu, então o retorno é o
+corpo cru do handler, só passado por `PipeUtf8Decode` na variante `...Text`.
+
+**Nada muda em `TPipeClient`/`TPipeServer`.** São funções livres em `Pipes.Commands.pas`, que
+já dependia de `Pipes.Types`/`Pipes.Framing`; a unit passou a importar `Pipes.Client`/
+`Pipes.Server` também (sem risco de dependência circular — nenhuma das duas conhece
+`Pipes.Commands`), mesma direção de dependência que `Pipes.Json.pas` já usa.
+
+**`UnregisterCommand` continua fora de escopo** — nenhum caso de uso concreto apareceu para
+ele nesta rodada.
+
+Sample `EchoCommand` migrado para usar os quatro wrappers nos dois lados (`PONG`/`ECO_OK` no
+servidor via `PipeSendCommand`/`PipeSendCommandText`; `ping`/`eco`/`?soma`/`?ping` no cliente
+via os quatro). Verificado nos dois compiladores: FPC/Win64 unitário 147/147 (suíte
+inalterada, wrappers não têm teste dedicado — são funções de uma linha sobre
+`PipeEncodeCommandPayload`/`SendBytes`/`Request`, já cobertos), servidor + cliente reais
+rodados ponta a ponta (`ping`, `eco`, `?soma 3 4` → `7`, `?ping` → `EPipeError` esperado); e
+Delphi/DUnitX 147/147 unit + 121/121 integração, 0 leak/falha/erro, confirmado pelo usuário
+em 2026-08-17.
 
 ## 19. Endereço do cliente (`TryClientAddress`)
 

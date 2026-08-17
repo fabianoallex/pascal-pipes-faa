@@ -3,9 +3,9 @@
 { Cliente de eco console com roteamento por COMANDO (ver EchoCommandServer.dpr
   e README.md secao "Comandos"). Usa TPipeCommandRouter tambem do lado do
   cliente, so' para receber as respostas fire-and-forget (PONG/ECO_OK) — o
-  envio continua sendo o app montando o envelope com PipeEncodeCommandPayload
-  e chamando SendBytes/Request, porque esta versao de Pipes.Commands.pas nao
-  tem um SendCommand de conveniencia (ver README.md).
+  envio usa PipeSendCommand/PipeSendCommandText/PipeRequestCommand/
+  PipeRequestCommandText, os wrappers de conveniencia de Pipes.Commands.pas
+  que montam o envelope por cima de SendBytes/Request (ver README.md).
 
   Le linhas do teclado:
     ping         -> manda o comando PING fire-and-forget (corpo vazio); a
@@ -142,7 +142,6 @@ procedure TEchoCommandClientApp.Run(const APipeName: string);
 var
   LLinha, LTexto: string;
   LEspaco: Integer;
-  LReply: TBytes;
 begin
   FClient := TNamedPipeClient.Create(APipeName);
   FClient.OnMessage := FRouter.HandleMessage; // mesma assinatura de TPipeMessageEvent
@@ -160,19 +159,19 @@ begin
 
     try
       if SameText(LLinha, 'ping') then
-        FClient.SendBytes(PipeEncodeCommandPayload('PING', nil))
+        PipeSendCommand(FClient, 'PING', nil)
       else if StartsText('eco ', LLinha) then
       begin
         LEspaco := Pos(' ', LLinha);
         LTexto := Copy(LLinha, LEspaco + 1, MaxInt);
-        FClient.SendBytes(PipeEncodeCommandPayload('ECO', PipeUtf8Encode(LTexto)));
+        PipeSendCommandText(FClient, 'ECO', LTexto);
       end
       else if SameText(LLinha, '?ping') then
       begin
         // PING so' tem handler do lado OnMessage: isto dispara de proposito
         // o "comando desconhecido" do lado request-reply (ver cabecalho).
         try
-          FClient.Request(PipeEncodeCommandPayload('PING', nil), 5000);
+          PipeRequestCommand(FClient, 'PING', nil, 5000);
         except
           on E: EPipeError do
             Log('request "?ping" falhou como esperado: ' + E.Message);
@@ -182,9 +181,8 @@ begin
       begin
         LTexto := Copy(LLinha, Length('?soma ') + 1, MaxInt);
         try
-          LReply := FClient.Request(
-            PipeEncodeCommandPayload('SOMAR', PipeUtf8Encode(LTexto)), 5000);
-          Log('reply sincrono: ' + PipeUtf8Decode(LReply));
+          Log('reply sincrono: ' +
+            PipeRequestCommandText(FClient, 'SOMAR', LTexto, 5000));
         except
           on E: EPipeError do
             Log('request "?soma" falhou: ' + E.Message);

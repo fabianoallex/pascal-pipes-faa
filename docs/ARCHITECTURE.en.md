@@ -1539,9 +1539,10 @@ and size limits. Left out, not forgotten:
 
 - `UnregisterCommand` — no concrete use case yet asked for removing a command after
   registration.
-- A `SendCommand` convenience wrapper on `TPipeClient`/`TPipeServer` — today the sender
-  builds the envelope with `PipeEncodeCommandPayload` and calls `SendBytes`/`Request`
-  directly; a thin wrapper can land later without breaking anything.
+- A `SendCommand`/`RequestCommand` convenience wrapper on `TPipeClient`/`TPipeServer` — today
+  the sender builds the envelope with `PipeEncodeCommandPayload` and calls `SendBytes`/
+  `Request` directly; a thin wrapper can land later without breaking anything. **Closed in a
+  later round — see §18.9.**
 
 Routing on the `OnRequest`/`TPipeRequestEvent` side (request-reply by command) got its own
 round of decisions — see §18.8.
@@ -1609,6 +1610,47 @@ the range, a payload at the limits, and a malformed envelope — the last four c
 2026-08-15). The `EchoCommand` sample (`samples/EchoCommand/`) gained the `SOMAR` command
 (request-reply, sums two integers) and the `?ping` scenario (unknown command on the request
 side) — verified end-to-end on FPC/Win64 (real server + client).
+
+### 18.9 `PipeSendCommand`/`PipeRequestCommand`: the `SendCommand` convenience left out in §18.6
+
+Motivation: the real usage pattern for commands is always "build the envelope, send it" —
+`PipeEncodeCommandPayload(ACommand, ABody)` followed by `SendBytes`/`Request` showed up
+repeated in every call site, both in the user's own app and in the `EchoCommand` sample
+itself. §18.6 left this wrapper out on purpose for lack of a concrete use; that reason was
+overturned when the user asked for exactly this helper for a VCL client that queries a
+`CONSULTA_NFE` (invoice lookup) command via a synchronous `Request`.
+
+**Same mold as `PipeSendJSON`/`PipeRequestJSON` (`Pipes.Json.pas`), not a new mechanism.**
+`PipeSendCommand` has two overloads — `(AClient, ACommand, ABody, AGroupKey = '')` and
+`(AServer, AConnId, ACommand, ABody, AGroupKey = '')` — mirroring `PipeSendJSON`'s overloads
+exactly; `PipeRequestCommand` only exists on the `TPipeClient` side, because `Request` only
+exists there. The `PipeSendCommandText`/`PipeRequestCommandText` variants do the
+`PipeUtf8Encode`/`PipeUtf8Decode` of the body, same pattern as `SendText`/`RequestText` — not
+`Pipes.Json`'s pattern (JSON has no separate "raw text" form of its own, a command does,
+because a command's body is generic `TBytes`, not necessarily JSON).
+
+**`PipeRequestCommand`'s reply stays RAW.** Just as `HandleRequest` does not decode the
+incoming request as an envelope on the reply side (§18.8, "No envelope on the reply"),
+`PipeRequestCommand` does not decode the received `AReply` — whoever called it already knows
+which command they asked for, so the return value is the handler's raw body, only run through
+`PipeUtf8Decode` in the `...Text` variant.
+
+**Nothing changes in `TPipeClient`/`TPipeServer`.** These are free functions in
+`Pipes.Commands.pas`, which already depended on `Pipes.Types`/`Pipes.Framing`; the unit now
+also imports `Pipes.Client`/`Pipes.Server` (no circular-dependency risk — neither of those
+knows about `Pipes.Commands`), the same dependency direction `Pipes.Json.pas` already uses.
+
+**`UnregisterCommand` is still out of scope** — no concrete use case has shown up for it in
+this round.
+
+The `EchoCommand` sample was migrated to use all four wrappers on both sides (`PONG`/`ECO_OK`
+on the server via `PipeSendCommand`/`PipeSendCommandText`; `ping`/`eco`/`?soma`/`?ping` on the
+client via all four). Verified on both compilers: FPC/Win64 unit suite 147/147 (suite
+unchanged — the wrappers are one-line functions over `PipeEncodeCommandPayload`/`SendBytes`/
+`Request`, already covered, so no dedicated test), real server + client run end-to-end
+(`ping`, `eco`, `?soma 3 4` → `7`, `?ping` → the expected `EPipeError`); and Delphi/DUnitX
+147/147 unit + 121/121 integration, 0 leaks/failures/errors, confirmed by the user on
+2026-08-17.
 
 ## 19. Client address (`TryClientAddress`)
 

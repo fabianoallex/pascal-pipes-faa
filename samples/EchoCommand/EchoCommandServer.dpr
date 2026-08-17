@@ -20,6 +20,11 @@ program EchoCommandServer;
   TPipeServer.ExecuteRequest transforma isso num reply de erro que o
   Request do cliente relanca como EPipeError (ver EchoCommandClient.dpr).
 
+  As respostas fire-and-forget (PONG/ECO_OK) usam PipeSendCommand/
+  PipeSendCommandText (wrappers de conveniencia sobre SendBytes que ja
+  montam o envelope — ver README.md secao "Comandos") em vez de montar
+  PipeEncodeCommandPayload na mao.
+
   Compila nos dois mundos a partir do MESMO fonte:
     FPC:    fpc -MDelphi -Sh -Fu..\..\src EchoCommandServer.dpr  (ou lazbuild EchoCommandServer.lpi)
     Delphi: abrir EchoCommandServer.dproj no IDE
@@ -110,7 +115,7 @@ procedure TEchoCommandServerApp.OnPing(Sender: TObject;
 begin
   Log(Format('[conn %d] PING', [AConnId]));
   try
-    FServer.SendBytes(AConnId, PipeEncodeCommandPayload('PONG', nil));
+    PipeSendCommand(FServer, AConnId, 'PONG', nil);
   except
     on E: EPipeError do
       Log(Format('[conn %d] PONG falhou (cliente caiu?): %s', [AConnId, E.Message]));
@@ -125,8 +130,7 @@ begin
   LTexto := PipeUtf8Decode(APayload);
   Log(Format('[conn %d] ECO: %s', [AConnId, LTexto]));
   try
-    FServer.SendBytes(AConnId,
-      PipeEncodeCommandPayload('ECO_OK', PipeUtf8Encode(UpperCase(LTexto))));
+    PipeSendCommandText(FServer, AConnId, 'ECO_OK', UpperCase(LTexto));
   except
     on E: EPipeError do
       Log(Format('[conn %d] ECO_OK falhou (cliente caiu?): %s', [AConnId, E.Message]));

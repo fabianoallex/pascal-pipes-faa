@@ -230,8 +230,10 @@ fazem o mesmo do lado request-reply, com registro PRÓPRIO (mesmo nome pode exis
 sem conflito) e `HandleRequest` atribuível a `Server.OnRequest`; ao contrário de
 `HandleMessage`, LEVANTA (`EPipeProtocol`) em comando desconhecido/payload inválido, porque
 `ExecuteRequest` já transforma isso em reply de erro — não há `OnUnknownCommand`/
-`OnInvalidPayload` deste lado. Escopo restante fora desta rodada: `UnregisterCommand` e
-`SendCommand` de conveniência.
+`OnInvalidPayload` deste lado. `PipeSendCommand`/`PipeSendCommandText` (Client e Server, mesmo
+molde de dois overloads de `PipeSendJSON`) e `PipeRequestCommand`/`PipeRequestCommandText`
+(Client) são wrappers finos sobre `SendBytes`/`Request` que já montam/desmontam o envelope —
+ver `docs/ARQUITETURA.md` §18.9. Escopo restante fora desta rodada: só `UnregisterCommand`.
 
 `TPipeDispatchMode`: `pdmPool` (padrão), `pdmSerialized` (pool de 1 worker, ordem FIFO),
 `pdmMainThread` (TThread.Queue — apps VCL/LCL).
@@ -324,11 +326,13 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | CMD0 | Roteador de comandos por nome: `Pipes.Commands.pas` (`TPipeCommandRouter`, opt-in por cima de `OnMessage`, sem kind novo no NPF1), `RegisterCommand` com detecção de duplicado e limites `AMinSize`/`AMaxSize`, `OnUnknownCommand`/`OnInvalidPayload` — ver `docs/ARQUITETURA.md` §18 | sonnet | concluído: verde nos dois compiladores (FPC 138/138 via `PipesUnitTestsFpc.exe`; Delphi/DUnitX 138/138, sem leak, confirmado 2026-08-14). Escopo reduzido de propósito: sem `UnregisterCommand`, `SendCommand` de conveniência nem roteamento do lado `OnRequest` |
 | CMD1 | Roteamento por comando do lado request-reply: `RegisterRequestCommand`/`HandleRequest` (`TPipeRequestEvent`, registro PRÓPRIO independente do de mensagem), contrato de erro OPOSTO de propósito (`HandleRequest` LEVANTA em vez de eventos, reaproveitando que `ExecuteRequest` já transforma exceção em reply de erro) — ver `docs/ARQUITETURA.md` §18.8. Sample `EchoCommand` ganhou o comando `SOMAR` e o cenário `?ping` (comando desconhecido do lado request) | sonnet | concluído: verde nos dois compiladores (FPC 147/147 via `PipesUnitTestsFpc.exe`, eram 138; Delphi/DUnitX 147/147 unit + 121/121 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-15). Sample verificado ponta a ponta no FPC |
 | ADDR0 | Endereço do cliente: `TryPeerAddress` no contrato `TPipeEndpoint` (mesmo padrão de `TryPeerIdentity`), `TPipeServer.TryClientAddress`, backends Windows e POSIX via `getpeername` com `sockaddr` declarado à mão — ver `docs/ARQUITETURA.md` §19 | sonnet | concluído: FPC/Win64 verde (unit 138/138 + integração 121/121, suíte `Pipes.PeerAddressTests`); Delphi/DUnitX pendente de confirmação do usuário. POSIX/Linux compila mas não foi executado (sem toolchain local); `Pipes.Transport.Android` fora desta rodada |
+| CMD2 | `SendCommand`/`RequestCommand` de conveniência que CMD0 tinha deixado de fora: `PipeSendCommand`/`PipeSendCommandText` (overloads Client/Server, mesmo molde de `PipeSendJSON`) e `PipeRequestCommand`/`PipeRequestCommandText` (Client) em `Pipes.Commands.pas`, wrappers finos sobre `SendBytes`/`Request` — ver `docs/ARQUITETURA.md` §18.9 | sonnet | concluído: verde nos dois compiladores (FPC 147/147 unit via `PipesUnitTestsFpc.exe`, suíte inalterada — wrappers de uma linha já cobertos pelos testes de `PipeEncodeCommandPayload`/`SendBytes`/`Request`; Delphi/DUnitX 147/147 unit + 121/121 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-17). Sample `EchoCommand` migrado para os quatro wrappers nos dois lados e verificado ponta a ponta (servidor + cliente reais) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
 S0-S4/F0-F3/C0/CMD0/CMD1/ADDR0. CMD1 depende de CMD0 (mesma unit, `HandleRequest` reaproveita
-`ValidateRegistration` já fatorada).
+`ValidateRegistration` já fatorada). CMD2 depende de CMD0 (mesma unit; independente de CMD1 —
+não toca em `HandleRequest`).
 
 ## Verificação por milestone
 

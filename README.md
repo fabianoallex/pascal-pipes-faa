@@ -701,6 +701,8 @@ Pipes.Commands (OPCIONAL — só inclui quem for usar; ver "Comandos" abaixo)
                                           // (EPipeProtocol) em comando desconhecido/payload
                                           // invalido, ao contrario de HandleMessage
   PipeEncodeCommandPayload/PipeDecodeCommandPayload(Comando, Corpo)  // envelope manual
+  PipeSendCommand/PipeSendCommandText(Client|Server, ..., Comando, Corpo)  // wrapper de SendBytes
+  PipeRequestCommand/PipeRequestCommandText(Client, Comando, Corpo, TimeoutMs)  // wrapper de Request
 
 Exceções: EPipeError > EPipeClosed | EPipeTimeout | EPipeProtocol | EPipeTls |
           EPipeJSONError | EPipeCommandError
@@ -773,8 +775,13 @@ begin
 end;
 ```
 
-Quem envia monta o mesmo envelope com `PipeEncodeCommandPayload('SALVAR_PEDIDO', Dados)` e
-manda por `SendBytes`/`Request` normalmente — não há wrapper de conveniência nesta versão.
+Quem envia pode montar o mesmo envelope com `PipeEncodeCommandPayload('SALVAR_PEDIDO', Dados)`
+e mandar por `SendBytes`/`Request` diretamente, ou usar o wrapper fino que já faz isso:
+`PipeSendCommand(Client, 'SALVAR_PEDIDO', Dados)` (fire-and-forget; há também o overload
+`PipeSendCommand(Server, AConnId, ...)` para o servidor responder). As duas formas têm as
+variantes `...Text` (`PipeSendCommandText`) para corpo/resposta em texto UTF-8, mesmo padrão
+de `SendText`/`RequestText`.
+
 `RegisterCommand` aceita `AMinSize`/`AMaxSize` opcionais (`PIPE_COMMAND_NO_LIMIT`, o padrão,
 desliga o respectivo teto) validados ANTES do handler rodar, e levanta `EPipeCommandError`
 na hora do registro se o comando já existir, o nome for inválido, o handler não estiver
@@ -809,6 +816,11 @@ de erro para o cliente (o `Request` do lado cliente relança como `EPipeError`),
 caminho que o sample `EchoJsonServer` já usa de propósito com `EPipeJSONError` — e, ao
 contrário de `OnMessage`, um `Request` sempre recebe ALGUMA resposta, então não existe um
 "silêncio" equivalente para reaproveitar. Racional completo em `docs/ARQUITETURA.md` §18.8.
+
+Do lado de quem CHAMA o request, `PipeRequestCommand(Client, 'SOMAR', Dados, TimeoutMs)` monta
+o envelope e chama `Request` num só passo — o retorno é o `AReply` cru do handler (sem
+envelope, mesmo contrato de `HandleRequest`). `PipeRequestCommandText` é a variante em texto
+UTF-8, mesmo padrão de `RequestText`. Racional completo em `docs/ARQUITETURA.md` §18.9.
 
 ### Compatibilidade com a API anterior
 
@@ -847,9 +859,10 @@ marcados `deprecated` só depois que samples e testes migrarem.
   handler em vez de uma cadeia de `if`. Digite `ping`/`eco <texto>` para os assíncronos,
   `?soma <a> <b>` para o RPC síncrono (soma dois inteiros) — e `?ping` para ver o caminho de
   "comando desconhecido" do lado request-reply de propósito: `PING` só está registrado do
-  lado mensagem, então pedi-lo como `Request` levanta `EPipeError` no cliente. `SendCommand`
-  de conveniência continua fora desta versão, então o envio é `PipeEncodeCommandPayload` +
-  `SendBytes`/`Request` direto no app.
+  lado mensagem, então pedi-lo como `Request` levanta `EPipeError` no cliente. O envio dos
+  dois lados usa os wrappers de conveniência `PipeSendCommand`/`PipeSendCommandText`/
+  `PipeRequestCommand`/`PipeRequestCommandText` em vez de montar
+  `PipeEncodeCommandPayload` + `SendBytes`/`Request` na mão.
 - **EchoFailover** (só `EchoFailoverClient` — reaproveita o `EchoServer.exe` de sempre, rodado
   duas vezes) — vitrine de `FailoverAddresses`/`ActiveAddress` (ver seção "Failover de
   endereço" acima). Suba `EchoServer.exe pipes_faa_primario` e
