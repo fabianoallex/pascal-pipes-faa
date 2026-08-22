@@ -153,6 +153,11 @@ type
     procedure DispatchTopicEvent(AEvent: TPipeTopicEvent;
       AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
       ARetained: Boolean);
+    /// OnDeliveryFailed do servidor (TPipeServer.FanOut/SendRetained/
+    /// PublishBatch) — mesmo desenho de DispatchTopicEvent, com AError extra.
+    procedure DispatchDeliveryFailedEvent(AEvent: TPipeDeliveryFailedEvent;
+      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+      ARetained: Boolean; const AError: string);
     procedure DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
       AConnId: TPipeConnectionId; const AFilter: string);
   public
@@ -216,7 +221,8 @@ type
 implementation
 
 type
-  TPipeQueuedKind = (qeMessage, qeConn, qeError, qeTopic, qeSubscription);
+  TPipeQueuedKind = (qeMessage, qeConn, qeError, qeTopic, qeSubscription,
+    qeDeliveryFailed);
 
   { Evento enfileirado na MAIN THREAD (pdmMainThread) via TThread.Queue.
     Nao conta em FInFlight (drain a partir da main thread = auto-espera);
@@ -231,6 +237,7 @@ type
     FErrCb: TPipeErrorEvent;
     FTopicCb: TPipeTopicEvent;
     FSubCb: TPipeSubscriptionEvent;
+    FDeliveryFailedCb: TPipeDeliveryFailedEvent;
     FConnId: TPipeConnectionId;
     FData: TBytes;
     FMsg: string;
@@ -306,6 +313,22 @@ type
     procedure Execute; override;
   end;
 
+  TPipeDeliveryFailedWork = class(TPipeWorkItem)
+  private
+    FOwner: TPipeBase;
+    FCallback: TPipeDeliveryFailedEvent;
+    FConnId: TPipeConnectionId;
+    FTopic: string;
+    FData: TBytes;
+    FRetained: Boolean;
+    FError: string;
+  public
+    constructor Create(AOwner: TPipeBase; ACallback: TPipeDeliveryFailedEvent;
+      AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+      ARetained: Boolean; const AError: string);
+    procedure Execute; override;
+  end;
+
 { TPipeGuard }
 
 constructor TPipeGuard.Create;
@@ -360,6 +383,8 @@ begin
           qeError:        FErrCb(FOwner, FConnId, FMsg);
           qeTopic:        FTopicCb(FOwner, FConnId, FTopic, FData, FRetained);
           qeSubscription: FSubCb(FOwner, FConnId, FTopic);
+          qeDeliveryFailed: FDeliveryFailedCb(FOwner, FConnId, FTopic, FData,
+            FRetained, FMsg);
         end;
       except
         // mesmo contrato do pool: excecao de callback nao derruba o chamador
@@ -474,6 +499,32 @@ procedure TPipeSubscriptionWork.Execute;
 begin
   try
     FCallback(FOwner, FConnId, FFilter);
+  finally
+    FOwner.DecInFlight;
+  end;
+end;
+
+{ TPipeDeliveryFailedWork }
+
+constructor TPipeDeliveryFailedWork.Create(AOwner: TPipeBase;
+  ACallback: TPipeDeliveryFailedEvent; AConnId: TPipeConnectionId;
+  const ATopic: string; const AData: TBytes; ARetained: Boolean;
+  const AError: string);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FCallback := ACallback;
+  FConnId := AConnId;
+  FTopic := ATopic;
+  FData := AData;
+  FRetained := ARetained;
+  FError := AError;
+end;
+
+procedure TPipeDeliveryFailedWork.Execute;
+begin
+  try
+    FCallback(FOwner, FConnId, FTopic, FData, FRetained, FError);
   finally
     FOwner.DecInFlight;
   end;
@@ -731,6 +782,30 @@ begin
   IncInFlight;
   EventPool.Queue(TPipeTopicWork.Create(Self, AEvent, AConnId, ATopic, AData,
     ARetained));
+end;
+
+procedure TPipeBase.DispatchDeliveryFailedEvent(AEvent: TPipeDeliveryFailedEvent;
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+  ARetained: Boolean; const AError: string);
+var
+  LQueued: TPipeQueuedEvent;
+begin
+  if not Assigned(AEvent) then
+    Exit;
+  if FDispatchMode = pdmMainThread then
+  begin
+    LQueued := TPipeQueuedEvent.Create(Self, qeDeliveryFailed, AConnId);
+    LQueued.FDeliveryFailedCb := AEvent;
+    LQueued.FTopic := ATopic;
+    LQueued.FData := AData;
+    LQueued.FRetained := ARetained;
+    LQueued.FMsg := AError;
+    TThread.Queue(nil, LQueued.Run);
+    Exit;
+  end;
+  IncInFlight;
+  EventPool.Queue(TPipeDeliveryFailedWork.Create(Self, AEvent, AConnId, ATopic,
+    AData, ARetained, AError));
 end;
 
 procedure TPipeBase.DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;

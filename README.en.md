@@ -583,6 +583,16 @@ deny a subscription, call `DisconnectClient`. `MaxSubscriptionsPerClient` (64 by
 limits how many filters a client may register; the refusal shows up in `OnError` **on both
 sides**, and the connection stays up.
 
+**Delivery confirmation.** `Publish`'s log (one call, from the publisher's side) does not
+say whether each subscriber received it — that is what `OnDelivered`/`OnDeliveryFailed` are
+for, on the server: they fire **once per connection** that matched a publication made by the
+**server itself** (`Publish`/`PublishBatch`, live or retained replay — `ARetained` in the
+same sense as `OnTopicMessage`), after that connection's `Write` returns. "Delivered" only
+goes as far as the OS — the payload was handed to the socket/pipe buffer, not that the
+client's app processed it; the protocol never had an application ACK. `OnPublish` is a
+different thing: it is about a **client** publishing, it does not cover the server being the
+publisher.
+
 **Wire compatibility.** The pub/sub frame kinds are new in the `NPF1` protocol. A peer
 built with an earlier version of the lib that receives one of them drops with
 `EPipeProtocol` ("the peer probably speaks a newer protocol version") instead of
@@ -649,6 +659,10 @@ TPipeServer
   OnPublish: TPipeTopicEvent             // notification: the fanout already happened
                                          // ARetained here = the client ASKED to retain
   OnSubscribe/OnUnsubscribe: TPipeSubscriptionEvent  // same; deny with DisconnectClient
+  OnDelivered: TPipeTopicEvent            // 1x per subscriber that RECEIVED a publication
+                                          // made by the SERVER itself (Publish/PublishBatch);
+                                          // "delivered" = Write without exception, not an app ACK
+  OnDeliveryFailed: TPipeDeliveryFailedEvent  // same, on the failure side; AError = the exception
   DisconnectClient(ConnId)               // asynchronous and idempotent
   ClientCount; ClientIds                 // only ESTABLISHED connections
   TryClientIdentity(ConnId, out Ident)   // who it is, from the validated mTLS certificate

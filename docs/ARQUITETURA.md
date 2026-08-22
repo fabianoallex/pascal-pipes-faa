@@ -1701,3 +1701,107 @@ esperam `ServerStats.ClientCount` alcançar 1 antes de ler `ClientIds` — `Conn
 cliente devolve antes de `PublishEstablished` rodar no servidor, uma corrida real que
 `Pipes.StatsTests` já evita do mesmo jeito (`WaitCount` antes de qualquer leitura de
 `ClientIds`/`Stats`).
+
+## 20. Confirmação de entrega por assinante (`OnDelivered`/`OnDeliveryFailed`)
+
+Motivação: um app de produção com muitos assinantes (dashboard/PDV) precisava logar, por
+destinatário, se uma publicação do PRÓPRIO servidor (`Publish`/`PublishBatch`, ao vivo ou
+replay de retido) chegou ao SO do lado daquela conexão — o log de `Publish` (uma chamada, do
+lado de quem publicou) não distingue "ninguém assinava" de "assinava e o Write falhou", e
+essa distinção é exatamente o que se precisa numa fase de implantação para responder a uma
+inconsistência relatada em campo. `OnPublish` não serve: existe para o CLIENTE publicando,
+não para o servidor sendo o publicador.
+
+### 20.1 Dois eventos, não um com flag de sucesso
+
+Decisão do usuário, com trade-off explícito: um único `OnDelivered(..., ASuccess: Boolean)`
+seria menos código, mas obriga todo handler a filtrar o caso que não interessa a cada log
+(sucesso vai para métrica, falha vai para alerta — raramente o mesmo handler quer as duas).
+Dois eventos com assinaturas distintas (`TPipeTopicEvent` para sucesso — reaproveitando o
+MESMO tipo de `OnPublish`/`OnTopicMessage`, já que os campos são idênticos; um
+`TPipeDeliveryFailedEvent` novo só para a falha, com `AError` extra) deixam quem só quer
+alertar sobre falhas assinar UM evento, sem filtrar nada.
+
+### 20.2 "Entregue" é até o SO, nunca ACK de aplicação
+
+`ARetained` aqui é o MESMO sentido do lado servidor de `TPipeTopicEvent` usado por
+`OnTopicMessage` do cliente: `False` = entrega ao vivo, `True` = replay de valor retido na
+assinatura. O nome do evento é deliberadamente `OnDelivered`, não `OnAcked` ou
+`OnConfirmed`: dispara quando `SendFrame`/`SendFrames` retorna sem exceção, isto é, quando o
+payload passou para o buffer do socket/pipe do SO — o mesmo corte que `Stats`/
+`BytesSentWire` já fazem (§11/§17.6). O protocolo NUNCA teve ACK de aplicação (nenhum
+`pfkAck`, nenhuma correlação de volta do cliente); prometer confirmação de processamento
+seria uma mentira de API. Um cliente que trava ou descarta a mensagem depois de recebida no
+socket continua invisível para este evento — isso é o limite consciente do recorte.
+
+### 20.3 Onde dispara: FanOut, SendRetained e PublishBatch — sempre no laço de envio, fora do lock
+
+Os três pontos de fan-out já existentes ganharam o disparo, sem mudar a forma como decidem
+QUEM recebe (isso continua §9.2: casamento de tópico é código puro sob `FConnLock`, sem IO
+nem alocação):
+
+- `FanOut` (publicação ao vivo, uma única `TPipeFrame` reaproveitada entre conexões): cada
+  `LConn.SendFrame` já estava num `try/except` individual por conexão (para uma conexão
+  caindo não interromper o fan-out das demais); o disparo entra nesse mesmo `try/except`,
+  sucesso chama `DispatchTopicEvent(FOnDelivered, ...)`, falha chama
+  `DispatchDeliveryFailedEvent(FOnDeliveryFailed, ..., E.Message)`. Sempre `ARetained = False`
+  — é o MESMO frame que sai com `PIPE_FLAG_RETAIN` desligado no fio (§9, "Sai SEMPRE com
+  PIPE_FLAG_RETAIN desligado").
+- `SendRetained` (replay na assinatura, `Length(LTopics)` valores num único `SendFrames`
+  atômico — ver §9.6, "ou chega o replay inteiro ou não chega nenhum"): a atomicidade do
+  WRITE não muda; o que muda é que, depois do `SendFrames` retornar (sucesso OU exceção), um
+  laço dispara um evento POR TÓPICO retido — cada valor guardado continua sendo uma entrega
+  logicamente distinta para quem loga observabilidade, mesmo tendo saído num Write só.
+  Sempre `ARetained = True`.
+- `PublishBatch`: o subconjunto de frames por conexão (`TPipeConnFrameBatch`) ganhou dois
+  arrays paralelos a `Frames` — `Topics`/`Payloads` — só para essa correlação; depois do
+  `SendFrames` da conexão, um laço dispara um evento por ITEM do lote que casou. Sempre
+  `ARetained = False`, mesmo quando o item pediu `Retain = True`: isso é sobre o VALOR
+  guardado (o que `StoreRetained` já resolveu antes do fan-out), não sobre esta entrega ser
+  catch-up — mesmo raciocínio de `FanOut`.
+
+Em nenhum dos três a conexão é derrubada por causa da falha: o reader dela já vai notificar
+a queda via `OnClientDisconnected`, sem ligação com qual publicação específica falhou — é
+exatamente essa correlação ausente que `OnDeliveryFailed` existe para preencher.
+
+### 20.4 Mecanismo de despacho: reaproveitado, não reinventado
+
+`OnDelivered` usa o `DispatchTopicEvent`/`TPipeTopicWork` que já existiam para `OnPublish`/
+`OnTopicMessage` (mesmo tipo `TPipeTopicEvent`, zero código novo em `Pipes.Base.pas` além de
+chamar o que já tinha). `OnDeliveryFailed` precisou de um par novo e simétrico —
+`TPipeDeliveryFailedEvent`, `TPipeDeliveryFailedWork`, `qeDeliveryFailed` em
+`TPipeQueuedKind`, `DispatchDeliveryFailedEvent` — porque a assinatura tem um campo a mais
+(`AError`); a mecânica (drena por `FInFlight`, `pdmMainThread` via fila com guarda, os demais
+modos via `EventPool`) é idêntica à de qualquer outro evento da lib, só reaproveita `FMsg` do
+`TPipeQueuedEvent` (já existia para `OnError`) em vez de um campo string dedicado.
+
+### 20.5 Testes: sucesso é determinístico; falha usa `MaxMessageSize`, não uma corrida de socket
+
+Os três casos de sucesso (`OnDelivered_FanOut_UmaVezPorAssinante`,
+`OnDelivered_Retido_ChegaComARetainedTrue`, `OnDelivered_PublishBatch_UmPorItemPorConexao`,
+em `Pipes.PubSubTests`, dual) são caminho feliz normal, sem timing especial. O caso de falha
+(`OnDeliveryFailed_PayloadExcedeMaxMessageSize`) **não** tenta reproduzir uma conexão morrendo
+no meio exato do envio — essa corrida entre "o reader detecta a queda e remove a conexão" e
+"o teste consegue publicar antes disso" é exatamente o tipo de teste flaky que §7 (T4/T5) e
+§13.10 já registraram como armadilha. Em vez disso, o teste abre o servidor com
+`MaxMessageSize` pequeno o bastante para deixar a assinatura passar (o filtro sozinho cabe)
+mas pequeno demais para o envelope tópico+corpo da publicação: `PipeValidateMaxPayload`
+recusa o `Write` ANTES de tocar o socket/pipe, de forma 100% determinística, exercitando o
+mesmo bloco `except` que uma conexão morta exercitaria — sem depender de nenhuma corrida real
+de SO. Verificado nos dois compiladores: FPC/Win64 (`PipesIntegrationTestsFpc.exe`, suíte
+`TPipePubSubTests`, 27/27, dentro dos 126/126 da suíte de integração inteira) e Delphi/DUnitX
+(147/147 unit + 126/126 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-22).
+
+### 20.6 Efeito colateral: um bug pré-existente encontrado e corrigido em `PublishBatch`
+
+Escrever `OnDelivered_PublishBatch_UmPorItemPorConexao` expôs que `PublishBatch` gravava o
+bit `PIPE_FLAG_RETAIN` do frame AO VIVO direto do campo `Retain` de cada
+`TPipePublishItem`, em vez de sempre `False` como `FanOut`/`Publish` fazem (§9, "Sai SEMPRE
+com PIPE_FLAG_RETAIN desligado"). Efeito: um item com `Retain = True` entregue a um
+assinante JÁ conectado chegava com `ARetained = True` em `OnTopicMessage` — o cliente era
+enganado sobre "isto é notícia ou histórico?", já que nenhum teste existente cobria um
+assinante conectado NA HORA da publicação (o único teste de retain em lote assinava DEPOIS,
+recebendo pelo replay de `SendRetained`, onde `ARetained = True` é correto). Corrigido junto
+com esta feature: a linha que monta o `TPipeFrame` do lote agora passa `False` sempre,
+igual `FanOut`; teste de regressão
+`PublishBatch_RetainAoVivo_NaoMarcaARetainedParaQuemJaAssinava` cobre o caminho que faltava.

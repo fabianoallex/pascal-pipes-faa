@@ -202,6 +202,19 @@ type
   TPipeTopicEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
     const ATopic: string; const AData: TBytes;
     ARetained: Boolean) of object;
+  { TPipeServer.OnDelivered/OnDeliveryFailed: um destinatario especifico de UMA
+    publicacao do proprio servidor (Publish/PublishBatch, ao vivo ou replay de
+    retido na assinatura — ARetained distingue os dois, mesmo sentido de
+    TPipeTopicEvent do lado cliente). NAO e' confirmacao de aplicacao: "entregue"
+    aqui significa que o Write para aquela conexao retornou sem excecao (o
+    payload passou para o buffer do SO/pipe), o mesmo corte que Stats/
+    BytesSentWire ja fazem — o protocolo nunca teve ACK de app. OnPublish e'
+    outra coisa (cliente publicando); estes dois cobrem o publicador ser o
+    proprio servidor, que OnPublish nao alcanca. AError so' vem preenchido em
+    OnDeliveryFailed. }
+  TPipeDeliveryFailedEvent = procedure(Sender: TObject;
+    AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+    ARetained: Boolean; const AError: string) of object;
   /// Assinatura/cancelamento de um cliente no servidor (notificacao, depois de
   /// aplicada). Ver TPipeServer.OnSubscribe.
   TPipeSubscriptionEvent = procedure(Sender: TObject;

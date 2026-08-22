@@ -252,6 +252,16 @@ desconectado), `Subscriptions`, `Publish`, `PublishBatch`, `OnTopicMessage`. Fil
 cliente, "veio do cache de retidos" (ao vivo é sempre False, mesmo com retain pedido — ver
 `docs/ARQUITETURA.md` §9.7); no servidor, "o cliente pediu para reter".
 
+Confirmação de entrega (milestone DLV0, `docs/ARQUITETURA.md` §20): `TPipeServer.OnDelivered:
+TPipeTopicEvent` (mesmo tipo de `OnPublish`) e `OnDeliveryFailed: TPipeDeliveryFailedEvent`
+disparam **por conexão** que casou uma publicação do PRÓPRIO servidor (`Publish`/
+`PublishBatch`, ao vivo ou replay de retido — `ARetained` no sentido de `OnTopicMessage`),
+um depois do `SendFrame`/`SendFrames` daquela conexão retornar sem exceção, o outro depois de
+retornar COM exceção (`AError`). "Entregue" vai só até o SO (o `Write` retornou), nunca ACK de
+app — o protocolo não tem isso. Dois eventos, não um com flag de sucesso: decisão do usuário,
+para quem só quer alertar sobre falha não precisar filtrar sucesso. Diferente de `OnPublish`,
+que é sobre um CLIENTE publicando.
+
 ## Estrutura de units
 
 ```
@@ -327,12 +337,14 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | CMD1 | Roteamento por comando do lado request-reply: `RegisterRequestCommand`/`HandleRequest` (`TPipeRequestEvent`, registro PRÓPRIO independente do de mensagem), contrato de erro OPOSTO de propósito (`HandleRequest` LEVANTA em vez de eventos, reaproveitando que `ExecuteRequest` já transforma exceção em reply de erro) — ver `docs/ARQUITETURA.md` §18.8. Sample `EchoCommand` ganhou o comando `SOMAR` e o cenário `?ping` (comando desconhecido do lado request) | sonnet | concluído: verde nos dois compiladores (FPC 147/147 via `PipesUnitTestsFpc.exe`, eram 138; Delphi/DUnitX 147/147 unit + 121/121 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-15). Sample verificado ponta a ponta no FPC |
 | ADDR0 | Endereço do cliente: `TryPeerAddress` no contrato `TPipeEndpoint` (mesmo padrão de `TryPeerIdentity`), `TPipeServer.TryClientAddress`, backends Windows e POSIX via `getpeername` com `sockaddr` declarado à mão — ver `docs/ARQUITETURA.md` §19 | sonnet | concluído: FPC/Win64 verde (unit 138/138 + integração 121/121, suíte `Pipes.PeerAddressTests`); Delphi/DUnitX pendente de confirmação do usuário. POSIX/Linux compila mas não foi executado (sem toolchain local); `Pipes.Transport.Android` fora desta rodada |
 | CMD2 | `SendCommand`/`RequestCommand` de conveniência que CMD0 tinha deixado de fora: `PipeSendCommand`/`PipeSendCommandText` (overloads Client/Server, mesmo molde de `PipeSendJSON`) e `PipeRequestCommand`/`PipeRequestCommandText` (Client) em `Pipes.Commands.pas`, wrappers finos sobre `SendBytes`/`Request` — ver `docs/ARQUITETURA.md` §18.9 | sonnet | concluído: verde nos dois compiladores (FPC 147/147 unit via `PipesUnitTestsFpc.exe`, suíte inalterada — wrappers de uma linha já cobertos pelos testes de `PipeEncodeCommandPayload`/`SendBytes`/`Request`; Delphi/DUnitX 147/147 unit + 121/121 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-17). Sample `EchoCommand` migrado para os quatro wrappers nos dois lados e verificado ponta a ponta (servidor + cliente reais) |
+| DLV0 | Confirmação de entrega por assinante: `TPipeServer.OnDelivered`/`OnDeliveryFailed`, disparados por conexão em `FanOut`/`SendRetained`/`PublishBatch` depois do `Write` retornar (sucesso/exceção) — ver `docs/ARQUITETURA.md` §20 | sonnet | concluído: verde nos dois compiladores (FPC/Win64 unit 147/147 + integração 126/126, suíte `TPipePubSubTests` com os 4 testes novos + 1 regressão; Delphi/DUnitX 147/147 unit + 126/126 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-22). Encontrou e corrigiu de lambuja um bug pré-existente em `PublishBatch` (`ARetained` errado em entrega ao vivo — ver §20.6) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/
-S0-S4/F0-F3/C0/CMD0/CMD1/ADDR0. CMD1 depende de CMD0 (mesma unit, `HandleRequest` reaproveita
-`ValidateRegistration` já fatorada). CMD2 depende de CMD0 (mesma unit; independente de CMD1 —
-não toca em `HandleRequest`).
+S0-S4/F0-F3/C0/CMD0/CMD1/ADDR0/DLV0. CMD1 depende de CMD0 (mesma unit, `HandleRequest`
+reaproveita `ValidateRegistration` já fatorada). CMD2 depende de CMD0 (mesma unit;
+independente de CMD1 — não toca em `HandleRequest`). DLV0 depende de P0-P5 (mesmo mecanismo de
+fan-out) e reaproveita o despacho de eventos já usado por CMD0-2/ADDR0.
 
 ## Verificação por milestone
 
@@ -362,6 +374,13 @@ D0 exige: janela de coleta maior que a cadência de reenvio (300ms) devolve UMA 
 descoberta ocupada levanta `EPipeError` na hora; `Stop` conclui em < 2s e o MESMO objeto
 aceita `Start` de novo (porta liberada). Testes de integração usam SEMPRE a forma dirigida
 a 127.0.0.1 — broadcast real não é determinístico em CI (ver §16.8).
+
+DLV0 exige: `OnDelivered` dispara exatamente uma vez por conexão que casou (fan-out ao vivo,
+replay de retido com `ARetained = True`, e por item de `PublishBatch`); uma entrega que falha
+NÃO conta em `OnDelivered` e conta em `OnDeliveryFailed`; o teste de falha é DETERMINÍSTICO
+(payload maior que `MaxMessageSize` recusado por `PipeValidateMaxPayload` antes do socket/pipe
+— nunca uma corrida contra uma conexão morrendo na hora certa, isso seria flaky pela mesma
+razão já registrada em §13.10/T4-T5).
 
 A0-A3 não têm par dual-compiler tradicional — FPC não compila para Android neste projeto,
 e o Delphi CE desta máquina não compila por linha de comando. O que a máquina de

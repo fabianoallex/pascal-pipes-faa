@@ -35,11 +35,15 @@ type
     FLock: TCriticalSection;      // protege FTopicLog/FPublishLog
     FTopicLog: TStringList;       // 'idx|topico|texto' recebido por cliente
     FPublishLog: TStringList;     // 'topico|texto' visto em OnPublish
+    FDeliveredLog: TStringList;   // 'connid|topico|texto|retained' em OnDelivered
+    FDeliveryFailedLog: TStringList; // 'connid|topico|texto|retained' em OnDeliveryFailed
     FTopicCount: array[0..2] of Integer; // atomicos
     FRetainedCount: array[0..2] of Integer; // entregas com ARetained = True
     FCliErrCount: array[0..2] of Integer;
     FSrvErrCount: Integer;
     FPublishCount: Integer;
+    FDeliveredCount: Integer;
+    FDeliveryFailedCount: Integer;
     FSubCount: Integer;           // OnSubscribe no servidor
     FUnsubCount: Integer;
     FSrvConnCount: Integer;
@@ -58,6 +62,11 @@ type
       const AFilter: string);
     procedure OnSrvUnsubscribe(Sender: TObject; AConnId: TPipeConnectionId;
       const AFilter: string);
+    procedure OnSrvDelivered(Sender: TObject; AConnId: TPipeConnectionId;
+      const ATopic: string; const AData: TBytes; ARetained: Boolean);
+    procedure OnSrvDeliveryFailed(Sender: TObject; AConnId: TPipeConnectionId;
+      const ATopic: string; const AData: TBytes; ARetained: Boolean;
+      const AError: string);
     procedure OnSrvError(Sender: TObject; AConnId: TPipeConnectionId;
       const AError: string);
     procedure OnSrvClientConnected(Sender: TObject; AConnId: TPipeConnectionId);
@@ -72,7 +81,8 @@ type
     procedure DoPublishBatchTopicoInvalidoNoServidor;
     // Infra:
     function IndexOfClient(Sender: TObject): Integer;
-    procedure OpenServer(ADispatchMode: TPipeDispatchMode = pdmPool);
+    procedure OpenServer(ADispatchMode: TPipeDispatchMode = pdmPool;
+      AMaxMessageSize: Cardinal = 0);
     procedure AddClient(AIndex: Integer);
     function WaitCount(var ACounter: Integer; AExpected: Integer;
       ATimeoutMs: Cardinal): Boolean;
@@ -84,6 +94,7 @@ type
     function WaitSubscribers(const ATopic: string; AExpected: Integer;
       ATimeoutMs: Cardinal): Boolean;
     function CountLog(const APrefix: string): Integer;
+    function CountLogIn(AList: TStringList; const APrefix: string): Integer;
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
@@ -108,8 +119,13 @@ type
     [Test] procedure Stop_ComPublicacaoIntensa_TerminaEm2s;
     [Test] procedure PublishBatch_ItensSoVaoParaQuemAssinaCadaTopico;
     [Test] procedure PublishBatch_RetainPorItem_ChegaAQuemAssinaDepois;
+    [Test] procedure PublishBatch_RetainAoVivo_NaoMarcaARetainedParaQuemJaAssinava;
     [Test] procedure PublishBatch_TopicoInvalido_NaoPublicaNadaDoLote;
     [Test] procedure PublishBatch_DoCliente_SemRelayVaiSoParaOnPublish;
+    [Test] procedure OnDelivered_FanOut_UmaVezPorAssinante;
+    [Test] procedure OnDelivered_Retido_ChegaComARetainedTrue;
+    [Test] procedure OnDelivered_PublishBatch_UmPorItemPorConexao;
+    [Test] procedure OnDeliveryFailed_PayloadExcedeMaxMessageSize;
   end;
 
 implementation
@@ -144,6 +160,8 @@ begin
   FLock := TCriticalSection.Create;
   FTopicLog := TStringList.Create;
   FPublishLog := TStringList.Create;
+  FDeliveredLog := TStringList.Create;
+  FDeliveryFailedLog := TStringList.Create;
   for I := 0 to 2 do
   begin
     FClients[I] := nil;
@@ -153,6 +171,8 @@ begin
   end;
   FSrvErrCount := 0;
   FPublishCount := 0;
+  FDeliveredCount := 0;
+  FDeliveryFailedCount := 0;
   FSubCount := 0;
   FUnsubCount := 0;
   FSrvConnCount := 0;
@@ -171,6 +191,8 @@ begin
   FreeAndNil(FServer);       // Stop no destructor
   FreeAndNil(FTopicLog);
   FreeAndNil(FPublishLog);
+  FreeAndNil(FDeliveredLog);
+  FreeAndNil(FDeliveryFailedLog);
   FreeAndNil(FLock);
 end;
 
@@ -208,14 +230,20 @@ begin
 end;
 
 function TPipePubSubTests.CountLog(const APrefix: string): Integer;
+begin
+  Result := CountLogIn(FTopicLog, APrefix);
+end;
+
+function TPipePubSubTests.CountLogIn(AList: TStringList;
+  const APrefix: string): Integer;
 var
   I: Integer;
 begin
   Result := 0;
   FLock.Enter;
   try
-    for I := 0 to FTopicLog.Count - 1 do
-      if Pos(APrefix, FTopicLog[I]) = 1 then
+    for I := 0 to AList.Count - 1 do
+      if Pos(APrefix, AList[I]) = 1 then
         Inc(Result);
   finally
     FLock.Leave;
@@ -278,6 +306,34 @@ procedure TPipePubSubTests.OnSrvUnsubscribe(Sender: TObject;
   AConnId: TPipeConnectionId; const AFilter: string);
 begin
   PipeAtomicInc(FUnsubCount);
+end;
+
+procedure TPipePubSubTests.OnSrvDelivered(Sender: TObject;
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+  ARetained: Boolean);
+begin
+  FLock.Enter;
+  try
+    FDeliveredLog.Add(IntToStr(AConnId) + '|' + ATopic + '|' +
+      PipeUtf8Decode(AData) + '|' + BoolToStr(ARetained, True));
+  finally
+    FLock.Leave;
+  end;
+  PipeAtomicInc(FDeliveredCount);
+end;
+
+procedure TPipePubSubTests.OnSrvDeliveryFailed(Sender: TObject;
+  AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
+  ARetained: Boolean; const AError: string);
+begin
+  FLock.Enter;
+  try
+    FDeliveryFailedLog.Add(IntToStr(AConnId) + '|' + ATopic + '|' +
+      PipeUtf8Decode(AData) + '|' + BoolToStr(ARetained, True));
+  finally
+    FLock.Leave;
+  end;
+  PipeAtomicInc(FDeliveryFailedCount);
 end;
 
 procedure TPipePubSubTests.OnSrvError(Sender: TObject;
@@ -345,13 +401,18 @@ end;
 
 { --- infra --- }
 
-procedure TPipePubSubTests.OpenServer(ADispatchMode: TPipeDispatchMode);
+procedure TPipePubSubTests.OpenServer(ADispatchMode: TPipeDispatchMode;
+  AMaxMessageSize: Cardinal);
 begin
   FServer := TPipeServer.Create(UniquePipeName);
   FServer.DispatchMode := ADispatchMode;
+  if AMaxMessageSize <> 0 then
+    FServer.MaxMessageSize := AMaxMessageSize;
   FServer.OnPublish := OnSrvPublish;
   FServer.OnSubscribe := OnSrvSubscribe;
   FServer.OnUnsubscribe := OnSrvUnsubscribe;
+  FServer.OnDelivered := OnSrvDelivered;
+  FServer.OnDeliveryFailed := OnSrvDeliveryFailed;
   FServer.OnError := OnSrvError;
   FServer.OnClientConnected := OnSrvClientConnected;
   FServer.OnClientDisconnected := OnSrvClientDisconnected;
@@ -813,6 +874,30 @@ begin
   EqualInt(0, CountLog('0|t.2|'));
 end;
 
+procedure TPipePubSubTests.PublishBatch_RetainAoVivo_NaoMarcaARetainedParaQuemJaAssinava;
+var
+  LItems: TArray<TPipePublishItem>;
+begin
+  // Regressao: PublishBatch chegou a gravar PIPE_FLAG_RETAIN no fio direto do
+  // campo Retain do item, mesmo em entrega AO VIVO — um assinante ja conectado
+  // recebia ARetained=True (enganado sobre "isto e' historico?"). A regra e' a
+  // mesma de FanOut: o bit so' liga no replay de SendRetained.
+  OpenServer;
+  AddClient(0);
+  FClients[0].Subscribe('caixa.3.status');
+  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+
+  SetLength(LItems, 1);
+  LItems[0].Topic := 'caixa.3.status';
+  LItems[0].Payload := PipeUtf8Encode('aberto');
+  LItems[0].Retain := True;
+  FServer.PublishBatch(LItems);
+
+  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000), 'assinante nao recebeu o item');
+  EqualInt(0, PipeAtomicGet(FRetainedCount[0]),
+    'entrega AO VIVO nao pode chegar marcada como ARetained=True');
+end;
+
 procedure TPipePubSubTests.PublishBatch_TopicoInvalido_NaoPublicaNadaDoLote;
 begin
   OpenServer;
@@ -847,6 +932,98 @@ begin
   Sleep(150);
   EqualInt(0, PipeAtomicGet(FTopicCount[1]),
     'sem RelayClientPublish, o lote nao alcanca outros clientes');
+end;
+
+{ --- OnDelivered / OnDeliveryFailed --- }
+
+procedure TPipePubSubTests.OnDelivered_FanOut_UmaVezPorAssinante;
+var
+  LConnId0: TPipeConnectionId;
+begin
+  OpenServer;
+  AddClient(0);
+  FClients[0].Subscribe('caixa.3.status');
+  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  LConnId0 := FLastConnId; // captura ANTES do cliente 1 conectar (que move FLastConnId)
+
+  AddClient(1); // nao assina nada: nao pode gerar OnDelivered nenhum
+  FServer.PublishText('caixa.3.status', 'aberto');
+
+  Assert.IsTrue(WaitCount(FDeliveredCount, 1, 3000),
+    'OnDelivered nao disparou para o assinante');
+  Sleep(150); // janela para uma segunda entrega indevida aparecer
+  EqualInt(1, PipeAtomicGet(FDeliveredCount),
+    'OnDelivered devia disparar exatamente uma vez, apenas para quem assina');
+  EqualInt(1, CountLogIn(FDeliveredLog,
+    IntToStr(LConnId0) + '|caixa.3.status|aberto|False'));
+  EqualInt(0, PipeAtomicGet(FDeliveryFailedCount),
+    'entrega bem-sucedida nao pode disparar OnDeliveryFailed');
+end;
+
+procedure TPipePubSubTests.OnDelivered_Retido_ChegaComARetainedTrue;
+begin
+  OpenServer;
+  FServer.PublishText('caixa.5.status', 'aberto', True); // ninguem assina ainda: so guarda
+
+  AddClient(0);
+  FClients[0].Subscribe('caixa.5.status');
+
+  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000), 'retido nao chegou ao novo assinante');
+  Assert.IsTrue(WaitCount(FDeliveredCount, 1, 3000),
+    'OnDelivered nao disparou para o replay do retido');
+  EqualInt(1, CountLogIn(FDeliveredLog,
+    IntToStr(FLastConnId) + '|caixa.5.status|aberto|True'));
+end;
+
+procedure TPipePubSubTests.OnDelivered_PublishBatch_UmPorItemPorConexao;
+var
+  LItems: TArray<TPipePublishItem>;
+begin
+  OpenServer;
+  AddClient(0);
+  AddClient(1);
+  FClients[0].Subscribe('caixa.3.status');
+  FClients[1].Subscribe('caixa.4.status');
+  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  Assert.IsTrue(WaitSubscribers('caixa.4.status', 1, 3000));
+
+  SetLength(LItems, 2);
+  LItems[0].Topic := 'caixa.3.status';
+  LItems[0].Payload := PipeUtf8Encode('aberto');
+  LItems[1].Topic := 'caixa.4.status';
+  LItems[1].Payload := PipeUtf8Encode('fechado');
+  FServer.PublishBatch(LItems);
+
+  Assert.IsTrue(WaitCount(FDeliveredCount, 2, 3000),
+    'OnDelivered nao disparou para os dois itens do lote');
+  Sleep(150);
+  EqualInt(2, PipeAtomicGet(FDeliveredCount),
+    'cada item do lote pode gerar no maximo um OnDelivered por conexao que casou');
+end;
+
+procedure TPipePubSubTests.OnDeliveryFailed_PayloadExcedeMaxMessageSize;
+begin
+  // MaxMessageSize pequeno o bastante para deixar a assinatura passar (o
+  // filtro sozinho cabe) mas pequeno demais para o envelope topico+corpo da
+  // publicacao: PipeValidateMaxPayload recusa o Write ANTES de tocar o
+  // socket/pipe — falha deterministica, sem depender de uma conexao morrendo
+  // na hora certa (essa corrida seria um teste flaky de verdade).
+  OpenServer(pdmPool, 40);
+  AddClient(0);
+  FClients[0].Subscribe('caixa.3.status');
+  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+
+  FServer.PublishText('caixa.3.status', 'este payload excede de sobra o teto configurado');
+
+  Assert.IsTrue(WaitCount(FDeliveryFailedCount, 1, 3000),
+    'OnDeliveryFailed nao disparou para o payload grande demais');
+  EqualInt(1, CountLogIn(FDeliveryFailedLog,
+    IntToStr(FLastConnId) + '|caixa.3.status|'));
+  EqualInt(0, PipeAtomicGet(FDeliveredCount),
+    'entrega que falhou nao pode contar como OnDelivered');
+  Sleep(150);
+  EqualInt(0, PipeAtomicGet(FTopicCount[0]),
+    'o cliente nao pode ter recebido o payload que nao coube no teto');
 end;
 
 initialization

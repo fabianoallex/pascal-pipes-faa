@@ -215,6 +215,8 @@ type
     FOnPublish: TPipeTopicEvent;
     FOnSubscribe: TPipeSubscriptionEvent;
     FOnUnsubscribe: TPipeSubscriptionEvent;
+    FOnDelivered: TPipeTopicEvent;
+    FOnDeliveryFailed: TPipeDeliveryFailedEvent;
     // Chamados pelas threads/works internos (mesma unit):
     procedure HandleAccepted(AEndpoint: TPipeEndpoint);
     /// Marca a conexao como estabelecida e captura a identidade do par, se
@@ -396,6 +398,23 @@ type
       read FOnSubscribe write FOnSubscribe;
     property OnUnsubscribe: TPipeSubscriptionEvent
       read FOnUnsubscribe write FOnUnsubscribe;
+    /// Um destinatario recebeu uma publicacao FEITA POR ESTE SERVIDOR (Publish/
+    /// PublishBatch) — ao vivo (ARetained = False) ou replay de valor retido na
+    /// hora da assinatura (ARetained = True). Dispara uma vez por conexao que
+    /// casou o filtro, DEPOIS do Write ter retornado sem excecao: confirma que
+    /// o payload passou ao SO, nao que o app do cliente processou (o protocolo
+    /// nunca teve ACK de aplicacao — mesmo corte de Stats/BytesSentWire).
+    /// Diferente de OnPublish, que e' sobre um CLIENTE publicando; este e o
+    /// irmao OnDeliveryFailed cobrem o servidor sendo o publicador.
+    property OnDelivered: TPipeTopicEvent read FOnDelivered write FOnDelivered;
+    /// Mesmo evento que OnDelivered, do lado da falha: o Write para aquela
+    /// conexao levantou excecao (conexao caindo bem no meio do fanout/replay).
+    /// AError traz a mensagem da excecao. A conexao em si nao e' derrubada
+    /// daqui — o reader dela ja vai notificar a queda por OnClientDisconnected,
+    /// sem ligacao com qual publicacao especifica falhou; este evento existe
+    /// para quem precisa dessa correlacao (log/observabilidade de entrega).
+    property OnDeliveryFailed: TPipeDeliveryFailedEvent
+      read FOnDeliveryFailed write FOnDeliveryFailed;
     property MaxClients: Integer read FMaxClients write FMaxClients; // 0 = sem teto
     property OnClientConnected: TPipeConnectionEvent
       read FOnClientConnected write FOnClientConnected;
@@ -435,6 +454,12 @@ type
   TPipeConnFrameBatch = record
     Conn: TPipeServerConnection;
     Frames: TArray<TPipeFrame>;
+    // Paralelo a Frames: topico/payload de origem de cada frame, so' para
+    // disparar OnDelivered/OnDeliveryFailed por item apos o SendFrames (ver
+    // TPipeServer.PublishBatch). Nao existiria se o metodo nao precisasse
+    // correlacionar a entrega com CADA publicacao do lote.
+    Topics: TArray<string>;
+    Payloads: TArray<TBytes>;
   end;
 
   { Limpeza pos-morte de uma conexao cujo teardown pertence a um work item
@@ -1198,8 +1223,18 @@ begin
     // parava o loop, sem avisar ninguem); agora ou chega o replay inteiro ou
     // nao chega nenhum, e a excecao cai no except abaixo do mesmo jeito.
     AConn.SendFrames(LFrames);
+    // Um SendFrames so', mas cada topico retido e' uma entrega logicamente
+    // distinta pra quem loga observabilidade: um OnDelivered por topico
+    // (todos com sucesso, ja que chegou ate aqui sem excecao).
+    for I := 0 to High(LTopics) do
+      DispatchTopicEvent(FOnDelivered, AConn.FId, LTopics[I], LDatas[I], True);
   except
-    // conexao caindo: o reader dela notifica
+    on E: Exception do
+      // conexao caindo: o reader dela notifica a queda; aqui e' so' a
+      // correlacao de quais topicos retidos nao chegaram.
+      for I := 0 to High(LTopics) do
+        DispatchDeliveryFailedEvent(FOnDeliveryFailed, AConn.FId, LTopics[I],
+          LDatas[I], True, E.Message);
   end;
 end;
 
@@ -1234,8 +1269,15 @@ begin
     try
       try
         LConn.SendFrame(LFrame);
+        DispatchTopicEvent(FOnDelivered, LConn.FId, ATopic, AData, False);
       except
-        // conexao caindo: o reader dela notificara; o fanout segue
+        on E: Exception do
+        begin
+          // conexao caindo: o reader dela notificara a queda; o fanout segue.
+          // OnDeliveryFailed e' so' a correlacao com ESTA publicacao especifica.
+          DispatchDeliveryFailedEvent(FOnDeliveryFailed, LConn.FId, ATopic,
+            AData, False, E.Message);
+        end;
       end;
     finally
       LConn.Release;
@@ -1268,6 +1310,8 @@ var
   I, J, LMatchCount: Integer;
   LFrames: TArray<TPipeFrame>;
   LMatched: TArray<TPipeFrame>;
+  LMatchedTopics: TArray<string>;
+  LMatchedPayloads: TArray<TBytes>;
   LConn: TPipeServerConnection;
   LBatches: TArray<TPipeConnFrameBatch>;
 begin
@@ -1281,7 +1325,11 @@ begin
   begin
     if AItems[I].Retain then
       StoreRetained(AItems[I].Topic, AItems[I].Payload);
-    LFrames[I] := PipePublishFrame(AItems[I].Topic, AItems[I].Payload, AItems[I].Retain);
+    // Sai SEMPRE com PIPE_FLAG_RETAIN desligado, mesmo quando o item pediu para
+    // reter: mesma regra de FanOut (ver o cabecalho de FanOut acima) — o bit no
+    // fio responde "isto e' historico?" para quem recebe AO VIVO, e essa entrega
+    // e' sempre ao vivo. So' SendRetained liga o bit, no replay da assinatura.
+    LFrames[I] := PipePublishFrame(AItems[I].Topic, AItems[I].Payload, False);
   end;
   // Mesma mecanica de FanOut: o casamento roda SOB FConnLock (e' onde a lista
   // de filtros de cada conexao pode ser lida com seguranca — ver o cabecalho
@@ -1295,20 +1343,28 @@ begin
       if not LConn.FEstablished then
         Continue;
       SetLength(LMatched, Length(LFrames));
+      SetLength(LMatchedTopics, Length(LFrames));
+      SetLength(LMatchedPayloads, Length(LFrames));
       LMatchCount := 0;
       for J := 0 to High(LFrames) do
         if LConn.MatchesTopic(AItems[J].Topic) then
         begin
           LMatched[LMatchCount] := LFrames[J];
+          LMatchedTopics[LMatchCount] := AItems[J].Topic;
+          LMatchedPayloads[LMatchCount] := AItems[J].Payload;
           Inc(LMatchCount);
         end;
       if LMatchCount = 0 then
         Continue; // ninguem casou: nao gera Write nenhum para esta conexao
       SetLength(LMatched, LMatchCount);
+      SetLength(LMatchedTopics, LMatchCount);
+      SetLength(LMatchedPayloads, LMatchCount);
       LConn.AddRef;
       SetLength(LBatches, Length(LBatches) + 1);
       LBatches[High(LBatches)].Conn := LConn;
       LBatches[High(LBatches)].Frames := LMatched;
+      LBatches[High(LBatches)].Topics := LMatchedTopics;
+      LBatches[High(LBatches)].Payloads := LMatchedPayloads;
     end;
   finally
     FConnLock.Leave;
@@ -1317,8 +1373,22 @@ begin
     try
       try
         LBatches[I].Conn.SendFrames(LBatches[I].Frames);
+        // Um SendFrames so' para o lote inteiro da conexao, mas cada item e'
+        // uma publicacao distinta pra quem loga observabilidade (ver FanOut/
+        // SendRetained) — sempre ARetained = False aqui: e' entrega AO VIVO,
+        // mesmo que o item tenha pedido para reter (isso e' sobre o valor
+        // GUARDADO, nao sobre esta entrega ser catch-up).
+        for J := 0 to High(LBatches[I].Topics) do
+          DispatchTopicEvent(FOnDelivered, LBatches[I].Conn.FId,
+            LBatches[I].Topics[J], LBatches[I].Payloads[J], False);
       except
-        // conexao caindo: o reader dela notificara; o lote segue para as demais
+        on E: Exception do
+          // conexao caindo: o reader dela notificara a queda; o lote segue
+          // para as demais. Aqui e' so' a correlacao de quais itens do lote
+          // nao chegaram a ESTA conexao.
+          for J := 0 to High(LBatches[I].Topics) do
+            DispatchDeliveryFailedEvent(FOnDeliveryFailed, LBatches[I].Conn.FId,
+              LBatches[I].Topics[J], LBatches[I].Payloads[J], False, E.Message);
       end;
     finally
       LBatches[I].Conn.Release;

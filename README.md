@@ -583,6 +583,15 @@ chame `DisconnectClient`. `MaxSubscriptionsPerClient` (64 por padrão) limita qu
 um cliente pode registrar; a recusa aparece em `OnError` **nos dois lados**, e a conexão
 continua de pé.
 
+**Confirmação de entrega.** O log de `Publish` (uma chamada, do lado de quem publicou) não
+diz se cada assinante recebeu — para isso existem `OnDelivered`/`OnDeliveryFailed`, no
+servidor: disparam **uma vez por conexão** que casou o filtro de uma publicação do **próprio
+servidor** (`Publish`/`PublishBatch`, ao vivo ou replay de retido — `ARetained` no mesmo
+sentido de `OnTopicMessage`), depois do `Write` daquela conexão retornar. "Entregue" vai só
+até o SO — o payload passou para o buffer do socket/pipe, não que o app do cliente
+processou; o protocolo nunca teve ACK de aplicação. `OnPublish` é outra coisa: é sobre um
+**cliente** publicando, não alcança o servidor sendo o publicador.
+
 **Compatibilidade de wire.** Os tipos de frame do pub/sub são novos no protocolo `NPF1`. Um
 peer compilado com uma versão anterior da lib que receba um deles cai com `EPipeProtocol`
 ("o peer provavelmente fala uma versão mais nova do protocolo") em vez de interpretar bytes
@@ -649,6 +658,10 @@ TPipeServer
   OnPublish: TPipeTopicEvent             // notificação: o fanout já ocorreu
                                          // ARetained aqui = o cliente PEDIU para reter
   OnSubscribe/OnUnsubscribe: TPipeSubscriptionEvent  // idem; negue com DisconnectClient
+  OnDelivered: TPipeTopicEvent            // 1x por assinante que RECEBEU uma publicação
+                                          // do PRÓPRIO servidor (Publish/PublishBatch);
+                                          // "entregue" = Write sem exceção, não ACK de app
+  OnDeliveryFailed: TPipeDeliveryFailedEvent  // idem, do lado da falha; AError = a exceção
   DisconnectClient(ConnId)               // assíncrono e idempotente
   ClientCount; ClientIds                 // só conexões ESTABELECIDAS
   TryClientIdentity(ConnId, out Ident)   // quem é, pelo certificado mTLS validado
