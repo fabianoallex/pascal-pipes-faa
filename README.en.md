@@ -366,6 +366,44 @@ Client.SendBytes(AData2, 'register.4');  // ...and in PARALLEL with 'register.4'
 - No wire format change: the key travels inside the NPF1 header's own `CorrId` (a 64-bit
   hash), a field that already existed and that plain messages never used.
 
+### Asynchronous connect (`ConnectAsync`)
+
+`Connect(TimeoutMs)` blocks the calling thread and raises if the server does not answer
+within the deadline. `AutoReconnect` does not help there: it only kicks in after a session
+has ALREADY existed and dropped. The case left unanswered is the most common one in a store:
+**the app starts before the server**.
+
+```pascal
+Client := TPipeClient.Create('backoffice:9000', ptTcp);
+Client.OnConnected := HandleConnected;
+Client.OnError := HandleError;
+Client.AutoReconnect := True;     // takes care of drops AFTER the first connection
+Client.ReconnectDelayMs := 3000;  // per-attempt budget AND spacing between attempts
+Client.ConnectAsync;              // returns at once; keeps trying in the background
+
+// while Client.Connecting, Client.Connected is False and Send*/Request raise
+// EPipeClosed, as in any window without a session.
+```
+
+- **No timeout parameter, on purpose.** The budget is `MaxReconnectAttempts` ×
+  `ReconnectDelayMs`, the properties that already existed — with `MaxReconnectAttempts = 0`
+  (the default) it tries forever. It is an APPROXIMATE wall-clock ceiling; anyone needing an
+  exact deadline calls `Disconnect` from a timer.
+- **Success in `OnConnected`, giving up in `OnError`** (`'conexao inicial esgotada apos N
+  tentativas'`) — there is no exception to raise, the caller already returned.
+- **`Connecting`** says whether it is still trying. It is only about `ConnectAsync`:
+  synchronous `Connect` and automatic reconnection never set it.
+- **`Disconnect` cancels** (and calling `ConnectAsync` again does too: it cancels the
+  previous attempt and restarts). Cancellation applies from the in-flight attempt onward — a
+  `PipeConnect` already in progress can still take up to `ReconnectDelayMs` to return, the
+  same trade-off automatic reconnection already accepts.
+- **Composes with the rest**: `AutoReconnect` takes care of drops after the first
+  connection; `FailoverAddresses` is honoured on every attempt, with the same rule as
+  reconnection; pub/sub subscriptions made before connecting are sent once the session is up.
+- While it is trying, `Address`/`Transport`/`TlsOptions` are **locked** (`EPipeError`), just
+  as with an active component — otherwise the next attempt would aim at a different server
+  with nobody having asked for it.
+
 ### Address failover (`FailoverAddresses`)
 
 `TPipeClient` only (`TPipeServer` listens on a single `Address`; there is nothing to "fail
@@ -484,6 +522,10 @@ alive?"). Details and rationale in `docs/ARCHITECTURE.en.md` §16.
   session lasts longer than `ReconnectDelayMs` — a too-short session counts as an attempt,
   so a rejected client does not reconnect forever, and a long-lived client that
   legitimately reconnects does not accumulate toward the ceiling.
+- **ConnectAsync** — the first connection attempted in the BACKGROUND, for when the app
+  starts BEFORE the server. `Connect` blocks and fails at the deadline; `AutoReconnect` only
+  kicks in after a session has existed and dropped — `ConnectAsync` covers the gap between
+  the two. See [Asynchronous connect](#asynchronous-connect-connectasync).
 - **Dispatch modes** (`DispatchMode`) — where YOUR handlers run:
   - `pdmPool` (default): thread pool; parallel across connections.
   - `pdmSerialized`: single worker; global FIFO order guaranteed.
@@ -675,6 +717,8 @@ TPipeServer
 
 TPipeClient
   Connect(TimeoutMs); Disconnect;        // Connect retries until the deadline
+  ConnectAsync;                          // non-blocking; keeps trying until the server is up
+                                         // (success in OnConnected, giving up in OnError)
   SendBytes/SendText(..., AGroupKey = '')  // fire-and-forget; AGroupKey see TPipeServer above
   SendBytesBatch(TArray<TBytes>)         // N messages, a single Write; order preserved
   Request/RequestText(..., TimeoutMs)    // synchronous RPC; EPipeTimeout at the deadline
@@ -685,6 +729,7 @@ TPipeClient
   OnTopicMessage: TPipeTopicEvent        // (...; ATopic; AData; ARetained)
                                          // ARetained: True only on subscription catch-up
   Connected; AutoReconnect; ReconnectDelayMs; MaxReconnectAttempts
+  Connecting                             // a ConnectAsync is in flight (only about that)
   FailoverAddresses: TArray<string>      // tried after Address; empty = Address only (default)
   ActiveAddress                          // which address the current session uses (snapshot)
   OnConnected/OnDisconnected: TPipeConnectionEvent

@@ -71,7 +71,22 @@ unit Pipes.Client;
     falhas sempre tenta o primario primeiro, so espalhando pelos alternativos
     se ele estiver mesmo fora. MaxReconnectAttempts/ReconnectDelayMs contam e
     espacam tentativas contra QUALQUER endereco igualmente, sem orcamento
-    separado por endereco. }
+    separado por endereco.
+  - Connect assincrono (ConnectAsync): NAO ha thread nem maquina de estados
+    nova. A thread de reconexao ja E' "conectar ate o servidor responder,
+    com espacamento e failover" - a mesma operacao, so' com outra origem -,
+    entao ConnectAsync apenas liga FConnectingAsync e dispara a MESMA
+    TPipeReconnectThread. O unico ponto de contato e' ReopenAllowed, que
+    troca o gate "FAutoReconnect" por "FAutoReconnect OU ConnectAsync em
+    voo" nos DOIS lugares de TryReopenSession que o consultavam (a entrada e
+    a rechecagem com a conexao ja aberta - esquecer a segunda descartaria o
+    endpoint recem-conectado quando AutoReconnect = False).
+    FConnectingAsync so' e' limpo por quem detem o ciclo (Execute) ou por
+    Disconnect; limpa-lo em TryReopenSession quebraria o par que aceita e
+    derruba - ver o comentario extenso em TPipeReconnectThread.Execute.
+    Cancelar herda o mesmo trade-off de WaitReconnectDone: um PipeConnect ja
+    em progresso ainda pode levar ate ReconnectDelayMs para voltar, porque
+    nenhum backend de transporte tem cancelamento de connect em curso. }
 
 interface
 
@@ -134,6 +149,16 @@ type
     // Atomico: 1 quando MaxReconnectAttempts foi atingido. Impede que
     // ReaderFinished crie uma thread nova e ressuscite a reconexao.
     FGaveUp: Integer;
+    // Atomico: 1 enquanto um ConnectAsync esta em voo (ver ConnectAsync/
+    // Connecting). E' o segundo termo do gate de ReopenAllowed: sem uma
+    // sessao anterior nao ha AutoReconnect a que apelar, e e' este flag que
+    // autoriza a thread de reconexao a insistir na PRIMEIRA conexao.
+    //
+    // A limpeza vive em TPipeReconnectThread.Execute e em Disconnect, NUNCA
+    // em TryReopenSession: limpar junto com FReconnecting quebraria o par
+    // que "aceita e derruba" com AutoReconnect=False (ver o comentario em
+    // Execute).
+    FConnectingAsync: Integer;
     // --- pub/sub ---
     FSubLock: TCriticalSection;
     FSubs: TList<string>;      // filtros assinados (estado desejado)
@@ -191,6 +216,11 @@ type
     procedure NotifyDisconnectedOnce;
     procedure ResolveRpc(const AFrame: TPipeFrame);
     procedure FailPendingRpc;
+    /// Gate unico de reabertura, consultado pela thread de reconexao: ha
+    /// AutoReconnect (uma sessao anterior caiu) OU um ConnectAsync em voo
+    /// (a primeira conexao). Relido a CADA passagem, e nao capturado quando
+    /// a thread nasce - ver a nota sobre pdmMainThread em TryReopenSession.
+    function ReopenAllowed: Boolean;
     function TryReopenSession: Boolean; // roda na thread de reconexao
     /// Completa o intervalo desde a ULTIMA tentativa de reabrir a sessao.
     /// Acorda na hora se houver Disconnect.
@@ -207,8 +237,12 @@ type
     /// endereco que conectou.
     function ConnectAnyAddress(ATimeoutMs: Cardinal): TPipeEndpoint;
     function GetActiveAddress: string;
+    function GetConnecting: Boolean;
   protected
     function GetActive: Boolean; override;
+    /// Connected OU Connecting: um ConnectAsync em voo tambem tranca
+    /// Address/Transport/TlsOptions (ver TPipeBase.GetLifecycleLocked).
+    function GetLifecycleLocked: Boolean; override;
   public
     constructor Create(const AAddress: string;
       ATransport: TPipeTransport = ptLocal);
@@ -216,7 +250,29 @@ type
     /// Conecta (re-tentando ate ATimeoutMs; EPipeTimeout no prazo). Se havia
     /// uma sessao anterior (viva ou morta), e' encerrada antes.
     procedure Connect(ATimeoutMs: Cardinal = 5000);
-    /// Sincrono e idempotente.
+    /// Como Connect, mas SEM bloquear: volta na hora e uma thread interna
+    /// insiste ate o servidor aparecer. Serve ao caso que Connect nao cobre
+    /// - o app sobe ANTES do servidor - e que AutoReconnect tambem nao, ja
+    /// que este so' entra em acao depois de uma sessao ter existido e caido.
+    ///
+    /// Nao tem parametro de timeout de proposito: o orcamento e' o mesmo da
+    /// reconexao, MaxReconnectAttempts x ReconnectDelayMs (com
+    /// MaxReconnectAttempts = 0, o padrao, tenta para sempre). Isso e' um
+    /// teto APROXIMADO de tempo de parede, nao exato; quem precisa de prazo
+    /// exato compoe, chamando Disconnect de um timer.
+    ///
+    /// O sucesso chega em OnConnected; o esgotamento chega em OnError (nao
+    /// ha excecao a levantar - o chamador ja voltou). Connecting diz se
+    /// ainda esta tentando. Cancela com Disconnect, que tambem serve para
+    /// desistir. Chamar de novo cancela a tentativa anterior e recomeca.
+    ///
+    /// Enquanto tenta, o cliente NAO esta conectado: SendBytes/Request
+    /// levantam EPipeClosed como sempre. Compoe com AutoReconnect (que
+    /// cuida das quedas DEPOIS da primeira conexao) e com
+    /// FailoverAddresses (cada tentativa avanca na lista, como na
+    /// reconexao).
+    procedure ConnectAsync;
+    /// Sincrono e idempotente. Tambem CANCELA um ConnectAsync em voo.
     procedure Disconnect;
     /// AGroupKey opcional: mensagens da MESMA chave, mandadas por QUALQUER
     /// lado (cliente ou servidor), sao entregues ao OnMessage do RECEPTOR em
@@ -287,6 +343,11 @@ type
     property OnTopicMessage: TPipeTopicEvent
       read FOnTopicMessage write FOnTopicMessage;
     property Connected: Boolean read GetActive;
+    /// True entre um ConnectAsync e o desfecho dele (conectou, esgotou as
+    /// tentativas ou foi cancelado por Disconnect). Nunca liga em Connect
+    /// sincrono nem em reconexao automatica - e' so' sobre ConnectAsync.
+    /// Snapshot, como ActiveAddress.
+    property Connecting: Boolean read GetConnecting;
     property AutoReconnect: Boolean read FAutoReconnect write FAutoReconnect;
     property ReconnectDelayMs: Cardinal read FReconnectDelayMs write FReconnectDelayMs;
     property MaxReconnectAttempts: Integer
@@ -414,7 +475,7 @@ end;
 
 procedure TPipeReconnectThread.Execute;
 var
-  LDePe: Boolean;
+  LDePe, LConn, LDelib: Boolean;
 begin
   // O contador de tentativas e o teto vivem em TryReopenSession, no cliente:
   // aqui eles reiniciariam a cada thread nova (ver ReaderFinished).
@@ -436,14 +497,41 @@ begin
       // e sem nunca alcancar MaxReconnectAttempts — martelando o servidor
       // dezenas de vezes por segundo com uma credencial que ele acabou de
       // rejeitar.
-      LDePe := not ((PipeAtomicGet(FClient.FDeliberate) = 0) and
-                    (not FClient.FConnected) and
-                    (PipeAtomicCompareExchange(FClient.FReconnecting, 1, 0) = 0));
+      //
+      // Snapshot UNICO de "sessao de pe" e "deliberado": as duas decisoes
+      // abaixo (sair do laco e limpar FConnectingAsync) precisam enxergar o
+      // MESMO instante. Reler FConnected no if de baixo abriria a janela em
+      // que a sessao cai entre uma leitura e outra e ninguem limpa o flag.
+      LConn := FClient.FConnected;
+      LDelib := PipeAtomicGet(FClient.FDeliberate) <> 0;
+      LDePe := LDelib or LConn or
+               (PipeAtomicCompareExchange(FClient.FReconnecting, 1, 0) <> 0);
       if LDePe then
+      begin
+        // So' limpa FConnectingAsync se ESTA thread ainda detem o ciclo:
+        // sessao genuinamente de pe (LConn) ou Disconnect deliberado
+        // (LDelib). Se LDePe ficou True porque o CAS acima FALHOU - a sessao
+        // caiu neste instante e ReaderFinished ja criou uma
+        // TPipeReconnectThread NOVA -, quem limpa e' aquela thread nova:
+        // limpar aqui apagaria Connecting com a tentativa ainda viva.
+        //
+        // E limpar dentro de TryReopenSession, junto com FReconnecting,
+        // estaria ERRADO pelo motivo oposto: no par que aceita e derruba
+        // (mTLS no SChannel, acima) com AutoReconnect=False e' esta MESMA
+        // thread que retoma o laco pelo CAS, e o gate de ReopenAllowed so'
+        // deixa passar porque FConnectingAsync ainda vale 1.
+        if LConn or LDelib then
+          PipeAtomicSet(FClient.FConnectingAsync, 0);
         Exit; // reconectou e a sessao continua de pe
+      end;
     end;
   end;
-  PipeAtomicSet(FClient.FReconnecting, 0); // desistiu (deliberado ou esgotado)
+  // Desistiu (deliberado ou esgotado): nao ha mais tentativa em voo. Limpa
+  // FConnectingAsync ANTES de FReconnecting - e' este ultimo que solta o
+  // WaitReconnectDone do Disconnect, e quem acorda de la' deve ja' ver
+  // Connecting = False.
+  PipeAtomicSet(FClient.FConnectingAsync, 0);
+  PipeAtomicSet(FClient.FReconnecting, 0);
 end;
 
 { TPipeClient }
@@ -479,6 +567,20 @@ end;
 function TPipeClient.GetActive: Boolean;
 begin
   Result := FConnected;
+end;
+
+function TPipeClient.GetConnecting: Boolean;
+begin
+  Result := PipeAtomicGet(FConnectingAsync) <> 0;
+end;
+
+function TPipeClient.GetLifecycleLocked: Boolean;
+begin
+  // Com Connect sincrono o chamador fica bloqueado e nao tem como mexer nas
+  // properties; com ConnectAsync ele volta na hora, entao a trava precisa
+  // valer tambem durante a tentativa - senao trocar Address no meio dela
+  // faria a proxima tentativa mirar outro servidor sem ninguem pedir.
+  Result := FConnected or (PipeAtomicGet(FConnectingAsync) <> 0);
 end;
 
 procedure TPipeClient.WaitBetweenRetries;
@@ -595,6 +697,32 @@ begin
   DispatchConnEvent(FOnConnected, 0);
 end;
 
+procedure TPipeClient.ConnectAsync;
+begin
+  Disconnect; // cancela tentativa/sessao anterior (viva, morta ou em voo)
+  SetupDispatch;
+  // Mesmo estado inicial que Connect monta antes de tentar: prefere o
+  // primario, orcamento de tentativas cheio, sem espacamento a cumprir na
+  // primeira e sem abort pendente da sessao anterior.
+  FAddrIndex := 0;
+  FReconnectAttempts := 0;
+  FLastAttemptTick := 0;
+  FSessionUpTick := 0;
+  PipeAtomicSet(FGaveUp, 0);
+  PipeAtomicSet(FDeliberate, 0);
+  FReconnectAbort.ResetEvent;
+  // FDisconnectNotified nao precisa de reset aqui: quem instala a sessao e'
+  // o caminho de sucesso de TryReopenSession, e ele ja zera - diferente de
+  // Connect, que monta a sessao na propria thread chamadora.
+  //
+  // Este flag ANTES do CAS: e' ele que faz ReopenAllowed deixar a thread
+  // passar. Ligado depois, a thread poderia rodar a primeira passagem com o
+  // gate fechado e desistir sem tentar nada.
+  PipeAtomicSet(FConnectingAsync, 1);
+  if PipeAtomicCompareExchange(FReconnecting, 1, 0) = 0 then
+    TPipeReconnectThread.Create(Self);
+end;
+
 procedure TPipeClient.Disconnect;
 var
   LHadSession: Boolean;
@@ -604,6 +732,11 @@ begin
   // entre tentativas, isto a acorda em vez de deixar o Disconnect esperando.
   FReconnectAbort.SetEvent;
   WaitReconnectDone; // depois disto, so esta thread mexe na sessao
+  // Cancela um ConnectAsync em voo de forma DETERMINISTICA: a thread de
+  // reconexao (a unica que poderia estar tentando) ja saiu. Sem isto a
+  // limpeza dependeria da ordem em que ela zera os dois flags, e Connecting
+  // poderia ler True por um instante DEPOIS de Disconnect ter retornado.
+  PipeAtomicSet(FConnectingAsync, 0);
   LHadSession := Assigned(FEndpoint);
   FConnected := False;
   if LHadSession then
@@ -628,6 +761,11 @@ begin
   finally
     FWriteLock.Leave;
   end;
+end;
+
+function TPipeClient.ReopenAllowed: Boolean;
+begin
+  Result := FAutoReconnect or (PipeAtomicGet(FConnectingAsync) <> 0);
 end;
 
 function TPipeClient.TryReopenSession: Boolean;
@@ -668,7 +806,12 @@ begin
   // thread da UI, entao ReaderFinished ja decidiu reconectar antes de o
   // handler do usuario rodar. Reler no ultimo instante possivel torna
   // "AutoReconnect := False" util de dentro do proprio callback.
-  if not FAutoReconnect then
+  //
+  // O gate e' ReopenAllowed, e nao FAutoReconnect direto, porque a mesma
+  // thread serve os dois casos: reabrir uma sessao que caiu (AutoReconnect)
+  // e abrir a PRIMEIRA (ConnectAsync). E' a mesma operacao - conectar ate
+  // o servidor responder, com espacamento e failover -, so' muda a origem.
+  if not ReopenAllowed then
     Exit;
 
   // Uma sessao que durou MAIS que o intervalo entre tentativas foi uma sessao
@@ -697,8 +840,14 @@ begin
     // tudo. Sem ele o teto so' valeria dentro de uma thread, que e' justamente
     // o furo que fazia o par "aceita e derruba" nunca esbarrar no limite.
     PipeAtomicSet(FGaveUp, 1);
-    DispatchError(0, 'reconexao esgotada apos ' +
-      IntToStr(FMaxReconnectAttempts) + ' tentativas');
+    // "reconexao esgotada" soaria estranho para quem nunca chegou a
+    // conectar: com ConnectAsync em voo, este teto e' o da PRIMEIRA conexao.
+    if PipeAtomicGet(FConnectingAsync) <> 0 then
+      DispatchError(0, 'conexao inicial esgotada apos ' +
+        IntToStr(FMaxReconnectAttempts) + ' tentativas')
+    else
+      DispatchError(0, 'reconexao esgotada apos ' +
+        IntToStr(FMaxReconnectAttempts) + ' tentativas');
     Exit;
   end;
   FLastAttemptTick := PipeTickMs;
@@ -724,7 +873,7 @@ begin
   //
   // Nao fecha a janela por completo (nada fecha: o par pode aceitar no exato
   // instante da decisao), mas reduz a um caso raro o que antes era certo.
-  if (PipeAtomicGet(FDeliberate) <> 0) or (not FAutoReconnect) then
+  if (PipeAtomicGet(FDeliberate) <> 0) or (not ReopenAllowed) then
   begin
     LEndpoint.CloseAbort;
     LEndpoint.Free;

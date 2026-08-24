@@ -27,6 +27,7 @@ uses
   Pipes.PeerAddressTests,
   Pipes.JsonTests,
   Pipes.FailoverTests,
+  Pipes.ConnectAsyncTests,
   Pipes.DiscoveryTests;
 
 var

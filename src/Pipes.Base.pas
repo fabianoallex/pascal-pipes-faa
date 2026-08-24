@@ -120,6 +120,14 @@ type
     procedure SetCompressionMinSize(AValue: Cardinal);
   protected
     function GetActive: Boolean; virtual; abstract;
+    /// Como GetActive, mas para o CICLO DE VIDA: True tambem enquanto uma
+    /// ativacao esta EM CURSO e ainda nao instalou a sessao (ver
+    /// TPipeClient.ConnectAsync/Connecting). E' o que EnsureInactive consulta,
+    /// para o app nao trocar Address/Transport/TlsOptions no meio de uma
+    /// tentativa em voo - janela que nao existe com Connect() sincrono, onde
+    /// o chamador fica bloqueado. Metodo proprio em vez de mexer em GetActive
+    /// para nao mudar o significado publico de Connected/Active.
+    function GetLifecycleLocked: Boolean; virtual;
     /// Propriedades de configuracao so mudam com o componente inativo.
     /// TPipeTlsConfig tambem chama, para guardar as proprias mudancas (mesma
     /// unit: protected e' acessivel entre classes daqui).
@@ -608,9 +616,14 @@ begin
   inherited;
 end;
 
+function TPipeBase.GetLifecycleLocked: Boolean;
+begin
+  Result := GetActive; // descendentes com ativacao assincrona sobrescrevem
+end;
+
 procedure TPipeBase.EnsureInactive(const AWhat: string);
 begin
-  if GetActive then
+  if GetLifecycleLocked then
     raise EPipeError.CreateFmt('%s nao pode mudar com o componente ativo', [AWhat]);
 end;
 

@@ -189,6 +189,7 @@
         <DCCReference Include="..\..\src\Pipes.Json.pas"/>
         <DCCReference Include="Pipes.JsonTests.pas"/>
         <DCCReference Include="Pipes.FailoverTests.pas"/>
+        <DCCReference Include="Pipes.ConnectAsyncTests.pas"/>
         <DCCReference Include="..\..\src\Pipes.Discovery.pas"/>
         <DCCReference Include="Pipes.DiscoveryTests.pas"/>
         <BuildConfiguration Include="Base">

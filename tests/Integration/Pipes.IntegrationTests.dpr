@@ -31,6 +31,7 @@ uses
   Pipes.Json in '..\..\src\Pipes.Json.pas',
   Pipes.JsonTests in 'Pipes.JsonTests.pas',
   Pipes.FailoverTests in 'Pipes.FailoverTests.pas',
+  Pipes.ConnectAsyncTests in 'Pipes.ConnectAsyncTests.pas',
   Pipes.Discovery in '..\..\src\Pipes.Discovery.pas',
   Pipes.DiscoveryTests in 'Pipes.DiscoveryTests.pas';
 

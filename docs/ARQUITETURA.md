@@ -1805,3 +1805,207 @@ recebendo pelo replay de `SendRetained`, onde `ARetained = True` é correto). Co
 com esta feature: a linha que monta o `TPipeFrame` do lote agora passa `False` sempre,
 igual `FanOut`; teste de regressão
 `PublishBatch_RetainAoVivo_NaoMarcaARetainedParaQuemJaAssinava` cobre o caminho que faltava.
+
+## 21. Connect assíncrono (`TPipeClient.ConnectAsync`)
+
+`Connect(ATimeoutMs)` é síncrono: se o servidor não estiver no ar dentro do prazo, levanta
+`EPipeTimeout`/`EPipeError` e o app fica com o problema. `AutoReconnect` não cobre esse
+buraco — ele só entra em ação depois que uma sessão JÁ existiu e caiu, porque quem o dispara
+é `ReaderFinished`, e `ReaderFinished` só roda a partir da reader thread de uma sessão viva.
+Ou seja: **"o app sobe antes do servidor" não tinha resposta na lib**. Quem precisava disso
+escrevia um laço de retry manual em volta de `Connect` — reinventando, pior, o espaçamento,
+o teto de tentativas e o failover que a lib já tem prontos ali do lado.
+
+`ConnectAsync` fecha exatamente esse caso: volta na hora, e uma thread interna insiste até o
+servidor aparecer. O sucesso chega em `OnConnected`; a desistência, em `OnError`;
+`Connecting` diz se ainda está tentando; `Disconnect` cancela.
+
+### 21.1 Reaproveitar a thread de reconexão, não criar uma segunda máquina de estados
+
+A decisão central: `ConnectAsync` **não tem thread nem máquina de estados própria**. Liga um
+flag e dispara a MESMA `TPipeReconnectThread`.
+
+Isso não é economia de código, é reconhecer que já era a mesma operação. `TryReopenSession`
+literalmente É "conectar até o servidor responder, com espaçamento entre tentativas, teto de
+tentativas e volta pela lista de failover" — o que muda entre reconectar e conectar pela
+primeira vez é só a ORIGEM da chamada, não o que precisa acontecer. Duplicar teria custado
+uma segunda cópia do espaçamento (`WaitBetweenRetries`), do teto (`FReconnectAttempts`/
+`FGaveUp`), do avanço de `FAddrIndex` e — o pior — uma segunda thread capaz de instalar uma
+sessão, com toda a coordenação nova que isso exigiria contra a primeira.
+
+Vale contrastar com o precedente **oposto** de `ADDR0` (§19), onde `FAddresses`/
+`FAddressOrder` foram duplicados de `FIdentities`/`FIdentityOrder` de propósito em vez de
+generalizados: lá eram dois DADOS independentes que por acaso tinham o mesmo formato, e
+unificá-los criaria acoplamento onde não havia nenhum. Aqui é uma OPERAÇÃO só, com dois
+pontos de entrada. Generalizar acerta num caso e erra no outro — a pergunta certa não é
+"parece igual?", é "é a mesma coisa?".
+
+### 21.2 O gate: `ReopenAllowed`, nos DOIS lugares (esquecer o segundo é um bug silencioso)
+
+Todo o ponto de contato entre a feature nova e o motor existente é uma função de uma linha:
+
+```pascal
+function TPipeClient.ReopenAllowed: Boolean;
+begin
+  Result := FAutoReconnect or (PipeAtomicGet(FConnectingAsync) <> 0);
+end;
+```
+
+`TryReopenSession` consultava `FAutoReconnect` em **dois** lugares, e os dois tiveram de
+virar `ReopenAllowed`:
+
+1. **Na entrada**, antes de tentar. Óbvio: sem isso, um `ConnectAsync` com
+   `AutoReconnect = False` desistiria antes da primeira tentativa.
+2. **Na rechecagem com a conexão JÁ ABERTA**, logo depois do `PipeConnect` voltar. Esse é o
+   que passa despercebido, e o efeito de esquecê-lo é bem pior do que "não funciona": o
+   `PipeConnect` teria sucesso e o endpoint recém-conectado seria fechado e descartado ali
+   mesmo, em silêncio, sempre que `AutoReconnect = False`. `ConnectAsync` ficaria tentando
+   para sempre contra um servidor que está no ar e aceitando.
+
+Esse segundo ponto existe por um motivo real (uma decisão de parar pode chegar DURANTE o
+`PipeConnect`; instalar a sessão depois disso anunciaria `OnConnected` para quem já pediu
+para parar) — então ele não some, só passa a perguntar a coisa certa.
+
+### 21.3 Quem limpa `FConnectingAsync` — e por que NÃO é `TryReopenSession`
+
+A limpeza mora em `TPipeReconnectThread.Execute` (e, deliberadamente, em `Disconnect`),
+**nunca** em `TryReopenSession` junto com `PipeAtomicSet(FReconnecting, 0)`. Parece o lugar
+natural, e é errado — este parágrafo existe para ninguém "simplificar de volta".
+
+O caso que quebra é o par que **aceita e derruba**: o servidor mTLS no backend SChannel
+completa o handshake e só ENTÃO valida a cadeia, então um cliente com certificado recusado
+vê conexão estabelecida seguida de queda imediata (o mesmo caso já documentado no cabeçalho
+de `Pipes.Client.pas` e em §7). Com `AutoReconnect = False` e um `ConnectAsync` em voo:
+
+1. `TryReopenSession` instala a sessão, dispara `OnConnected` e devolve `True`, zerando
+   `FReconnecting`.
+2. A sessão cai nesse mesmo instante. Como `AutoReconnect = False`, `ReaderFinished` **não**
+   cria thread nova — quem tem de retomar é esta mesma thread.
+3. Em `Execute`, o CAS em `FReconnecting` sucede (foi zerado no passo 1) e o laço continua.
+4. ...mas `TryReopenSession` verifica `ReopenAllowed` logo na entrada. Se o flag tivesse
+   sido limpo no passo 1, o gate estaria fechado e a tentativa abortaria **em silêncio**:
+   `Connecting` em `False`, sem sessão nenhuma viva e sem erro em lugar nenhum.
+
+Daí a regra: só limpa quem **detém o ciclo** no momento de sair. Em `Execute` isso é
+explícito:
+
+```pascal
+LConn  := FClient.FConnected;
+LDelib := PipeAtomicGet(FClient.FDeliberate) <> 0;
+LDePe  := LDelib or LConn or
+          (PipeAtomicCompareExchange(FClient.FReconnecting, 1, 0) <> 0);
+if LDePe then
+begin
+  if LConn or LDelib then
+    PipeAtomicSet(FClient.FConnectingAsync, 0);
+  Exit;
+end;
+```
+
+Sai por sessão de pé (`LConn`) ou por `Disconnect` deliberado (`LDelib`) → esta thread
+encerrou o trabalho, limpa. Sai porque o **CAS falhou** → a sessão caiu neste instante e
+`ReaderFinished` já criou uma `TPipeReconnectThread` NOVA (possível quando `AutoReconnect`
+está ligado ao mesmo tempo que um `ConnectAsync` está em voo); quem limpa é aquela thread,
+e limpar aqui apagaria `Connecting` com a tentativa ainda viva.
+
+Duas notas sobre a forma:
+
+- **O snapshot é único de propósito.** `LConn`/`LDelib` são lidos UMA vez e servem às duas
+  decisões (sair do laço e limpar o flag). Reler `FConnected` no `if` de dentro abriria uma
+  janela em que a sessão cai entre as duas leituras: o laço sai por "estava de pé" mas a
+  limpeza não acontece, e com `AutoReconnect = False` não existe thread nova para limpar
+  depois — `Connecting` ficaria `True` para sempre. A expressão é ponto a ponto equivalente
+  à original (`not (A and B and C)` = `(not A) or (not B) or (not C)`), inclusive no
+  curto-circuito que garante que o CAS só roda quando não há sessão de pé.
+- **A saída de baixo do laço** (desistiu: deliberado ou esgotado) limpa `FConnectingAsync`
+  ANTES de `FReconnecting`, porque é o segundo que solta o `WaitReconnectDone` do
+  `Disconnect` — quem acorda de lá tem de já enxergar `Connecting = False`.
+
+`Disconnect` também limpa o flag explicitamente, logo depois do `WaitReconnectDone`. Não é
+redundância defensiva: sem isso, o cancelamento dependeria da ordem em que a thread zera os
+dois flags, e `Connecting` poderia ler `True` por um instante DEPOIS de `Disconnect` ter
+retornado — exatamente o que um app faria a pergunta para decidir se ainda está tentando.
+
+### 21.4 Sem parâmetro de timeout: o orçamento é o da reconexão
+
+`ConnectAsync` não tem `ATimeoutMs`. O orçamento é `MaxReconnectAttempts` ×
+`ReconnectDelayMs`, as duas properties que já existiam — mesma recusa de §12.5 em criar
+orçamento próprio "por um ganho marginal". Com `MaxReconnectAttempts = 0` (o padrão) tenta
+para sempre, que é o comportamento que o caso de uso pede: o PDV liga antes da retaguarda e
+espera.
+
+Isso é um teto **aproximado** de tempo de parede, não exato — cada tentativa gasta até
+`ReconnectDelayMs` no `PipeConnect` e o espaçamento consome o que sobrar do mesmo intervalo.
+Quem precisa de prazo exato compõe: chama `Disconnect` de um timer. Inventar um orçamento
+próprio exigiria conciliá-lo com os dois já existentes em cada tentativa, e o resultado
+seria três números disputando o mesmo relógio.
+
+O esgotamento chega em `OnError`, não como exceção — não há para quem levantar, o chamador
+já voltou. A mensagem é condicional ao contexto (`'conexao inicial esgotada apos N
+tentativas'` em vez de `'reconexao esgotada...'`): quem nunca teve sessão nenhuma lendo
+"reconexão esgotada" no log procuraria uma queda que não houve.
+
+### 21.5 `GetLifecycleLocked`: `Connecting` também tranca a configuração
+
+`EnsureInactive` passou a consultar `GetLifecycleLocked` (virtual em `TPipeBase`, default
+`GetActive`) em vez de `GetActive` direto. `TPipeClient` sobrescreve para
+`FConnected or Connecting`.
+
+O motivo é uma janela que **só existe** com ativação assíncrona: com `Connect()` síncrono o
+chamador fica bloqueado dentro do próprio objeto e não tem como trocar `Address` no meio da
+tentativa. Com `ConnectAsync` ele volta na hora, e nada impediria o app de mexer em
+`Address`/`Transport`/`TlsOptions` enquanto a thread ainda tenta — a tentativa seguinte
+miraria outro servidor, ou o mesmo com outro transporte, sem ninguém ter pedido.
+
+Método novo em vez de mudar `GetActive`: `Connected`/`Active` são API pública com significado
+estabelecido ("há sessão"), e alargá-lo para "há sessão ou estou tentando" faria
+`Connected = True` sem sessão nenhuma — quebrando todo código que decide enviar por essa
+property. `TPipeServer` herda o default e não muda em nada.
+
+### 21.6 Nenhuma mudança em `Pipes.Transport.*`
+
+Nenhum dos cinco backends de `PipeConnect` (Windows, POSIX, Tcp, Tls, Android) tem
+mecanismo de cancelamento de um connect em progresso vindo de outra thread, e esta feature
+**não inventou um**. Cancelar um `ConnectAsync` herda o mesmo trade-off que `Disconnect` já
+aceita hoje para a reconexão automática, e que `WaitReconnectDone` documenta desde sempre:
+"pior caso, espera um `PipeConnect` de até `ReconnectDelayMs` terminar".
+
+Isso é uma escolha, não um esquecimento. Cancelamento real exigiria mexer nos cinco backends
+de plataforma — o ponto de mais alto risco do projeto, sem precedente e com verificação
+Android e POSIX que esta máquina não consegue rodar (§13, §16) — para transformar uma espera
+de milissegundos-a-`ReconnectDelayMs` numa de zero. O teste de cancelamento afirma o que a
+lib de fato garante (**para de tentar em no máximo uma tentativa em curso**), e não um "volta
+instantâneo" que seria mentira.
+
+### 21.7 Testes
+
+Nove testes de integração em `Pipes.ConnectAsyncTests` (DUnitX + FPCUnit espelhados),
+sempre com espera por deadline (`WaitCount`/`WaitClientCount`/`WaitNotConnecting`), nunca
+`Sleep` fixo como asserção. `WaitNotConnecting` existe porque `Connecting` cai um passo
+DEPOIS de `OnConnected` — quem limpa o flag é a thread de reconexão, já fora de
+`TryReopenSession`.
+
+| Teste | O que guarda |
+|-------|--------------|
+| `ConnectAsync_ServidorJaNoAr_ConectaENotifica` | caminho trivial: não bloqueia nem quando o servidor já está lá |
+| `ConnectAsync_ServidorSobeDepois_ConectaQuandoAparece` | **o teste central**: `Connecting=True`/`Connected=False` logo após a chamada, servidor sobe depois, `OnConnected` dispara |
+| `ConnectAsync_ServidorNuncaAparece_EsgotaComMensagemDeConexaoInicial` | esgota via `OnError` com a mensagem de conexão INICIAL (não "reconexão"), `Connecting` cai, `OnConnected` nunca dispara |
+| `ConnectAsync_CanceladoPorDisconnect_ParaDeTentar` | `Disconnect` para o laço infinito dentro de uma tentativa em curso, e continua parado 1,5s depois (§21.6) |
+| `ConnectAsync_ChamadoDeNovoEnquantoEmVoo_ReiniciaSemDuplicar` | rechamada cancela a anterior; uma thread órfã apareceria como um SEGUNDO `OnConnected`/`ClientCount = 2` |
+| `ConnectAsync_ComFailoverAddresses_MigraParaBackupSemPrimario` | avanço por endereço na lista, a MESMA regra da reconexão |
+| `ConnectAsync_ComAutoReconnect_ContinuaReconectandoDepois` | é aqui que um `FConnectingAsync` vazado (ou limpo cedo demais) apareceria: depois do `ConnectAsync` cumprir o papel, o ciclo de vida normal do `AutoReconnect` segue intacto |
+| `Connecting_SemChamarConnectAsync_PermaneceFalse` | sanidade: `Connect()` síncrono nunca liga `Connecting` |
+| `ConnectAsync_EmVoo_ImpedeTrocarTransportOuAddress` | `GetLifecycleLocked`/`EnsureInactive` (§21.5), e a trava sai junto com o `Disconnect` |
+
+Os dois de risco (cancelamento e convivência com `AutoReconnect`) foram rodados cinco vezes
+seguidas em isolamento, com tempo de suíte estável (~5,7s), pela mesma razão registrada em
+§13.10: um teste de concorrência que passa uma vez não provou nada.
+
+### 21.8 Milestones
+
+| # | Milestone | Conteúdo | Status |
+|---|-----------|----------|--------|
+| CONN0a | `Pipes.Base` | `GetLifecycleLocked` virtual; `EnsureInactive` passa a consultá-lo | concluído |
+| CONN0b | `Pipes.Client` (motor) | `FConnectingAsync`, `ReopenAllowed` nos DOIS gates de `TryReopenSession`, limpeza condicional em `Execute` e em `Disconnect`, mensagem de esgotamento condicional | concluído |
+| CONN0c | `Pipes.Client` (API) | `ConnectAsync`, `Connecting`, `GetLifecycleLocked` override | concluído |
+| CONN0d | Testes | 9 testes de integração nos dois frameworks | concluído |

@@ -80,6 +80,10 @@
         <IsPartOfProject Value="True"/>
       </Unit>
       <Unit>
+        <Filename Value="Pipes.ConnectAsyncTests.pas"/>
+        <IsPartOfProject Value="True"/>
+      </Unit>
+      <Unit>
         <Filename Value="Pipes.DiscoveryTests.pas"/>
         <IsPartOfProject Value="True"/>
       </Unit>
