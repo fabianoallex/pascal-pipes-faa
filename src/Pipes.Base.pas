@@ -168,6 +168,12 @@ type
       ARetained: Boolean; const AError: string);
     procedure DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
       AConnId: TPipeConnectionId; const AFilter: string);
+    /// OnConnectAttemptFailed do cliente (TPipeClient.TryReopenSession) —
+    /// diagnostico puro, sem AConnId porque nao ha conexao. Chamado da THREAD
+    /// DE RECONEXAO, nao da de leitura; o mesmo lugar de onde o DispatchError
+    /// de esgotamento ja sai hoje.
+    procedure DispatchAttemptFailedEvent(AEvent: TPipeAttemptFailedEvent;
+      const AAddress: string; AAttempt: Integer; const AError: string);
   public
     constructor Create(const AAddress: string;
       ATransport: TPipeTransport = ptLocal);
@@ -230,7 +236,7 @@ implementation
 
 type
   TPipeQueuedKind = (qeMessage, qeConn, qeError, qeTopic, qeSubscription,
-    qeDeliveryFailed);
+    qeDeliveryFailed, qeAttemptFailed);
 
   { Evento enfileirado na MAIN THREAD (pdmMainThread) via TThread.Queue.
     Nao conta em FInFlight (drain a partir da main thread = auto-espera);
@@ -246,11 +252,17 @@ type
     FTopicCb: TPipeTopicEvent;
     FSubCb: TPipeSubscriptionEvent;
     FDeliveryFailedCb: TPipeDeliveryFailedEvent;
+    FAttemptCb: TPipeAttemptFailedEvent;
     FConnId: TPipeConnectionId;
     FData: TBytes;
     FMsg: string;
     FTopic: string;
     FRetained: Boolean;
+    // Campos proprios em vez de reaproveitar FTopic como slot generico de
+    // string (o que qeSubscription faz): um endereco de conexao nao e' um
+    // topico, e num log forense a confusao sairia cara.
+    FAddress: string;
+    FAttempt: Integer;
   public
     constructor Create(AOwner: TPipeBase; AKind: TPipeQueuedKind;
       AConnId: TPipeConnectionId);
@@ -318,6 +330,19 @@ type
   public
     constructor Create(AOwner: TPipeBase; ACallback: TPipeSubscriptionEvent;
       AConnId: TPipeConnectionId; const AFilter: string);
+    procedure Execute; override;
+  end;
+
+  TPipeAttemptFailedWork = class(TPipeWorkItem)
+  private
+    FOwner: TPipeBase;
+    FCallback: TPipeAttemptFailedEvent;
+    FAddress: string;
+    FAttempt: Integer;
+    FError: string;
+  public
+    constructor Create(AOwner: TPipeBase; ACallback: TPipeAttemptFailedEvent;
+      const AAddress: string; AAttempt: Integer; const AError: string);
     procedure Execute; override;
   end;
 
@@ -393,6 +418,7 @@ begin
           qeSubscription: FSubCb(FOwner, FConnId, FTopic);
           qeDeliveryFailed: FDeliveryFailedCb(FOwner, FConnId, FTopic, FData,
             FRetained, FMsg);
+          qeAttemptFailed: FAttemptCb(FOwner, FAddress, FAttempt, FMsg);
         end;
       except
         // mesmo contrato do pool: excecao de callback nao derruba o chamador
@@ -513,6 +539,27 @@ begin
 end;
 
 { TPipeDeliveryFailedWork }
+
+constructor TPipeAttemptFailedWork.Create(AOwner: TPipeBase;
+  ACallback: TPipeAttemptFailedEvent; const AAddress: string;
+  AAttempt: Integer; const AError: string);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FCallback := ACallback;
+  FAddress := AAddress;
+  FAttempt := AAttempt;
+  FError := AError;
+end;
+
+procedure TPipeAttemptFailedWork.Execute;
+begin
+  try
+    FCallback(FOwner, FAddress, FAttempt, FError);
+  finally
+    FOwner.DecInFlight;
+  end;
+end;
 
 constructor TPipeDeliveryFailedWork.Create(AOwner: TPipeBase;
   ACallback: TPipeDeliveryFailedEvent; AConnId: TPipeConnectionId;
@@ -819,6 +866,28 @@ begin
   IncInFlight;
   EventPool.Queue(TPipeDeliveryFailedWork.Create(Self, AEvent, AConnId, ATopic,
     AData, ARetained, AError));
+end;
+
+procedure TPipeBase.DispatchAttemptFailedEvent(AEvent: TPipeAttemptFailedEvent;
+  const AAddress: string; AAttempt: Integer; const AError: string);
+var
+  LQueued: TPipeQueuedEvent;
+begin
+  if not Assigned(AEvent) then
+    Exit; // sem handler, uma tentativa falha nao custa nada
+  if FDispatchMode = pdmMainThread then
+  begin
+    LQueued := TPipeQueuedEvent.Create(Self, qeAttemptFailed, 0);
+    LQueued.FAttemptCb := AEvent;
+    LQueued.FAddress := AAddress;
+    LQueued.FAttempt := AAttempt;
+    LQueued.FMsg := AError;
+    TThread.Queue(nil, LQueued.Run);
+    Exit;
+  end;
+  IncInFlight;
+  EventPool.Queue(TPipeAttemptFailedWork.Create(Self, AEvent, AAddress,
+    AAttempt, AError));
 end;
 
 procedure TPipeBase.DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;

@@ -10,6 +10,12 @@ unit Pipes.ConnectAsyncTests;
   ConnectAsync_CanceladoPorDisconnect_...) e o de convivencia com
   AutoReconnect, que e' onde um FConnectingAsync vazado apareceria.
 
+  Cobre tambem OnConnectAttemptFailed (milestone DIAG0), o evento de
+  diagnostico por TENTATIVA que fracassa: mora aqui, e nao numa fixture
+  propria, porque precisa exatamente da mesma infra (servidor primario +
+  backup + cliente + contadores) e porque dispara pelos DOIS caminhos que
+  esta unit ja monta — ConnectAsync e reconexao automatica.
+
   Versao DUnitX; espelha a versao FPCUnit em tests/Integration/fpc. }
 
 interface
@@ -33,9 +39,19 @@ type
     FCliConnCount: Integer; // atomico
     FErrCount: Integer;     // atomico
     FLastError: string;     // sob FLock
+    // --- OnConnectAttemptFailed (DIAG0) ---
+    FAttemptCount: Integer;   // atomico
+    FAttemptAddrs: string;    // sob FLock: enderecos falhos, separados por |
+    FAttemptNums: string;     // sob FLock: AAttempt de cada um, idem
+    FLastAttemptError: string; // sob FLock
     procedure OnCliConnected(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnCliError(Sender: TObject; AConnId: TPipeConnectionId;
       const AError: string);
+    procedure OnCliAttemptFailed(Sender: TObject; const AAddress: string;
+      AAttempt: Integer; const AError: string);
+    function AttemptAddrs: string;
+    function AttemptNums: string;
+    function LastAttemptError: string;
     // Alvos de Assert.WillRaise (metodos de objeto: a lib nao usa metodos
     // anonimos, ver CLAUDE.md).
     procedure DoSetAddress;
@@ -62,6 +78,11 @@ type
     [Test] procedure ConnectAsync_ComAutoReconnect_ContinuaReconectandoDepois;
     [Test] procedure Connecting_SemChamarConnectAsync_PermaneceFalse;
     [Test] procedure ConnectAsync_EmVoo_ImpedeTrocarTransportOuAddress;
+    // --- OnConnectAttemptFailed (DIAG0) ---
+    [Test] procedure AttemptFailed_ServidorAusente_DisparaPorTentativaComContador;
+    [Test] procedure AttemptFailed_ComFailover_ReportaOEnderecoQueFalhou;
+    [Test] procedure AttemptFailed_ReconexaoAutomatica_TambemDispara;
+    [Test] procedure AttemptFailed_ConexaoBemSucedida_NaoDispara;
   end;
 
 implementation
@@ -88,6 +109,10 @@ begin
   FCliConnCount := 0;
   FErrCount := 0;
   FLastError := '';
+  FAttemptCount := 0;
+  FAttemptAddrs := '';
+  FAttemptNums := '';
+  FLastAttemptError := '';
 end;
 
 procedure TPipeConnectAsyncTests.TearDown;
@@ -121,6 +146,50 @@ begin
   FLock.Enter;
   try
     Result := FLastError;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+procedure TPipeConnectAsyncTests.OnCliAttemptFailed(Sender: TObject;
+  const AAddress: string; AAttempt: Integer; const AError: string);
+begin
+  FLock.Enter;
+  try
+    FAttemptAddrs := FAttemptAddrs + AAddress + '|';
+    FAttemptNums := FAttemptNums + IntToStr(AAttempt) + '|';
+    FLastAttemptError := AError;
+  finally
+    FLock.Leave;
+  end;
+  PipeAtomicInc(FAttemptCount); // por ultimo: quem acorda no contador ja le' tudo
+end;
+
+function TPipeConnectAsyncTests.AttemptAddrs: string;
+begin
+  FLock.Enter;
+  try
+    Result := FAttemptAddrs;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TPipeConnectAsyncTests.AttemptNums: string;
+begin
+  FLock.Enter;
+  try
+    Result := FAttemptNums;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TPipeConnectAsyncTests.LastAttemptError: string;
+begin
+  FLock.Enter;
+  try
+    Result := FLastAttemptError;
   finally
     FLock.Leave;
   end;
@@ -398,6 +467,112 @@ begin
   Assert.IsFalse(FClient.Connecting);
   DoSetTransport;
   Assert.IsTrue(FClient.Transport = ptTcp);
+end;
+
+procedure TPipeConnectAsyncTests.AttemptFailed_ServidorAusente_DisparaPorTentativaComContador;
+var
+  LName: string;
+begin
+  LName := UniquePipeName('diag_ausente'); // ninguem escuta, nunca
+  FClient := TPipeClient.Create(LName);
+  FClient.ReconnectDelayMs := 200;
+  FClient.MaxReconnectAttempts := 3;
+  FClient.OnConnected := OnCliConnected;
+  FClient.OnError := OnCliError;
+  FClient.OnConnectAttemptFailed := OnCliAttemptFailed;
+  FClient.ConnectAsync;
+
+  // Uma tentativa falha = um evento. Com teto 3, exatamente 3.
+  Assert.IsTrue(WaitCount(FAttemptCount, 3, 5000),
+    'esperava 3 eventos de tentativa, vieram ' + IntToStr(FAttemptCount));
+  Assert.IsTrue(WaitCount(FErrCount, 1, 5000), 'nao avisou o esgotamento');
+
+  // AAttempt e' o MESMO contador que MaxReconnectAttempts limita, comecando
+  // em 1 — e' o que deixa o log dizer "3a tentativa" sem guardar estado.
+  Assert.AreEqual('1|2|3|', AttemptNums);
+  // Sem FailoverAddresses, todo evento reporta o unico endereco.
+  Assert.AreEqual(LName + '|' + LName + '|' + LName + '|', AttemptAddrs);
+  // A mensagem do transporte e' o que separa "servidor ausente" de "recusou
+  // meu certificado" num log forense.
+  Assert.IsTrue(LastAttemptError <> '', 'evento sem mensagem de erro');
+
+  // Desistiu: para de disparar (o teto vale para o diagnostico tambem).
+  Sleep(800);
+  EqualInt(3, FAttemptCount);
+end;
+
+procedure TPipeConnectAsyncTests.AttemptFailed_ComFailover_ReportaOEnderecoQueFalhou;
+var
+  LPrimario, LBackup: string;
+begin
+  // O ponto do AAddress por VALOR: quando o evento sai, FAddrIndex ja avancou
+  // para o backup. Ler ActiveAddress no handler acusaria o endereco errado —
+  // exatamente o tipo de troca de culpado que estraga um log forense.
+  LPrimario := UniquePipeName('diag_primario'); // ninguem escuta
+  LBackup := UniquePipeName('diag_backup');
+  FBackup := TPipeServer.Create(LBackup);
+  FBackup.Listen;
+
+  FClient := TPipeClient.Create(LPrimario);
+  FClient.FailoverAddresses := [LBackup];
+  FClient.ReconnectDelayMs := 300;
+  FClient.OnConnected := OnCliConnected;
+  FClient.OnConnectAttemptFailed := OnCliAttemptFailed;
+  FClient.ConnectAsync;
+
+  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000), 'nao alcancou o backup');
+  // Exatamente uma falha: a do primario. O backup conectou de primeira.
+  EqualInt(1, FAttemptCount);
+  Assert.AreEqual(LPrimario + '|', AttemptAddrs,
+    'o evento deveria reportar o PRIMARIO, nao o endereco seguinte');
+  Assert.AreEqual(LBackup, FClient.ActiveAddress);
+end;
+
+procedure TPipeConnectAsyncTests.AttemptFailed_ReconexaoAutomatica_TambemDispara;
+var
+  LName: string;
+begin
+  // Para diagnostico, "primeira conexao" e "reconexao" sao o mesmo fenomeno:
+  // o evento nao distingue, senao o log teria um ponto cego bem no caso mais
+  // comum (a sessao que caiu no meio do expediente).
+  LName := UniquePipeName('diag_reconexao');
+  FServer := TPipeServer.Create(LName);
+  FServer.Listen;
+
+  FClient := TPipeClient.Create(LName);
+  FClient.AutoReconnect := True;
+  FClient.ReconnectDelayMs := 200;
+  FClient.OnConnected := OnCliConnected;
+  FClient.OnConnectAttemptFailed := OnCliAttemptFailed;
+  FClient.Connect(3000); // Connect SINCRONO: nem ConnectAsync esta em jogo
+  Assert.IsTrue(WaitCount(FCliConnCount, 1, 3000));
+  EqualInt(0, FAttemptCount); // conectou de primeira
+
+  FreeAndNil(FServer); // cai e nao volta: as tentativas passam a falhar
+  Assert.IsTrue(WaitCount(FAttemptCount, 2, 5000),
+    'reconexao automatica nao reportou tentativas falhas');
+  Assert.IsTrue(Pos(LName, AttemptAddrs) > 0, 'endereco ausente no evento');
+end;
+
+procedure TPipeConnectAsyncTests.AttemptFailed_ConexaoBemSucedida_NaoDispara;
+var
+  LName: string;
+begin
+  LName := UniquePipeName('diag_silencio');
+  FServer := TPipeServer.Create(LName);
+  FServer.Listen;
+
+  FClient := TPipeClient.Create(LName);
+  FClient.ReconnectDelayMs := 300;
+  FClient.OnConnected := OnCliConnected;
+  FClient.OnConnectAttemptFailed := OnCliAttemptFailed;
+  FClient.ConnectAsync;
+
+  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000));
+  Assert.IsTrue(WaitNotConnecting(2000));
+  Sleep(500); // operacao silenciosa: nada de ruido no log
+  EqualInt(0, FAttemptCount);
+  Assert.AreEqual('', AttemptAddrs);
 end;
 
 initialization

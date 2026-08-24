@@ -2056,3 +2056,134 @@ a concurrency test that passes once has proven nothing.
 | CONN0b | `Pipes.Client` (engine) | `FConnectingAsync`, `ReopenAllowed` on BOTH `TryReopenSession` gates, conditional clearing in `Execute` and in `Disconnect`, context-dependent exhaustion message | done |
 | CONN0c | `Pipes.Client` (API) | `ConnectAsync`, `Connecting`, `GetLifecycleLocked` override | done |
 | CONN0d | Tests | 9 integration tests in both frameworks | done |
+
+## 22. Connection-attempt diagnostics (`OnConnectAttemptFailed`)
+
+Driven by a real use case: the application operates silently on purpose — the client keeps
+working through a drop, and if reconnection succeeds nobody is interrupted. The problem shows
+up later, when someone reports "around 2:40pm it wasn't working right" and the log has nothing
+to say about that window.
+
+With `AutoReconnect` (and now `ConnectAsync`), the event trail up to here was:
+
+```
+14:37:02  OnError('leitura falhou: conexao encerrada')   <- ReaderFinished
+14:37:02  OnDisconnected
+          ................. 15 minutes of silence .................
+14:52:19  OnConnected
+```
+
+The middle is what matters: was it 300 attempts against a server that was down, or 3 attempts
+refused over a certificate, or did failover migrate to the backup and come back?
+`OnConnectAttemptFailed` fills that window.
+
+### 22.1 A new event, not `OnError`
+
+Routing attempt-failed into `OnError` would have been a one-liner, and it would have been
+wrong for two reasons. First, it would change behaviour for **everyone** already using
+`AutoReconnect`: an app that today shows a red banner on `OnError` would start showing it
+every `ReconnectDelayMs`. Second, and more fundamentally, it conflates two meanings: `OnError`
+is "something the app has to handle", whereas a failed attempt is the NORMAL state of a client
+waiting for its server — the next attempt is already on its way and there is nothing to decide.
+
+The definitive outcome still arrives through the usual events: `OnConnected` when some attempt
+succeeds, and the exhaustion `OnError` (`'conexao inicial esgotada...'` / `'reconexao
+esgotada...'`, §21.4) when `MaxReconnectAttempts` is reached.
+
+With no handler assigned the event costs nothing — `DispatchAttemptFailedEvent` returns at the
+first `if not Assigned(AEvent)`. There is no boolean opt-in property: it would be
+configuration with no function, since not assigning the handler IS the opt-out.
+
+### 22.2 It fires on BOTH paths, deliberately
+
+`ConnectAsync` and automatic reconnection share the same `TPipeReconnectThread` (§21.1), and
+the event is raised from the single point every attempt passes through — the `except` around
+`PipeConnect` in `TryReopenSession`. Consequence: one event covers both "I never connected"
+and "I dropped and I'm coming back".
+
+That is the right call for the purpose. Splitting it in two would leave the log blind in
+precisely the most common case — the session that dropped mid-shift — and would force whoever
+logs to subscribe to both to get the full story. Anyone who wants to tell the cases apart has
+`Connecting` on the object itself.
+
+Note the event also reaches those who do **not** use `ConnectAsync`: a client with synchronous
+`Connect` + `AutoReconnect` gets its reconnection attempts normally (that is what
+`AttemptFailed_ReconexaoAutomatica_TambemDispara` pins down).
+
+### 22.3 `AAddress` BY VALUE — the trap the event avoids
+
+```pascal
+TPipeAttemptFailedEvent = procedure(Sender: TObject; const AAddress: string;
+  AAttempt: Integer; const AError: string) of object;
+```
+
+The address travels as a parameter, captured into `LTentado` BEFORE `PipeConnect`, rather than
+being read from `ActiveAddress` inside the handler. The reason is subtle and expensive: with
+`FailoverAddresses`, `FAddrIndex` advances **inside the `except` itself**, before the event is
+raised. A handler consulting `Client.ActiveAddress` would record the NEXT attempt's address,
+not the one that just failed — a forensic log that swaps the culprit is worse than no log,
+because it looks correct.
+
+The `except` also went from `on EPipeError do` to `on E: EPipeError do`: the transport's
+message is what separates "server absent" from "server refused my certificate", and that was
+exactly what was being discarded.
+
+`AAttempt` is the same `FReconnectAttempts` that `MaxReconnectAttempts` caps — it starts at 1
+and counts from the last DURABLE session, not from the beginning of time (same criterion as
+§12.4). It is the field that lets a logger apply a decimation policy ("I logged the 1st, the
+5th, the 20th") without keeping state of its own between calls.
+
+There is no `AConnId`, unlike every other event in the library: there is no connection — that
+is precisely what the event is about. An always-zero parameter would be noise.
+
+### 22.4 Frequency: the library does not decimate
+
+An attempt against an absent server consumes the whole `ReconnectDelayMs` (`WinPipeConnect`
+polls until the deadline, §21.6), so the event fires roughly every `ReconnectDelayMs` for as
+long as the outage lasts. At 3 s per attempt that is ~20 events a minute; a store with its
+server down overnight produces ~10,000.
+
+The library does **not** aggregate, decimate, or apply a suppression window. That is
+deliberate: the right policy depends on the domain (rotating file? syslog? telemetry billed
+per event?), and `AAttempt` already gives the app everything it needs to implement its own —
+typically logging at growing intervals, accumulating the counter between records. Decimation
+baked into the library would be one more policy to configure and one more case to debug when
+the log looked like it was "missing lines".
+
+### 22.5 Dispatch infrastructure: mirrored, not invented
+
+`TPipeAttemptFailedWork` + `qeAttemptFailed` + `DispatchAttemptFailedEvent` in `Pipes.Base.pas`
+mirror `TPipeDeliveryFailedWork`/`qeDeliveryFailed`/`DispatchDeliveryFailedEvent` from §20
+exactly — same `IncInFlight`/`DecInFlight` contract, same `pdmMainThread` alternate path
+through `TPipeQueuedEvent`/`TThread.Queue` with the refcounted guard.
+
+`TPipeQueuedEvent` got its own fields (`FAddress`, `FAttempt`) instead of reusing `FTopic` as a
+generic string slot, which is what `qeSubscription` does for its filter. Two extra fields on an
+object created only under `pdmMainThread` are cheap; a connection address travelling in a field
+named `FTopic` would charge the next reader dearly.
+
+The event is raised from the **reconnect thread**, not the reader thread — the same place the
+exhaustion `DispatchError` already came from. No new threading invariant (invariant 1 still
+holds: the reader thread runs no user code).
+
+### 22.6 Tests
+
+Four tests in `Pipes.ConnectAsyncTests` (same fixture, mirrored DUnitX/FPCUnit — it already
+sets up a primary server + backup + client + counters, and the event fires on both paths the
+unit already exercises):
+
+| Test | What it guards |
+|------|----------------|
+| `AttemptFailed_ServidorAusente_DisparaPorTentativaComContador` | one event per attempt (exactly 3 with a ceiling of 3), `AAttempt` = `1\|2\|3`, correct address on all of them, non-empty error message, and it STOPS firing once exhausted |
+| `AttemptFailed_ComFailover_ReportaOEnderecoQueFalhou` | §22.3: the event reports the PRIMARY, even though `ActiveAddress` already points at the backup |
+| `AttemptFailed_ReconexaoAutomatica_TambemDispara` | §22.2: it reaches users of synchronous `Connect` + `AutoReconnect`, with no `ConnectAsync` involved |
+| `AttemptFailed_ConexaoBemSucedida_NaoDispara` | silent operation: a connection that succeeds first try produces no noise |
+
+### 22.7 Milestones
+
+| # | Milestone | Content | Status |
+|---|-----------|---------|--------|
+| DIAG0a | `Pipes.Types` | `TPipeAttemptFailedEvent` | done |
+| DIAG0b | `Pipes.Base` | `qeAttemptFailed`, `TPipeAttemptFailedWork`, `DispatchAttemptFailedEvent` | done |
+| DIAG0c | `Pipes.Client` | `OnConnectAttemptFailed`, `LTentado` and `on E:` in `TryReopenSession`'s `except` | done |
+| DIAG0d | Tests | 4 integration tests in both frameworks | done |

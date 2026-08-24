@@ -404,6 +404,39 @@ Client.ConnectAsync;              // returns at once; keeps trying in the backgr
   as with an active component — otherwise the next attempt would aim at a different server
   with nobody having asked for it.
 
+### Attempt diagnostics (`OnConnectAttemptFailed`)
+
+The library operates silently: through an outage the client keeps trying, and if reconnection
+succeeds nobody is interrupted. The price is a log that goes mute in exactly the window that
+matters when someone reports, hours later, that "it wasn't working".
+
+`OnConnectAttemptFailed` fires on every attempt that fails — from `ConnectAsync` (first
+connection) **or** from automatic reconnection, indistinctly:
+
+```pascal
+procedure TApp.AttemptFailed(Sender: TObject; const AAddress: string;
+  AAttempt: Integer; const AError: string);
+begin
+  Log.Debug(Format('attempt %d against %s failed: %s', [AAttempt, AAddress, AError]));
+end;
+
+Client.OnConnectAttemptFailed := AttemptFailed;
+```
+
+- **It is not `OnError`, on purpose.** `OnError` is what the app must handle; a failed attempt
+  is the normal state of a client waiting for its server — the next one is already on its way.
+  The definitive outcome still arrives in `OnConnected` or in the exhaustion `OnError`.
+- **`AAddress` is the address that FAILED**, passed by value. Do not read `ActiveAddress` in
+  the handler: with `FailoverAddresses` the index has already advanced when the event is
+  raised, so the property would answer for the *next* address.
+- **`AAttempt`** is the same counter `MaxReconnectAttempts` caps (starts at 1, resets when a
+  session lasts longer than `ReconnectDelayMs`).
+- **`AError`** is the transport's message — what separates "server absent" from "server
+  refused my certificate".
+- **Frequency**: ~1 event per `ReconnectDelayMs` for as long as the outage lasts. The library
+  does not decimate or aggregate; `AAttempt` is what lets your logger space records out and
+  just accumulate the counter. With no handler assigned, zero cost.
+
 ### Address failover (`FailoverAddresses`)
 
 `TPipeClient` only (`TPipeServer` listens on a single `Address`; there is nothing to "fail
@@ -526,6 +559,10 @@ alive?"). Details and rationale in `docs/ARCHITECTURE.en.md` §16.
   starts BEFORE the server. `Connect` blocks and fails at the deadline; `AutoReconnect` only
   kicks in after a session has existed and dropped — `ConnectAsync` covers the gap between
   the two. See [Asynchronous connect](#asynchronous-connect-connectasync).
+- **Attempt diagnostics** (`OnConnectAttemptFailed`) — one event per failed connection
+  attempt, carrying the address, the attempt number and the transport message. For forensic
+  logging: it fills the silent window between the drop and the recovery. See
+  [Attempt diagnostics](#attempt-diagnostics-onconnectattemptfailed).
 - **Dispatch modes** (`DispatchMode`) — where YOUR handlers run:
   - `pdmPool` (default): thread pool; parallel across connections.
   - `pdmSerialized`: single worker; global FIFO order guaranteed.
@@ -733,6 +770,8 @@ TPipeClient
   FailoverAddresses: TArray<string>      // tried after Address; empty = Address only (default)
   ActiveAddress                          // which address the current session uses (snapshot)
   OnConnected/OnDisconnected: TPipeConnectionEvent
+  OnConnectAttemptFailed: TPipeAttemptFailedEvent  // (...; AAddress; AAttempt; AError)
+                                         // diagnostics: ONE attempt failed
   Stats: TPipeClientStats                // current SESSION; resets on every reconnect
 
 Pipes.Topics (pure unit, also useful outside the lib)

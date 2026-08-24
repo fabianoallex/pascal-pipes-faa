@@ -115,6 +115,7 @@ type
     FDisconnectNotified: Integer; // atomico: OnDisconnected ja disparado
     FOnConnected: TPipeConnectionEvent;
     FOnDisconnected: TPipeConnectionEvent;
+    FOnConnectAttemptFailed: TPipeAttemptFailedEvent;
     // --- request-reply ---
     FRpcLock: TCriticalSection;
     FRpcSlots: TDictionary<UInt64, TObject>; // corrId -> TPipeRpcSlot
@@ -370,6 +371,23 @@ type
       read FOnConnected write FOnConnected;
     property OnDisconnected: TPipeConnectionEvent
       read FOnDisconnected write FOnDisconnected;
+    /// UMA tentativa de abrir a sessao fracassou — de ConnectAsync (primeira
+    /// conexao) ou da reconexao automatica, indistintamente. E' DIAGNOSTICO,
+    /// nao um erro a tratar: a proxima tentativa ja esta a caminho, e o
+    /// desfecho definitivo chega em OnConnected ou no OnError de esgotamento.
+    /// Existe para o log forense responder "o que estava acontecendo entre a
+    /// queda das 14:37 e a volta das 14:52?", janela que ate aqui era muda.
+    ///
+    /// Nao vai para OnError de proposito: la' esta o que o app precisa tratar,
+    /// e afogar isso em tentativa-falhou mudaria o significado do evento para
+    /// todo mundo que ja usa AutoReconnect.
+    ///
+    /// Dispara a cada ~ReconnectDelayMs enquanto o servidor estiver fora. A
+    /// lib nao decima nem agrega: AAttempt permite a quem loga aplicar a
+    /// propria politica (registrar cada vez mais espacado, so' acumulando o
+    /// contador) sem guardar estado proprio.
+    property OnConnectAttemptFailed: TPipeAttemptFailedEvent
+      read FOnConnectAttemptFailed write FOnConnectAttemptFailed;
   end;
 
   /// Alias de compatibilidade (ver TNamedPipeBase em Pipes.Base).
@@ -771,6 +789,7 @@ end;
 function TPipeClient.TryReopenSession: Boolean;
 var
   LEndpoint: TPipeEndpoint;
+  LTentado: string;
 begin
   Result := False;
   if PipeAtomicGet(FDeliberate) <> 0 then
@@ -851,14 +870,20 @@ begin
     Exit;
   end;
   FLastAttemptTick := PipeTickMs;
+  LTentado := AddressAt(FAddrIndex);
   try
     // Reconexao usa as MESMAS credenciais: um cliente que reconecta sem elas
     // voltaria em texto claro, ou seria recusado pelo servidor mTLS.
-    LEndpoint := PipeConnect(AddressAt(FAddrIndex), FReconnectDelayMs, Transport,
+    LEndpoint := PipeConnect(LTentado, FReconnectDelayMs, Transport,
       KeepAliveSeconds, TlsOptions.AsOptions);
   except
-    on EPipeError do
+    on E: EPipeError do
     begin
+      // Diagnostico ANTES de avancar o indice: LTentado guarda o endereco que
+      // de fato falhou. Depois do FAddrIndex avancar, nem AddressAt nem
+      // ActiveAddress conseguem mais responder isso.
+      DispatchAttemptFailedEvent(FOnConnectAttemptFailed, LTentado,
+        FReconnectAttempts, E.Message);
       // Endereco atual falhou: a PROXIMA tentativa mira o seguinte da lista
       // (com FailoverAddresses vazio, AddressCount = 1 e isto e' sempre 0).
       FAddrIndex := (FAddrIndex + 1) mod AddressCount;

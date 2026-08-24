@@ -223,6 +223,31 @@ type
     AConnId: TPipeConnectionId) of object;
   TPipeErrorEvent = procedure(Sender: TObject; AConnId: TPipeConnectionId;
     const AError: string) of object;
+  { TPipeClient.OnConnectAttemptFailed: UMA tentativa de abrir a sessao
+    fracassou — tanto de ConnectAsync (primeira conexao) quanto da reconexao
+    automatica, que para diagnostico sao o mesmo fenomeno. Puramente
+    DIAGNOSTICO: nao ha nada a decidir aqui, a proxima tentativa ja esta a
+    caminho (ou o teto de MaxReconnectAttempts sera alcancado, e ai vem o
+    OnError de esgotamento). Sem handler atribuido nao custa nada.
+
+    Nao ha AConnId de proposito: nao existe conexao — e' justamente disso que
+    o evento fala.
+
+    AAddress e' o endereco que ACABOU de falhar, passado por valor em vez de
+    lido de ActiveAddress: com FailoverAddresses, o indice ja avancou quando
+    este evento sai, entao a property responderia pelo PROXIMO endereco. Num
+    log forense isso trocaria o culpado sem ninguem perceber.
+
+    AAttempt e' o mesmo contador que MaxReconnectAttempts limita: conta desde
+    a ultima sessao DURAVEL, nao desde sempre (ver TPipeClient). Comeca em 1.
+
+    Frequencia: uma tentativa contra servidor ausente consome
+    ReconnectDelayMs inteiro, entao o evento sai a cada ~ReconnectDelayMs
+    enquanto durar a queda. A lib nao decima nem agrega — quem loga decide a
+    politica, e AAttempt e' o que permite dizer "3 tentativas desde o ultimo
+    registro" sem guardar estado proprio. }
+  TPipeAttemptFailedEvent = procedure(Sender: TObject; const AAddress: string;
+    AAttempt: Integer; const AError: string) of object;
 
   /// Erro generico da biblioteca (base das demais).
   EPipeError = class(Exception);

@@ -407,6 +407,39 @@ Client.ConnectAsync;              // volta na hora; segue tentando em segundo pl
   com o componente ativo — senão a tentativa seguinte miraria outro servidor sem ninguém ter
   pedido.
 
+### Diagnóstico de tentativas (`OnConnectAttemptFailed`)
+
+A lib opera em silêncio: durante uma queda o cliente segue tentando, e se a reconexão der
+certo ninguém é interrompido. O preço disso é um log mudo justamente na janela que interessa
+quando alguém relata, horas depois, que "não estava funcionando".
+
+`OnConnectAttemptFailed` dispara a cada tentativa que fracassa — de `ConnectAsync` (primeira
+conexão) **ou** da reconexão automática, indistintamente:
+
+```pascal
+procedure TApp.TentativaFalhou(Sender: TObject; const AAddress: string;
+  AAttempt: Integer; const AErro: string);
+begin
+  Log.Debug(Format('tentativa %d contra %s falhou: %s', [AAttempt, AAddress, AErro]));
+end;
+
+Client.OnConnectAttemptFailed := TentativaFalhou;
+```
+
+- **Não é `OnError`, de propósito.** `OnError` é o que o app precisa tratar; uma tentativa
+  falha é o estado normal de quem espera o servidor — a próxima já está a caminho. O desfecho
+  definitivo continua em `OnConnected` ou no `OnError` de esgotamento.
+- **`AAddress` é o endereço que FALHOU**, passado por valor. Não leia `ActiveAddress` no
+  handler: com `FailoverAddresses`, o índice já avançou quando o evento sai, e a property
+  responderia pelo *próximo* endereço.
+- **`AAttempt`** é o mesmo contador que `MaxReconnectAttempts` limita (começa em 1, zera
+  quando uma sessão dura mais que `ReconnectDelayMs`).
+- **`AError`** é a mensagem do transporte — é o que separa "servidor ausente" de "servidor
+  recusou meu certificado".
+- **Frequência**: ~1 evento por `ReconnectDelayMs` enquanto durar a queda. A lib não decima
+  nem agrega; `AAttempt` é o que permite ao seu logger espaçar os registros e só acumular o
+  contador. Sem handler atribuído, custo zero.
+
 ### Failover de endereço (`FailoverAddresses`)
 
 Só em `TPipeClient` (`TPipeServer` escuta um único `Address`; não há o que "falhar para" do
@@ -528,6 +561,10 @@ vivo?"). Detalhes e racional em `docs/ARQUITETURA.md` §16. Vitrine executável 
   ANTES do servidor. `Connect` bloqueia e falha no prazo; `AutoReconnect` só entra depois de
   uma sessão ter existido e caído — `ConnectAsync` cobre o buraco entre os dois. Ver
   [Connect assíncrono](#connect-assíncrono-connectasync).
+- **Diagnóstico de tentativas** (`OnConnectAttemptFailed`) — um evento por tentativa de
+  conexão que fracassa, com endereço, número da tentativa e a mensagem do transporte. Para
+  log forense: preenche a janela silenciosa entre a queda e a volta. Ver
+  [Diagnóstico de tentativas](#diagnóstico-de-tentativas-onconnectattemptfailed).
 - **Modos de despacho** (`DispatchMode`) — onde os SEUS handlers executam:
   - `pdmPool` (padrão): pool de threads; paralelo entre conexões.
   - `pdmSerialized`: worker único; ordem FIFO global garantida.
@@ -732,6 +769,8 @@ TPipeClient
   FailoverAddresses: TArray<string>      // tentados apos Address; vazio = so Address (padrao)
   ActiveAddress                          // qual endereco a sessao atual usa (snapshot)
   OnConnected/OnDisconnected: TPipeConnectionEvent
+  OnConnectAttemptFailed: TPipeAttemptFailedEvent  // (...; AAddress; AAttempt; AError)
+                                         // diagnostico: UMA tentativa falhou
   Stats: TPipeClientStats                // da SESSAO atual; zera a cada reconexao
 
 Pipes.Topics (unit pura, útil também fora da lib)

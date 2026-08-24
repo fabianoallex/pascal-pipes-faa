@@ -127,6 +127,22 @@ implementar qualquer milestone novo.
   `Pipes.Transport.*`: cancelar herda o mesmo trade-off que `WaitReconnectDone` já aceita
   (espera até `ReconnectDelayMs` do `PipeConnect` em curso). Racional completo em
   `docs/ARQUITETURA.md` §21.
+- **Diagnóstico de tentativa (`TPipeClient.OnConnectAttemptFailed`, milestone DIAG0):** um
+  evento por tentativa de conexão que FRACASSA, para log forense — a aplicação opera em
+  silêncio de propósito, e até aqui a janela entre a queda e a volta não deixava rastro
+  nenhum. Dispara nos DOIS caminhos (`ConnectAsync` e reconexão automática, que para
+  diagnóstico são o mesmo fenômeno), do único ponto por onde toda tentativa passa: o
+  `except` do `PipeConnect` em `TryReopenSession`. NÃO vai para `OnError` — lá está o que o
+  app precisa tratar, e afogar isso em tentativa-falhou mudaria o significado do evento para
+  todo mundo que já usa `AutoReconnect`. `AAddress` viaja por VALOR (capturado em `LTentado`
+  ANTES do `PipeConnect`): com `FailoverAddresses`, o `FAddrIndex` avança dentro do próprio
+  `except`, então um handler que lesse `ActiveAddress` registraria o PRÓXIMO endereço — log
+  forense que troca o culpado é pior que log nenhum. Sem `AConnId` (não há conexão — é disso
+  que o evento fala). A lib NÃO decima nem agrega: `AAttempt` (o mesmo contador que
+  `MaxReconnectAttempts` limita) é o que deixa o app aplicar a própria política de
+  espaçamento de registros sem guardar estado. Infra de despacho espelha `TPipeDeliveryFailedWork`
+  de §20, com campos próprios (`FAddress`/`FAttempt`) em `TPipeQueuedEvent` em vez de
+  reaproveitar `FTopic` como slot genérico. Racional completo em `docs/ARQUITETURA.md` §22.
 
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 
@@ -293,6 +309,15 @@ das quedas DEPOIS da primeira conexão) e com `FailoverAddresses` (avança um en
 tentativa, mesma regra da reconexão). Enquanto `Connecting`, `Address`/`Transport`/
 `TlsOptions` ficam travados (`EPipeError`), via o `GetLifecycleLocked` novo de `TPipeBase`.
 
+Diagnóstico de tentativa (milestone DIAG0, `docs/ARQUITETURA.md` §22):
+`TPipeClient.OnConnectAttemptFailed: TPipeAttemptFailedEvent` (`Sender`, `AAddress`,
+`AAttempt`, `AError` — sem `AConnId`, não há conexão) dispara a cada tentativa que fracassa,
+vinda de `ConnectAsync` OU da reconexão automática. Diagnóstico puro, separado de `OnError`
+(que segue sendo "o que o app precisa tratar" + o esgotamento). `AAddress` é o endereço que
+FALHOU, por valor — `ActiveAddress` já aponta para o próximo quando o evento sai.
+`AAttempt` é o contador de `MaxReconnectAttempts` (começa em 1). ~1 evento por
+`ReconnectDelayMs` durante a queda; a lib não decima — a política de log é do app.
+
 ## Estrutura de units
 
 ```
@@ -369,6 +394,7 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | ADDR0 | Endereço do cliente: `TryPeerAddress` no contrato `TPipeEndpoint` (mesmo padrão de `TryPeerIdentity`), `TPipeServer.TryClientAddress`, backends Windows e POSIX via `getpeername` com `sockaddr` declarado à mão — ver `docs/ARQUITETURA.md` §19 | sonnet | concluído: FPC/Win64 verde (unit 138/138 + integração 121/121, suíte `Pipes.PeerAddressTests`); Delphi/DUnitX pendente de confirmação do usuário. POSIX/Linux compila mas não foi executado (sem toolchain local); `Pipes.Transport.Android` fora desta rodada |
 | CMD2 | `SendCommand`/`RequestCommand` de conveniência que CMD0 tinha deixado de fora: `PipeSendCommand`/`PipeSendCommandText` (overloads Client/Server, mesmo molde de `PipeSendJSON`) e `PipeRequestCommand`/`PipeRequestCommandText` (Client) em `Pipes.Commands.pas`, wrappers finos sobre `SendBytes`/`Request` — ver `docs/ARQUITETURA.md` §18.9 | sonnet | concluído: verde nos dois compiladores (FPC 147/147 unit via `PipesUnitTestsFpc.exe`, suíte inalterada — wrappers de uma linha já cobertos pelos testes de `PipeEncodeCommandPayload`/`SendBytes`/`Request`; Delphi/DUnitX 147/147 unit + 121/121 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-17). Sample `EchoCommand` migrado para os quatro wrappers nos dois lados e verificado ponta a ponta (servidor + cliente reais) |
 | CONN0 | Connect assíncrono: `TPipeClient.ConnectAsync`/`Connecting`, `FConnectingAsync` + `ReopenAllowed` reaproveitando a `TPipeReconnectThread` existente, `GetLifecycleLocked` em `TPipeBase` — ver `docs/ARQUITETURA.md` §21 | opus | concluído: verde nos dois compiladores (FPC/Win64 unit 147/147 + integração 135/135, eram 126 — suíte `TPipeConnectAsyncTests` com 9 testes novos, os 2 de risco rodados 5x seguidas; Delphi/DUnitX 147/147 unit + 135/135 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-24). O plano formalizado tinha dois furos reais encontrados na implementação: o SEGUNDO gate de `TryReopenSession` (a rechecagem com a conexão já aberta) e um TOCTOU na limpeza de `FConnectingAsync` em `Execute` — ver §21.2/§21.3 |
+| DIAG0 | Diagnóstico de tentativa de conexão: `TPipeClient.OnConnectAttemptFailed`, `TPipeAttemptFailedEvent` em `Pipes.Types`, `TPipeAttemptFailedWork`/`qeAttemptFailed`/`DispatchAttemptFailedEvent` em `Pipes.Base` (espelham `TPipeDeliveryFailedWork` de §20) — ver `docs/ARQUITETURA.md` §22 | opus | concluído: verde nos dois compiladores (FPC/Win64 unit 147/147 + integração 139/139, eram 135 — 4 testes novos na fixture `TPipeConnectAsyncTests`, rodada 3x seguidas; Delphi/DUnitX 147/147 unit + 139/139 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-24). Encontrou de lambuja que o `except` de `TryReopenSession` descartava a mensagem do transporte (`on EPipeError do` sem o `E:`) — justamente o que separa "servidor ausente" de "certificado recusado" |
 | DLV0 | Confirmação de entrega por assinante: `TPipeServer.OnDelivered`/`OnDeliveryFailed`, disparados por conexão em `FanOut`/`SendRetained`/`PublishBatch` depois do `Write` retornar (sucesso/exceção) — ver `docs/ARQUITETURA.md` §20 | sonnet | concluído: verde nos dois compiladores (FPC/Win64 unit 147/147 + integração 126/126, suíte `TPipePubSubTests` com os 4 testes novos + 1 regressão; Delphi/DUnitX 147/147 unit + 126/126 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-22). Encontrou e corrigiu de lambuja um bug pré-existente em `PublishBatch` (`ARetained` errado em entrega ao vivo — ver §20.6) |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
@@ -379,7 +405,10 @@ independente de CMD1 — não toca em `HandleRequest`). DLV0 depende de P0-P5 (m
 fan-out) e reaproveita o despacho de eventos já usado por CMD0-2/ADDR0. CONN0 depende de
 F0-F3 (a tentativa assíncrona avança pela lista de failover como a reconexão) e é o único
 milestone até aqui a mexer no motor de reconexão compartilhado — daí o checkpoint do motor
-verde ANTES da API nova.
+verde ANTES da API nova. DIAG0 depende de F0-F3 (o `AAddress` por valor só faz sentido
+porque `FAddrIndex` avança) e reaproveita a infra de despacho de DLV0; é independente de
+CONN0 no código (dispara igual para quem só usa `Connect` + `AutoReconnect`), mas nasceu
+junto porque a mesma conversa levantou os dois.
 
 ## Verificação por milestone
 
@@ -409,6 +438,13 @@ D0 exige: janela de coleta maior que a cadência de reenvio (300ms) devolve UMA 
 descoberta ocupada levanta `EPipeError` na hora; `Stop` conclui em < 2s e o MESMO objeto
 aceita `Start` de novo (porta liberada). Testes de integração usam SEMPRE a forma dirigida
 a 127.0.0.1 — broadcast real não é determinístico em CI (ver §16.8).
+
+DIAG0 exige: um evento por tentativa que falha, com `AAttempt` começando em 1 e crescendo
+(`1|2|3` com teto 3), e PARANDO de disparar quando o teto é alcançado; com
+`FailoverAddresses`, o evento reporta o endereço que FALHOU e não o próximo da lista (o
+teste compara contra o primário enquanto `ActiveAddress` já é o backup); dispara também para
+quem usa `Connect` síncrono + `AutoReconnect`, sem `ConnectAsync` nenhum; e uma conexão que
+dá certo de primeira NÃO gera evento (operação silenciosa).
 
 CONN0 exige: `ConnectAsync` com o servidor SUBINDO DEPOIS conecta sozinho (o caso que
 `Connect` e `AutoReconnect` não cobrem); esgotamento chega em `OnError` com a mensagem de
