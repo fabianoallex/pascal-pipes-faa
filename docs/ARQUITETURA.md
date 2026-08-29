@@ -188,6 +188,12 @@ errada de bytes e passaria a acusar "magic inválido" em frames perfeitos. Com o
 dentro do payload, esse peer falha no próprio kind desconhecido, com o stream ainda em
 sincronia — foi o que permitiu adicionar pub/sub sem trocar o magic.
 
+> A especificação completa e independente de Delphi/FPC deste formato — pensada para quem
+> implementa a outra ponta em outra linguagem — está em [`INTEROP.md`](INTEROP.md):
+> todos os kinds, envelopes de tópico/comando, kind 7 (compressão), NPD1 (descoberta),
+> exemplos em hex e pseudocódigo. Este arquivo aqui continua sendo o *porquê* de cada
+> decisão; o `INTEROP.md` é o *o quê* para o implementador externo.
+
 **Request-Reply** (mesmo padrão do RPC de `AMQP.Connection`):
 
 ```

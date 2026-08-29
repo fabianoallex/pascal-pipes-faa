@@ -340,7 +340,7 @@ tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery)
     Discovery/PeerAddress)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
-samples/ (20 amostras — ver README.md)  docs/ARQUITETURA.md  README.md
+samples/ (20 amostras — ver README.md)  docs/ARQUITETURA.md  docs/INTEROP.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 ```
 

@@ -284,6 +284,11 @@ magic, kind, correlation id e length), idêntico nos dois SOs — fronteiras de 
 da biblioteca, nunca do transporte. Payloads são `TBytes`; os métodos `*Text` convertem
 de/para UTF-8 de forma portátil.
 
+Quem precisa falar com um `TPipeServer`/`TPipeClient` a partir de **outra linguagem**
+(Python, C#, Go, …) tem a especificação completa do protocolo de fio — NPF1, envelopes de
+tópico/comando, kind 7 (compressão), NPD1 (descoberta) — em
+[`docs/INTEROP.md`](docs/INTEROP.md), com exemplos em hex e pseudocódigo de leitura.
+
 ### Heartbeat de aplicação (`HeartbeatIntervalMs`)
 
 Complementar ao Keepalive acima, não substituto. `KeepAliveSeconds` é um probe do SO:
@@ -1268,6 +1273,7 @@ tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
 tests/Android/       suite de DEVICE do backend Android (loopback; sem par dual-compiler)
 tests/pki/           PKI de TESTE versionada, sem valor de seguranca (ver LEIA-ME)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)
+docs/INTEROP.md      protocolo de fio para implementar a outra ponta em outra linguagem
 Pipes.groupproj      grupo de projetos Delphi    Pipes.lpg  grupo Lazarus
 ```
 
