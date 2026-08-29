@@ -1,5 +1,7 @@
 # Interoperabilidade — falando com `pascal-pipes-faa` de outra linguagem
 
+> 🇬🇧 This document is also available in [English](INTEROP.en.md).
+
 Este documento descreve o **protocolo de fio** que `TPipeServer`/`TPipeClient` usam, para
 quem precisa escrever a outra ponta em outra linguagem (Python, C#, Go, Java, Rust, JS…).
 Nada aqui depende de Delphi/FPC — é só formato binário sobre um fluxo de bytes.

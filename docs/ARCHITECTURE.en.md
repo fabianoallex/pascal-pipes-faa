@@ -191,6 +191,12 @@ perfectly good frames. With the topic inside the payload, that peer fails on the
 kind itself, with the stream still in sync — which is what allowed adding pub/sub without
 changing the magic.
 
+> The complete, Delphi/FPC-independent spec of this format — meant for anyone implementing
+> the other end in another language — is in [`INTEROP.en.md`](INTEROP.en.md): every kind,
+> the topic/command envelopes, kind 7 (compression), NPD1 (discovery), hex examples and
+> pseudocode. This file remains the *why* behind each decision; `INTEROP.en.md` is the
+> *what* for the external implementer.
+
 **Request-Reply** (same pattern as the `AMQP.Connection` RPC):
 
 ```

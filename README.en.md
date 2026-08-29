@@ -284,6 +284,11 @@ correlation id and length), identical on both OSes — message boundaries belong
 library, never to the transport. Payloads are `TBytes`; the `*Text` methods convert to/from
 UTF-8 portably.
 
+Anyone who needs to talk to a `TPipeServer`/`TPipeClient` from **another language**
+(Python, C#, Go, …) has the full wire-protocol spec — NPF1, topic/command envelopes,
+kind 7 (compression), NPD1 (discovery) — in [`docs/INTEROP.en.md`](docs/INTEROP.en.md),
+with hex examples and read-loop pseudocode.
+
 ### Application heartbeat (`HeartbeatIntervalMs`)
 
 Complementary to Keepalive above, not a replacement. `KeepAliveSeconds` is an OS probe:
@@ -1286,6 +1291,8 @@ tests/Android/       DEVICE suite for the Android backend (loopback; no dual-com
 tests/pki/           versioned TEST PKI, no security value (see its README)
 docs/ARQUITETURA.md  full architecture (wire format, thread lifecycle, rationale)
                      English version: docs/ARCHITECTURE.en.md
+docs/INTEROP.md      wire protocol for implementing the other end in another language
+                     English version: docs/INTEROP.en.md
 Pipes.groupproj      Delphi project group       Pipes.lpg  Lazarus group
 ```
 
