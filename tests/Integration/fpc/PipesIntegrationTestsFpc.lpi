@@ -29,6 +29,10 @@
     </RunParams>
     <RequiredPackages>
       <Item>
+        <PackageName Value="pascal_common_faa"/>
+        <DefaultFilename Value="..\..\..\external\pascal-common-faa\packages\pascal_common_faa.lpk" Prefer="True"/>
+      </Item>
+      <Item>
         <PackageName Value="FPCUnitTestRunner"/>
       </Item>
       <Item>
@@ -113,6 +117,7 @@
     <Linking>
       <Debugging>
         <DebugInfoType Value="dsDwarf3"/>
+        <UseHeaptrc Value="True"/>
       </Debugging>
     </Linking>
   </CompilerOptions>

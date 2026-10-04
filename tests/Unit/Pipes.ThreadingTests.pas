@@ -1,8 +1,17 @@
 unit Pipes.ThreadingTests;
 
-{ Testes de fumaca de Pipes.Threading: atomics, monitor (lock + variavel de
-  condicao) e thread pool. Versao DUnitX/Delphi; a versao FPCUnit em
-  tests/Unit/fpc espelha a mesma cobertura. }
+{ Testes de Pipes.Threading: o despacho por chave (TPipeKeyedDispatcher) e o
+  PipeGroupDispatcher global. Versao DUnitX/Delphi; a versao FPCUnit em
+  tests/Unit/fpc espelha a mesma cobertura.
+
+  Atomics, monitor e pool foram para a pascal-common-faa e sao testados la
+  (PascalCommon.ThreadingTests/ThreadPoolTests). TPipeHeartbeatThread nunca
+  teve teste de unidade proprio: e' coberto ponta a ponta por
+  tests/Integration/Pipes.HeartbeatTests.
+
+  A finalization desta unit enfileira itens lentos no PipeGroupDispatcher
+  para Pipes.FinalizationCheck provar que a liberacao do dispatcher global
+  espera as drenagens em voo (ver o cabecalho daquela unit). }
 
 interface
 
@@ -12,38 +21,33 @@ uses
   Classes,
   SyncObjs,
   Generics.Collections,
+  PascalCommon.Threading,
+  PascalCommon.ThreadPool,
   Pipes.Threading;
 
 type
   [TestFixture]
   TPipeThreadingTests = class
   published
-    [Test] procedure Atomic_IncDec_DevolvemValorNovo;
-    [Test] procedure Atomic_SetDevolveAntigo_CasSoTrocaSeIgual;
-    [Test] procedure Atomic_RoundTrip64;
-    [Test] procedure Atomic_CompareExchange64_TrocaSoSeIgual;
-    [Test] procedure Atomic_Add64_ConcorrenteSomaCorreta;
-    [Test] procedure TickMs_NaoRetrocede;
-    [Test] procedure Monitor_WaitComTimeout_RetornaAposPrazo;
-    [Test] procedure Monitor_PulseAll_AcordaWaiterAntesDoTimeout;
-    [Test] procedure Pool_ExecutaTodosOsItens;
-    [Test] procedure Pool_ExcecaoEmItemNaoDerrubaWorker;
-    [Test] procedure Pool_DestroyComItensPendentes_NaoTrava;
-    [Test] procedure PoolGlobal_DevolveMesmaInstancia;
     [Test] procedure KeyedDispatcher_MesmaChave_NuncaSobrepoeEPreservaOrdem;
     [Test] procedure KeyedDispatcher_ChavesDiferentes_ExecutamEmParalelo;
     [Test] procedure KeyedDispatcher_ChaveReaproveitadaAposEsvaziar_ComecaDoZero;
     [Test] procedure KeyedDispatcher_ExcecaoEmItem_NaoTravaOsDemaisDaChave;
-    [Test] procedure KeyedDispatcher_DestroyComItensPendentes_NaoTrava;
+    [Test] procedure KeyedDispatcher_PoolDestruidoPrimeiro_ExecutaTodosOsPendentes;
+    [Test] procedure KeyedDispatcher_DestruidoAntesDoPool_EsperaDrenagemEmVoo;
+    [Test] procedure KeyedDispatcher_EnqueueDuranteDestroy_LiberaSemExecutar;
     [Test] procedure GroupDispatcherGlobal_DevolveMesmaInstancia;
   end;
 
 implementation
 
+uses
+  Pipes.FinalizationCheck;
+
 type
-  { Incrementa um contador compartilhado (com atraso opcional, para encher a
-    fila do pool nos testes de shutdown). }
-  TCounterWork = class(TPipeWorkItem)
+  { Incrementa um contador compartilhado (com atraso opcional, para acumular
+    itens pendentes na mailbox). }
+  TCounterWork = class(TPcWorkItem)
   private
     FCounter: PInteger;
     FDelayMs: Integer;
@@ -52,15 +56,15 @@ type
     procedure Execute; override;
   end;
 
-  TRaiseWork = class(TPipeWorkItem)
+  TRaiseWork = class(TPcWorkItem)
   public
     procedure Execute; override;
   end;
 
   { Prova mutua-exclusao (CAS num flag compartilhado, com Sleep no meio pra
     alargar a janela de uma eventual sobreposicao) e registra a ordem de
-    execucao observada — usado pelos testes de TPipeKeyedDispatcher. }
-  TKeyedProbeWork = class(TPipeWorkItem)
+    execucao observada. }
+  TKeyedProbeWork = class(TPcWorkItem)
   private
     FSeq: Integer;
     FBusyFlag: PInteger; // 0 = livre, 1 = ocupado (CAS)
@@ -74,30 +78,45 @@ type
     procedure Execute; override;
   end;
 
-  { Soma AAmount ao contador compartilhado, ATimes vezes, via PipeAtomicAdd64
-    — usado para provar que o CAS loop nao perde incrementos sob concorrencia
-    real (um teste sequencial nao pegaria um loop de CAS mal escrito). }
-  TAdderThread = class(TThread)
+  { Sinaliza que comecou e fica preso ate AGate abrir: segura a drenagem da
+    chave dele (e portanto o Destroy do dispatcher) pelo tempo que o teste
+    quiser, sem depender de Sleep. }
+  TGateWork = class(TPcWorkItem)
   private
-    FTarget: PUInt64;
-    FTimes: Integer;
-    FAmount: UInt64;
-  protected
-    procedure Execute; override;
+    FGate: TEvent;
+    FStarted: PInteger;
   public
-    constructor Create(ATarget: PUInt64; ATimes: Integer; AAmount: UInt64);
+    constructor Create(AGate: TEvent; AStarted: PInteger);
+    procedure Execute; override;
   end;
 
-  { Entra no monitor, sinaliza que vai dormir e espera um PulseAll. }
-  TMonitorWaiter = class(TThread)
+  { Registra separadamente "executou" (Execute) e "foi liberado" (destrutor):
+    um item liberado sem ter executado foi recusado. }
+  TFlagWork = class(TPcWorkItem)
   private
-    FMon: TPipeMonitor;
-    FInWait: PInteger;
-    FAwake: PInteger;
+    FRan: PInteger;
+    FFreed: PInteger;
+  public
+    constructor Create(ARan, AFreed: PInteger);
+    destructor Destroy; override;
+    procedure Execute; override;
+  end;
+
+  { Libera o dispatcher em outra thread (Destroy bloqueia enquanto ha'
+    drenagem em voo). }
+  TDestroyerThread = class(TThread)
+  private
+    FDispatcher: TPipeKeyedDispatcher;
   protected
     procedure Execute; override;
   public
-    constructor Create(AMon: TPipeMonitor; AInWait, AAwake: PInteger);
+    constructor Create(ADispatcher: TPipeKeyedDispatcher);
+  end;
+
+  { Item da checagem de finalizacao (ver Pipes.FinalizationCheck). }
+  TFinalizationProbeWork = class(TPcWorkItem)
+  public
+    procedure Execute; override;
   end;
 
 constructor TCounterWork.Create(ACounter: PInteger; ADelayMs: Integer);
@@ -111,7 +130,7 @@ procedure TCounterWork.Execute;
 begin
   if FDelayMs > 0 then
     Sleep(FDelayMs);
-  PipeAtomicInc(FCounter^);
+  PcAtomicInc(FCounter^);
 end;
 
 procedure TRaiseWork.Execute;
@@ -133,8 +152,8 @@ end;
 
 procedure TKeyedProbeWork.Execute;
 begin
-  if PipeAtomicCompareExchange(FBusyFlag^, 1, 0) <> 0 then
-    PipeAtomicSet(FViolation^, 1); // outra instancia da MESMA chave ja rodando
+  if PcAtomicCompareExchange(FBusyFlag^, 1, 0) <> 0 then
+    PcAtomicSet(FViolation^, 1); // outra instancia da MESMA chave ja rodando
   try
     Sleep(FDelayMs); // alarga a janela: implementacao quebrada sobreporia aqui
     FLock.Enter;
@@ -144,44 +163,57 @@ begin
       FLock.Leave;
     end;
   finally
-    PipeAtomicSet(FBusyFlag^, 0);
+    PcAtomicSet(FBusyFlag^, 0);
   end;
 end;
 
-constructor TAdderThread.Create(ATarget: PUInt64; ATimes: Integer;
-  AAmount: UInt64);
+constructor TGateWork.Create(AGate: TEvent; AStarted: PInteger);
 begin
-  FTarget := ATarget;
-  FTimes := ATimes;
-  FAmount := AAmount;
+  inherited Create;
+  FGate := AGate;
+  FStarted := AStarted;
+end;
+
+procedure TGateWork.Execute;
+begin
+  PcAtomicSet(FStarted^, 1);
+  FGate.WaitFor(10000); // 10s e' valvula de escape; o teste abre antes
+end;
+
+constructor TFlagWork.Create(ARan, AFreed: PInteger);
+begin
+  inherited Create;
+  FRan := ARan;
+  FFreed := AFreed;
+end;
+
+destructor TFlagWork.Destroy;
+begin
+  PcAtomicSet(FFreed^, 1);
+  inherited;
+end;
+
+procedure TFlagWork.Execute;
+begin
+  PcAtomicSet(FRan^, 1);
+end;
+
+constructor TDestroyerThread.Create(ADispatcher: TPipeKeyedDispatcher);
+begin
+  FDispatcher := ADispatcher;
   FreeOnTerminate := False;
   inherited Create(False);
 end;
 
-procedure TAdderThread.Execute;
-var
-  I: Integer;
+procedure TDestroyerThread.Execute;
 begin
-  for I := 1 to FTimes do
-    PipeAtomicAdd64(FTarget^, FAmount);
+  FDispatcher.Free;
 end;
 
-constructor TMonitorWaiter.Create(AMon: TPipeMonitor; AInWait, AAwake: PInteger);
+procedure TFinalizationProbeWork.Execute;
 begin
-  FMon := AMon;
-  FInWait := AInWait;
-  FAwake := AAwake;
-  FreeOnTerminate := False;
-  inherited Create(False);
-end;
-
-procedure TMonitorWaiter.Execute;
-begin
-  FMon.Enter;
-  PipeAtomicSet(FInWait^, 1);
-  FMon.Wait(10000); // acordado pelo PulseAll do teste; 10s e' valvula de escape
-  FMon.Leave;
-  PipeAtomicSet(FAwake^, 1);
+  Sleep(20); // a fila da chave leva ~100ms: sem a espera no Destroy, sobraria item
+  PcAtomicInc(GFinalizationRan);
 end;
 
 // Espera ACounter atingir AExpected (polling); False se estourar o prazo.
@@ -190,10 +222,10 @@ function WaitCounter(var ACounter: Integer; AExpected: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) <> AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) <> AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) = AExpected;
+  Result := PcAtomicGet(ACounter) = AExpected;
 end;
 
 // Espera ALog.Count atingir ao menos AExpected (polling sob ALock).
@@ -203,7 +235,7 @@ var
   LDeadline: UInt64;
   LCount: Integer;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   repeat
     ALock.Enter;
     try
@@ -214,211 +246,43 @@ begin
     if LCount >= AExpected then
       Exit(True);
     Sleep(5);
-  until PipeTickMs >= LDeadline;
+  until PcTickMs >= LDeadline;
   Result := False;
+end;
+
+// Espera o dispatcher ficar sem drenagem viva (polling); False se estourar.
+function WaitNoActiveDrains(ADispatcher: TPipeKeyedDispatcher;
+  ATimeoutMs: Cardinal): Boolean;
+var
+  LDeadline: UInt64;
+begin
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (ADispatcher.ActiveDrains <> 0) and (PcTickMs < LDeadline) do
+    Sleep(5);
+  Result := ADispatcher.ActiveDrains = 0;
 end;
 
 // Comparacao nao-generica (evita E2532: TList<Integer>.Count nao infere T
 // igual ao literal no Win64 — mesma armadilha de Length() nas outras units).
-procedure EqualInt(AExpected, AActual: Integer);
+procedure EqualInt(AExpected, AActual: Integer; const AMsg: string = '');
 begin
-  Assert.AreEqual(AExpected, AActual);
+  Assert.AreEqual(AExpected, AActual, AMsg);
 end;
 
 { TPipeThreadingTests }
-
-procedure TPipeThreadingTests.Atomic_IncDec_DevolvemValorNovo;
-var
-  V: Integer;
-begin
-  V := 0;
-  Assert.AreEqual(1, PipeAtomicInc(V));
-  Assert.AreEqual(2, PipeAtomicInc(V));
-  Assert.AreEqual(1, PipeAtomicDec(V));
-  Assert.AreEqual(1, PipeAtomicGet(V));
-end;
-
-procedure TPipeThreadingTests.Atomic_SetDevolveAntigo_CasSoTrocaSeIgual;
-var
-  V: Integer;
-begin
-  V := 5;
-  Assert.AreEqual(5, PipeAtomicSet(V, 9));
-  Assert.AreEqual(9, PipeAtomicGet(V));
-  Assert.AreEqual(9, PipeAtomicCompareExchange(V, 20, 9));   // comparand bate: troca
-  Assert.AreEqual(20, PipeAtomicGet(V));
-  Assert.AreEqual(20, PipeAtomicCompareExchange(V, 30, 99)); // nao bate: mantem
-  Assert.AreEqual(20, PipeAtomicGet(V));
-end;
-
-procedure TPipeThreadingTests.Atomic_RoundTrip64;
-var
-  W: UInt64;
-begin
-  W := 0;
-  PipeAtomicWrite64(W, UInt64($0123456789ABCDEF));
-  Assert.IsTrue(PipeAtomicRead64(W) = UInt64($0123456789ABCDEF),
-    'roundtrip de 64 bits corrompeu o valor');
-end;
-
-procedure TPipeThreadingTests.Atomic_CompareExchange64_TrocaSoSeIgual;
-var
-  W: UInt64;
-begin
-  W := 100;
-  Assert.IsTrue(PipeAtomicCompareExchange64(W, 200, 100) = 100,
-    'comparand bateu: devia trocar'); // devolve o valor ANTIGO
-  Assert.IsTrue(W = 200);
-  Assert.IsTrue(PipeAtomicCompareExchange64(W, 300, 999) = 200,
-    'comparand nao bateu: devia manter');
-  Assert.IsTrue(W = 200, 'valor nao devia ter mudado');
-end;
-
-procedure TPipeThreadingTests.Atomic_Add64_ConcorrenteSomaCorreta;
-const
-  NUM_THREADS = 8;
-  TIMES_PER_THREAD = 1000;
-var
-  LCounter: UInt64;
-  LThreads: array[0..NUM_THREADS - 1] of TAdderThread;
-  I: Integer;
-begin
-  LCounter := 0;
-  for I := 0 to NUM_THREADS - 1 do
-    LThreads[I] := TAdderThread.Create(@LCounter, TIMES_PER_THREAD, 1);
-  for I := 0 to NUM_THREADS - 1 do
-    LThreads[I].WaitFor;
-  for I := 0 to NUM_THREADS - 1 do
-    LThreads[I].Free;
-  Assert.IsTrue(LCounter = UInt64(NUM_THREADS * TIMES_PER_THREAD),
-    'CAS loop perdeu incrementos sob concorrencia');
-end;
-
-procedure TPipeThreadingTests.TickMs_NaoRetrocede;
-var
-  T1, T2: UInt64;
-begin
-  T1 := PipeTickMs;
-  Sleep(20);
-  T2 := PipeTickMs;
-  Assert.IsTrue(T2 >= T1, 'tick monotonico retrocedeu');
-  Assert.IsTrue(T2 > 0);
-end;
-
-procedure TPipeThreadingTests.Monitor_WaitComTimeout_RetornaAposPrazo;
-var
-  LMon: TPipeMonitor;
-  T0: UInt64;
-begin
-  LMon := TPipeMonitor.Create;
-  try
-    LMon.Enter;
-    T0 := PipeTickMs;
-    LMon.Wait(200);
-    LMon.Leave;
-    Assert.IsTrue(PipeTickMs - T0 >= 150, 'Wait retornou antes do timeout');
-  finally
-    LMon.Free;
-  end;
-end;
-
-procedure TPipeThreadingTests.Monitor_PulseAll_AcordaWaiterAntesDoTimeout;
-var
-  LMon: TPipeMonitor;
-  LWaiter: TMonitorWaiter;
-  LInWait, LAwake: Integer;
-  T0: UInt64;
-begin
-  LInWait := 0;
-  LAwake := 0;
-  LMon := TPipeMonitor.Create;
-  try
-    LWaiter := TMonitorWaiter.Create(LMon, @LInWait, @LAwake);
-    try
-      Assert.IsTrue(WaitCounter(LInWait, 1, 2000), 'waiter nao chegou ao Wait');
-      // O Enter abaixo so retorna depois de o waiter capturar a geracao e
-      // soltar o lock (dentro do Wait) — logo o PulseAll acorda exatamente ele.
-      LMon.Enter;
-      T0 := PipeTickMs;
-      LMon.PulseAll;
-      LMon.Leave;
-      Assert.IsTrue(WaitCounter(LAwake, 1, 3000), 'PulseAll nao acordou o waiter');
-      Assert.IsTrue(PipeTickMs - T0 < 5000, 'waiter so acordou pelo timeout');
-    finally
-      LWaiter.WaitFor;
-      LWaiter.Free;
-    end;
-  finally
-    LMon.Free;
-  end;
-end;
-
-procedure TPipeThreadingTests.Pool_ExecutaTodosOsItens;
-var
-  LPool: TPipeThreadPool;
-  LCounter, I: Integer;
-begin
-  LCounter := 0;
-  LPool := TPipeThreadPool.Create(4);
-  try
-    for I := 1 to 50 do
-      LPool.Queue(TCounterWork.Create(@LCounter));
-    Assert.IsTrue(WaitCounter(LCounter, 50, 5000), 'pool nao executou os 50 itens');
-  finally
-    LPool.Free;
-  end;
-end;
-
-procedure TPipeThreadingTests.Pool_ExcecaoEmItemNaoDerrubaWorker;
-var
-  LPool: TPipeThreadPool;
-  LCounter: Integer;
-begin
-  LCounter := 0;
-  // 1 worker: o item seguinte prova que o MESMO worker sobreviveu a excecao.
-  LPool := TPipeThreadPool.Create(1);
-  try
-    LPool.Queue(TRaiseWork.Create);
-    LPool.Queue(TCounterWork.Create(@LCounter));
-    Assert.IsTrue(WaitCounter(LCounter, 1, 5000), 'worker morreu apos excecao');
-  finally
-    LPool.Free;
-  end;
-end;
-
-procedure TPipeThreadingTests.Pool_DestroyComItensPendentes_NaoTrava;
-var
-  LPool: TPipeThreadPool;
-  LCounter, I: Integer;
-begin
-  LCounter := 0;
-  LPool := TPipeThreadPool.Create(2);
-  for I := 1 to 20 do
-    LPool.Queue(TCounterWork.Create(@LCounter, 30)); // 30ms cada: fila acumula
-  // Destroy deve concluir os itens em execucao, descartar os pendentes e
-  // retornar — se travar, o teste trava (detector de deadlock do runner/CI).
-  LPool.Free;
-  Assert.IsTrue(PipeAtomicGet(LCounter) <= 20);
-end;
-
-procedure TPipeThreadingTests.PoolGlobal_DevolveMesmaInstancia;
-begin
-  Assert.IsNotNull(PipePool);
-  Assert.AreSame(PipePool, PipePool);
-end;
 
 procedure TPipeThreadingTests.KeyedDispatcher_MesmaChave_NuncaSobrepoeEPreservaOrdem;
 const
   N = 30;
 var
-  LPool: TPipeThreadPool;
+  LPool: TPcThreadPool;
   LDispatcher: TPipeKeyedDispatcher;
   LLock: TCriticalSection;
   LLog: TList<Integer>;
   LBusy, LViolation: Integer;
   I: Integer;
 begin
-  LPool := TPipeThreadPool.Create(8); // varios workers: so' a chave impede sobreposicao
+  LPool := TPcThreadPool.Create(8); // varios workers: so' a chave impede sobreposicao
   LDispatcher := TPipeKeyedDispatcher.Create(LPool);
   LLock := TCriticalSection.Create;
   LLog := TList<Integer>.Create;
@@ -430,7 +294,7 @@ begin
         LLock, LLog, 3));
     Assert.IsTrue(WaitListCount(LLock, LLog, N, 5000),
       'itens da mesma chave nao terminaram');
-    Assert.AreEqual(0, PipeAtomicGet(LViolation),
+    Assert.AreEqual(0, PcAtomicGet(LViolation),
       'duas instancias da mesma chave rodaram ao mesmo tempo');
     LLock.Enter;
     try
@@ -441,8 +305,6 @@ begin
       LLock.Leave;
     end;
   finally
-    // Ordem obrigatoria: o pool primeiro (drena qualquer TPipeMailboxDrainWork
-    // em voo), so' depois o dispatcher (ver o cabecalho de TPipeKeyedDispatcher).
     LPool.Free;
     LDispatcher.Free;
     LLog.Free;
@@ -452,14 +314,14 @@ end;
 
 procedure TPipeThreadingTests.KeyedDispatcher_ChavesDiferentes_ExecutamEmParalelo;
 var
-  LPool: TPipeThreadPool;
+  LPool: TPcThreadPool;
   LDispatcher: TPipeKeyedDispatcher;
   LLock: TCriticalSection;
   LLog: TList<Integer>;
   LBusyA, LBusyB, LViolation: Integer;
   T0: UInt64;
 begin
-  LPool := TPipeThreadPool.Create(8);
+  LPool := TPcThreadPool.Create(8);
   LDispatcher := TPipeKeyedDispatcher.Create(LPool);
   LLock := TCriticalSection.Create;
   LLog := TList<Integer>.Create;
@@ -467,7 +329,7 @@ begin
   LBusyB := 0;
   LViolation := 0;
   try
-    T0 := PipeTickMs;
+    T0 := PcTickMs;
     LDispatcher.Enqueue(111, TKeyedProbeWork.Create(1, @LBusyA, @LViolation,
       LLock, LLog, 200));
     LDispatcher.Enqueue(222, TKeyedProbeWork.Create(2, @LBusyB, @LViolation,
@@ -475,7 +337,7 @@ begin
     Assert.IsTrue(WaitListCount(LLock, LLog, 2, 3000), 'as duas chaves nao terminaram');
     // Serializado (bug) levaria ~400ms; em paralelo, ~200ms — folga generosa
     // pra nao ficar flaky, mas longe o bastante de 400 pra provar o ponto.
-    Assert.IsTrue(PipeTickMs - T0 < 350,
+    Assert.IsTrue(PcTickMs - T0 < 350,
       'chaves diferentes nao rodaram em paralelo (parece serializado)');
   finally
     LPool.Free;
@@ -487,13 +349,13 @@ end;
 
 procedure TPipeThreadingTests.KeyedDispatcher_ChaveReaproveitadaAposEsvaziar_ComecaDoZero;
 var
-  LPool: TPipeThreadPool;
+  LPool: TPcThreadPool;
   LDispatcher: TPipeKeyedDispatcher;
   LLock: TCriticalSection;
   LLog: TList<Integer>;
   LBusy, LViolation: Integer;
 begin
-  LPool := TPipeThreadPool.Create(4);
+  LPool := TPcThreadPool.Create(4);
   LDispatcher := TPipeKeyedDispatcher.Create(LPool);
   LLock := TCriticalSection.Create;
   LLog := TList<Integer>.Create;
@@ -503,12 +365,14 @@ begin
     LDispatcher.Enqueue(555, TKeyedProbeWork.Create(1, @LBusy, @LViolation,
       LLock, LLog, 5));
     Assert.IsTrue(WaitListCount(LLock, LLog, 1, 3000));
-    Sleep(50); // garante que a mailbox ja esvaziou e a chave saiu do dicionario
+    // A drenagem se desconta so' depois de tirar a chave do dicionario: com
+    // ActiveDrains = 0 a mailbox ja' sumiu (sem Sleep-e-torcer).
+    Assert.IsTrue(WaitNoActiveDrains(LDispatcher, 3000), 'a mailbox da chave nao esvaziou');
     LDispatcher.Enqueue(555, TKeyedProbeWork.Create(2, @LBusy, @LViolation,
       LLock, LLog, 5));
     Assert.IsTrue(WaitListCount(LLock, LLog, 2, 3000),
       'chave reaproveitada nao processou o item novo');
-    Assert.AreEqual(0, PipeAtomicGet(LViolation));
+    Assert.AreEqual(0, PcAtomicGet(LViolation));
     LLock.Enter;
     try
       EqualInt(2, LLog.Count);
@@ -527,12 +391,12 @@ end;
 
 procedure TPipeThreadingTests.KeyedDispatcher_ExcecaoEmItem_NaoTravaOsDemaisDaChave;
 var
-  LPool: TPipeThreadPool;
+  LPool: TPcThreadPool;
   LDispatcher: TPipeKeyedDispatcher;
   LCounter: Integer;
 begin
   LCounter := 0;
-  LPool := TPipeThreadPool.Create(4);
+  LPool := TPcThreadPool.Create(4);
   LDispatcher := TPipeKeyedDispatcher.Create(LPool);
   try
     LDispatcher.Enqueue(999, TRaiseWork.Create);
@@ -545,43 +409,137 @@ begin
   end;
 end;
 
-procedure TPipeThreadingTests.KeyedDispatcher_DestroyComItensPendentes_NaoTrava;
+procedure TPipeThreadingTests.KeyedDispatcher_PoolDestruidoPrimeiro_ExecutaTodosOsPendentes;
+const
+  N = 10;
 var
-  LPool: TPipeThreadPool;
+  LPool: TPcThreadPool;
   LDispatcher: TPipeKeyedDispatcher;
-  LLock: TCriticalSection;
-  LLog: TList<Integer>;
-  LBusy, LViolation: Integer;
-  I: Integer;
+  LCounter, I: Integer;
 begin
-  LLock := TCriticalSection.Create;
-  LLog := TList<Integer>.Create;
-  LBusy := 0;
-  LViolation := 0;
-  LPool := TPipeThreadPool.Create(2);
+  LCounter := 0;
+  LPool := TPcThreadPool.Create(2);
   LDispatcher := TPipeKeyedDispatcher.Create(LPool);
   try
-    for I := 1 to 10 do
-      LDispatcher.Enqueue(333, TKeyedProbeWork.Create(I, @LBusy, @LViolation,
-        LLock, LLog, 20));
-    // LPool.Free tem de concluir (junta os workers, drenando a mailbox em
-    // voo) sem travar — mesmo detector de deadlock de
-    // Pool_DestroyComItensPendentes_NaoTrava, so' que atras de uma chave.
+    for I := 1 to N do
+      LDispatcher.Enqueue(333, TCounterWork.Create(@LCounter, 20));
+    // TPcThreadPool.Destroy executa a fila inteira antes de juntar os
+    // workers — e a drenagem da chave so' termina com a mailbox vazia. Logo,
+    // quando Free volta, TODOS os pendentes rodaram (nao "alguns": o pool
+    // nunca descartou itens enfileirados, ao contrario do que esta suite
+    // dizia antes da pascal-common-faa).
+    LPool.Free;
+    LPool := nil;
+    EqualInt(N, PcAtomicGet(LCounter), 'pool destruido nao executou todos os pendentes');
+    EqualInt(0, LDispatcher.ActiveDrains, 'sobrou drenagem viva');
+  finally
     LPool.Free;
     LDispatcher.Free;
+  end;
+end;
+
+procedure TPipeThreadingTests.KeyedDispatcher_DestruidoAntesDoPool_EsperaDrenagemEmVoo;
+const
+  KEYS = 3;
+  PER_KEY = 5;
+var
+  LPool: TPcThreadPool;
+  LDispatcher: TPipeKeyedDispatcher;
+  LCounter, K, I: Integer;
+begin
+  // A ordem do PipeGroupDispatcher global depois da migracao: ele e'
+  // liberado na finalization de Pipes.Threading, com o PcPool ainda vivo.
+  LCounter := 0;
+  LPool := TPcThreadPool.Create(4);
+  LDispatcher := TPipeKeyedDispatcher.Create(LPool);
+  try
+    for K := 1 to KEYS do
+      for I := 1 to PER_KEY do
+        LDispatcher.Enqueue(UInt64(K), TCounterWork.Create(@LCounter, 20));
+    Assert.IsTrue(LDispatcher.ActiveDrains > 0, 'o teste precisa de drenagem em voo');
+    // Sem a espera em Destroy, Free liberaria as mailboxes com itens ainda
+    // pendentes (que nunca rodariam) e a drenagem chamaria Fetch num objeto
+    // liberado.
+    LDispatcher.Free;
+    LDispatcher := nil;
+    EqualInt(KEYS * PER_KEY, PcAtomicGet(LCounter),
+      'Destroy do dispatcher voltou antes de as drenagens terminarem');
   finally
-    LLog.Free;
-    LLock.Free;
+    LDispatcher.Free;
+    LPool.Free;
+  end;
+end;
+
+procedure TPipeThreadingTests.KeyedDispatcher_EnqueueDuranteDestroy_LiberaSemExecutar;
+var
+  LPool: TPcThreadPool;
+  LDispatcher: TPipeKeyedDispatcher;
+  LGate: TEvent;
+  LDestroyer: TDestroyerThread;
+  LStarted, LRan, LFreed: Integer;
+  LRejected: Boolean;
+  LDeadline: UInt64;
+begin
+  LStarted := 0;
+  LRejected := False;
+  LGate := TEvent.Create(nil, True, False, '');
+  LPool := TPcThreadPool.Create(4);
+  try
+    LDispatcher := TPipeKeyedDispatcher.Create(LPool);
+    LDispatcher.Enqueue(1, TGateWork.Create(LGate, @LStarted));
+    Assert.IsTrue(WaitCounter(LStarted, 1, 3000), 'o item da comporta nao comecou');
+    // Destroy fica preso esperando a drenagem da chave 1 (presa na comporta).
+    LDestroyer := TDestroyerThread.Create(LDispatcher);
+    try
+      // Enfileira na chave 2 ate um item ser recusado: antes de o Destroy
+      // marcar o desligamento, cada um roda normalmente; depois, e' liberado
+      // sem rodar. Cada volta espera o item da anterior ser liberado.
+      LDeadline := PcTickMs + 5000;
+      repeat
+        LRan := 0;
+        LFreed := 0;
+        LDispatcher.Enqueue(2, TFlagWork.Create(@LRan, @LFreed));
+        if not WaitCounter(LFreed, 1, 3000) then
+          Break;
+        LRejected := PcAtomicGet(LRan) = 0;
+      until LRejected or (PcTickMs >= LDeadline);
+    finally
+      LGate.SetEvent; // libera a drenagem da chave 1, e com ela o Destroy
+      LDestroyer.WaitFor;
+      LDestroyer.Free;
+    end;
+    Assert.IsTrue(LRejected, 'Enqueue durante o Destroy executou o item ou nao o liberou');
+  finally
+    LPool.Free;
+    LGate.Free;
   end;
 end;
 
 procedure TPipeThreadingTests.GroupDispatcherGlobal_DevolveMesmaInstancia;
 begin
+  // Criado na initialization de Pipes.Threading: ja existe antes do 1o uso.
   Assert.IsNotNull(PipeGroupDispatcher);
   Assert.AreSame(PipeGroupDispatcher, PipeGroupDispatcher);
 end;
 
+const
+  FINALIZATION_ITEMS = 5;
+
+procedure QueueFinalizationProbe;
+var
+  I: Integer;
+begin
+  // Roda antes da finalization de Pipes.Threading (esta unit a usa): os itens
+  // ainda estao na fila da chave quando o PipeGroupDispatcher e' liberado.
+  GFinalizationQueued := FINALIZATION_ITEMS;
+  for I := 1 to FINALIZATION_ITEMS do
+    PipeGroupDispatcher.Enqueue(UInt64($F1A1), TFinalizationProbeWork.Create);
+end;
+
 initialization
   TDUnitX.RegisterTestFixture(TPipeThreadingTests);
+
+finalization
+  QueueFinalizationProbe;
 
 end.

@@ -35,7 +35,7 @@ uses
   FMX.Controls.Presentation,
   FMX.ScrollBox,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Transport,
   Pipes.Base,
   Pipes.Client,
@@ -92,7 +92,7 @@ type
   TLeitorBloqueado = class(TThread)
   private
     FEndpoint: TPipeEndpoint;
-    FSaiuEm: UInt64;      // PipeTickMs quando o Read levantou
+    FSaiuEm: UInt64;      // PcTickMs quando o Read levantou
     FErro: string;
   protected
     procedure Execute; override;
@@ -223,12 +223,12 @@ function TColetor.Espera(AQuantos: Integer; ATimeoutMs: Cardinal): Boolean;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   repeat
     if Contagem >= AQuantos then
       Exit(True);
     Sleep(10);
-  until Int64(LDeadline) - Int64(PipeTickMs) <= 0;
+  until Int64(LDeadline) - Int64(PcTickMs) <= 0;
   Result := Contagem >= AQuantos;
 end;
 
@@ -322,7 +322,7 @@ begin
     on E: Exception do
       FErro := 'excecao inesperada ' + E.ClassName + ': ' + E.Message;
   end;
-  FSaiuEm := PipeTickMs;
+  FSaiuEm := PcTickMs;
 end;
 
 { TAceitadorUnico }
@@ -447,11 +447,11 @@ procedure TExecutorDeTestes.Roda(const ANome: string;
 var
   LInicio: UInt64;
 begin
-  LInicio := PipeTickMs;
+  LInicio := PcTickMs;
   try
     AProc;
     Inc(FOk);
-    Avisa(Format('  OK     %s (%d ms)', [ANome, PipeTickMs - LInicio]));
+    Avisa(Format('  OK     %s (%d ms)', [ANome, PcTickMs - LInicio]));
   except
     on E: ETestePulado do
     begin
@@ -581,7 +581,7 @@ begin
     // teste poderia medir um Read que nem chegou a bloquear.
     Sleep(300);
 
-    LAbortouEm := PipeTickMs;
+    LAbortouEm := PcTickMs;
     LServidor.CloseAbort;
     Verdadeiro(LLeitor.WaitFor = 0, 'a thread de leitura nao terminou');
 
@@ -620,9 +620,9 @@ begin
     LServer.Listen;
     LClient.Connect(3000);
     Sleep(200); // conexao parada, sem nenhum trafego: o pior caso do Stop
-    LInicio := PipeTickMs;
+    LInicio := PcTickMs;
     LClient.Disconnect;
-    LDecorrido := Int64(PipeTickMs) - Int64(LInicio);
+    LDecorrido := Int64(PcTickMs) - Int64(LInicio);
     Avisa(Format('         (Disconnect: %d ms)', [LDecorrido]));
     Verdadeiro(LDecorrido < LIMITE_ENCERRAMENTO_MS,
       Format('Disconnect levou %d ms (limite %d)',
@@ -650,9 +650,9 @@ begin
     LServer.Listen;
     LClient.Connect(3000);
     Sleep(200);
-    LInicio := PipeTickMs;
+    LInicio := PcTickMs;
     LServer.Stop; // precisa acordar acceptor E reader pelo self-pipe
-    LDecorrido := Int64(PipeTickMs) - Int64(LInicio);
+    LDecorrido := Int64(PcTickMs) - Int64(LInicio);
     Avisa(Format('         (Stop: %d ms)', [LDecorrido]));
     Verdadeiro(LDecorrido < LIMITE_ENCERRAMENTO_MS,
       Format('Stop levou %d ms (limite %d)',
@@ -691,9 +691,9 @@ begin
     except
       Break; // o servidor pode cair antes; nao e' isto que se mede aqui
     end;
-    LInicio := PipeTickMs;
+    LInicio := PcTickMs;
     LServer.Stop;
-    LDecorrido := Int64(PipeTickMs) - Int64(LInicio);
+    LDecorrido := Int64(PcTickMs) - Int64(LInicio);
     Avisa(Format('         (Stop sob carga: %d ms, %d msgs vistas)',
       [LDecorrido, LG.Mensagens.Contagem]));
     Verdadeiro(LDecorrido < LIMITE_ENCERRAMENTO_MS,

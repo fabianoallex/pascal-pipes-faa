@@ -21,7 +21,7 @@ uses
   Classes,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Topics,
   Pipes.Transport,
@@ -136,8 +136,8 @@ var
 
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_pubsub_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_pubsub_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 { TPipePubSubTests }
@@ -202,10 +202,10 @@ function TPipePubSubTests.WaitCount(var ACounter: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 function TPipePubSubTests.WaitSubscribers(const ATopic: string;
@@ -213,9 +213,9 @@ function TPipePubSubTests.WaitSubscribers(const ATopic: string;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   while (FServer.SubscriberCount(ATopic) <> AExpected) and
-        (PipeTickMs < LDeadline) do
+        (PcTickMs < LDeadline) do
     Sleep(5);
   Result := FServer.SubscriberCount(ATopic) = AExpected;
 end;
@@ -259,8 +259,8 @@ begin
   if LIdx >= 0 then
   begin
     if ARetained then
-      PipeAtomicInc(FRetainedCount[LIdx]);
-    PipeAtomicInc(FTopicCount[LIdx]); // por ultimo: quem espera por ele ve o resto pronto
+      PcAtomicInc(FRetainedCount[LIdx]);
+    PcAtomicInc(FTopicCount[LIdx]); // por ultimo: quem espera por ele ve o resto pronto
   end;
 end;
 
@@ -271,7 +271,7 @@ var
 begin
   LIdx := IndexOfClient(Sender);
   if LIdx >= 0 then
-    PipeAtomicInc(FCliErrCount[LIdx]);
+    PcAtomicInc(FCliErrCount[LIdx]);
 end;
 
 procedure TPipePubSubTests.OnSrvPublish(Sender: TObject;
@@ -284,19 +284,19 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FPublishCount);
+  PcAtomicInc(FPublishCount);
 end;
 
 procedure TPipePubSubTests.OnSrvSubscribe(Sender: TObject;
   AConnId: TPipeConnectionId; const AFilter: string);
 begin
-  PipeAtomicInc(FSubCount);
+  PcAtomicInc(FSubCount);
 end;
 
 procedure TPipePubSubTests.OnSrvUnsubscribe(Sender: TObject;
   AConnId: TPipeConnectionId; const AFilter: string);
 begin
-  PipeAtomicInc(FUnsubCount);
+  PcAtomicInc(FUnsubCount);
 end;
 
 procedure TPipePubSubTests.OnSrvDelivered(Sender: TObject;
@@ -310,7 +310,7 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FDeliveredCount);
+  PcAtomicInc(FDeliveredCount);
 end;
 
 procedure TPipePubSubTests.OnSrvDeliveryFailed(Sender: TObject;
@@ -324,13 +324,13 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FDeliveryFailedCount);
+  PcAtomicInc(FDeliveryFailedCount);
 end;
 
 procedure TPipePubSubTests.OnSrvError(Sender: TObject;
   AConnId: TPipeConnectionId; const AError: string);
 begin
-  PipeAtomicInc(FSrvErrCount);
+  PcAtomicInc(FSrvErrCount);
 end;
 
 procedure TPipePubSubTests.OnSrvClientConnected(Sender: TObject;
@@ -342,25 +342,25 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FSrvConnCount);
+  PcAtomicInc(FSrvConnCount);
 end;
 
 procedure TPipePubSubTests.OnSrvClientDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FSrvDiscCount);
+  PcAtomicInc(FSrvDiscCount);
 end;
 
 procedure TPipePubSubTests.OnCliConnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliConnCount);
+  PcAtomicInc(FCliConnCount);
 end;
 
 procedure TPipePubSubTests.OnCliDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliDiscCount);
+  PcAtomicInc(FCliDiscCount);
 end;
 
 procedure TPipePubSubTests.DoSubscribeFiltroInvalido;
@@ -440,9 +440,9 @@ begin
   AssertTrue('assinante nao recebeu', WaitCount(FTopicCount[0], 1, 3000));
   Sleep(150); // janela para uma entrega indevida aparecer
   AssertEquals('cliente 1 nao devia receber topico de outro caixa',
-    0, PipeAtomicGet(FTopicCount[1]));
+    0, PcAtomicGet(FTopicCount[1]));
   AssertEquals('cliente 2 nao assinou nada e nao devia receber',
-    0, PipeAtomicGet(FTopicCount[2]));
+    0, PcAtomicGet(FTopicCount[2]));
   AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
 end;
 
@@ -463,7 +463,7 @@ begin
     WaitCount(FTopicCount[1], 2, 3000));
   Sleep(150);
   AssertEquals('caixa.*.status nao devia alcancar tres segmentos abaixo',
-    1, PipeAtomicGet(FTopicCount[0]));
+    1, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.Unsubscribe_ParaDeReceber;
@@ -484,7 +484,7 @@ begin
   FServer.PublishText('caixa.3.status', 'segunda');
   Sleep(200);
   AssertEquals('nao devia receber depois do Unsubscribe',
-    1, PipeAtomicGet(FTopicCount[0]));
+    1, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.SubscribeIdempotente_UmaCopiaPorMensagem;
@@ -505,7 +505,7 @@ begin
   AssertTrue(WaitCount(FTopicCount[0], 1, 3000));
   Sleep(200);
   AssertEquals('dois filtros casando nao podem duplicar a entrega',
-    1, PipeAtomicGet(FTopicCount[0]));
+    1, PcAtomicGet(FTopicCount[0]));
 end;
 
 { --- ciclo de vida da assinatura --- }
@@ -560,9 +560,9 @@ begin
     LEp.Free; // do ponto de vista do servidor, o processo do cliente morreu
   end;
   AssertTrue('servidor nao viu a queda', WaitCount(FSrvDiscCount, 1, 5000));
-  LDeadline := PipeTickMs + 3000;
+  LDeadline := PcTickMs + 3000;
   while (FServer.SubscriberCount('caixa.3.status') > 0) and
-        (PipeTickMs < LDeadline) do
+        (PcTickMs < LDeadline) do
     Sleep(5);
   AssertEquals('assinatura vazou depois da queda abrupta',
     0, FServer.SubscriberCount('caixa.3.status'));
@@ -583,10 +583,10 @@ begin
     WaitCount(FTopicCount[0], 1, 3000));
   Sleep(200);
   AssertEquals('so o retido que casa com o filtro devia chegar',
-    1, PipeAtomicGet(FTopicCount[0]));
+    1, PcAtomicGet(FTopicCount[0]));
   AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
   AssertEquals('catch-up tinha de chegar marcado como retido',
-    1, PipeAtomicGet(FRetainedCount[0]));
+    1, PcAtomicGet(FRetainedCount[0]));
 end;
 
 procedure TPipePubSubTests.Retido_AoVivoNaoVemMarcado;
@@ -602,13 +602,13 @@ begin
   FServer.PublishText('caixa.3.status', 'aberto', True); // retain + assinante
   AssertTrue(WaitCount(FTopicCount[0], 1, 3000));
   AssertEquals('publicacao ao vivo nao pode vir marcada como retida',
-    0, PipeAtomicGet(FRetainedCount[0]));
+    0, PcAtomicGet(FRetainedCount[0]));
   // ... e o valor ficou guardado do mesmo jeito, para o proximo assinante.
   AddClient(1);
   FClients[1].Subscribe('caixa.#');
   AssertTrue(WaitCount(FTopicCount[1], 1, 3000));
   AssertEquals('o segundo cliente devia receber o retido, marcado',
-    1, PipeAtomicGet(FRetainedCount[1]));
+    1, PcAtomicGet(FRetainedCount[1]));
 end;
 
 procedure TPipePubSubTests.Retido_CorpoVazioApaga;
@@ -621,7 +621,7 @@ begin
   AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
   Sleep(250);
   AssertEquals('valor apagado nao devia ser entregue',
-    0, PipeAtomicGet(FTopicCount[0]));
+    0, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.Retido_TetoDescartaOMaisAntigo;
@@ -636,7 +636,7 @@ begin
   AssertTrue('retidos nao chegaram', WaitCount(FTopicCount[0], 2, 3000));
   Sleep(200);
   AssertEquals('o teto tinha de descartar o mais antigo',
-    2, PipeAtomicGet(FTopicCount[0]));
+    2, PcAtomicGet(FTopicCount[0]));
   AssertEquals(0, CountLog('0|t.1|'));
   AssertEquals(1, CountLog('0|t.2|dois'));
   AssertEquals(1, CountLog('0|t.3|tres'));
@@ -708,7 +708,7 @@ begin
     WaitCount(FPublishCount, 1, 3000));
   Sleep(200);
   AssertEquals('sem RelayClientPublish, um cliente nao injeta nos outros',
-    0, PipeAtomicGet(FTopicCount[1]));
+    0, PcAtomicGet(FTopicCount[1]));
   FLock.Enter;
   try
     AssertEquals('caixa.3.status|do cliente', FPublishLog[0]);
@@ -797,10 +797,10 @@ begin
   // escritas em vez de esperar por ela (detector de deadlock).
   for I := 1 to 300 do
     FServer.PublishText('carga.x', 'p' + IntToStr(I));
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   FServer.Stop;
   AssertTrue('Stop sob publicacao intensa demorou demais (deadlock?)',
-    PipeTickMs - T0 < 2000);
+    PcTickMs - T0 < 2000);
   AssertFalse('servidor devia estar inativo', FServer.Active);
   AssertTrue('os clientes nao perceberam o Stop',
     WaitCount(FCliDiscCount, 3, 3000));
@@ -835,7 +835,7 @@ begin
     WaitCount(FTopicCount[1], 1, 3000));
   Sleep(150);
   AssertEquals('cliente 2 nao assinou nada e nao devia receber',
-    0, PipeAtomicGet(FTopicCount[2]));
+    0, PcAtomicGet(FTopicCount[2]));
   AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
   AssertEquals(1, CountLog('1|caixa.4.status|fechado'));
 end;
@@ -859,7 +859,7 @@ begin
   AssertTrue('retido do lote nao chegou', WaitCount(FTopicCount[0], 1, 3000));
   Sleep(200);
   AssertEquals('so o item com Retain=True devia sobreviver para o novo assinante',
-    1, PipeAtomicGet(FTopicCount[0]));
+    1, PcAtomicGet(FTopicCount[0]));
   AssertEquals(1, CountLog('0|t.1|um'));
   AssertEquals(0, CountLog('0|t.2|'));
 end;
@@ -885,7 +885,7 @@ begin
 
   AssertTrue('assinante nao recebeu o item', WaitCount(FTopicCount[0], 1, 3000));
   AssertEquals('entrega AO VIVO nao pode chegar marcada como ARetained=True',
-    0, PipeAtomicGet(FRetainedCount[0]));
+    0, PcAtomicGet(FRetainedCount[0]));
 end;
 
 procedure TPipePubSubTests.PublishBatch_TopicoInvalido_NaoPublicaNadaDoLote;
@@ -897,7 +897,7 @@ begin
   AssertException(EPipeError, DoPublishBatchTopicoInvalidoNoServidor);
   Sleep(150);
   AssertEquals('topico invalido no lote nao pode deixar os outros itens passarem',
-    0, PipeAtomicGet(FTopicCount[0]));
+    0, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.PublishBatch_DoCliente_SemRelayVaiSoParaOnPublish;
@@ -921,7 +921,7 @@ begin
     WaitCount(FPublishCount, 2, 3000));
   Sleep(150);
   AssertEquals('sem RelayClientPublish, o lote nao alcanca outros clientes',
-    0, PipeAtomicGet(FTopicCount[1]));
+    0, PcAtomicGet(FTopicCount[1]));
 end;
 
 { --- OnDelivered / OnDeliveryFailed --- }
@@ -943,11 +943,11 @@ begin
     WaitCount(FDeliveredCount, 1, 3000));
   Sleep(150); // janela para uma segunda entrega indevida aparecer
   AssertEquals('OnDelivered devia disparar exatamente uma vez, apenas para quem assina',
-    1, PipeAtomicGet(FDeliveredCount));
+    1, PcAtomicGet(FDeliveredCount));
   AssertEquals(1, CountLogIn(FDeliveredLog,
     IntToStr(LConnId0) + '|caixa.3.status|aberto|False'));
   AssertEquals('entrega bem-sucedida nao pode disparar OnDeliveryFailed',
-    0, PipeAtomicGet(FDeliveryFailedCount));
+    0, PcAtomicGet(FDeliveryFailedCount));
 end;
 
 procedure TPipePubSubTests.OnDelivered_Retido_ChegaComARetainedTrue;
@@ -989,7 +989,7 @@ begin
     WaitCount(FDeliveredCount, 2, 3000));
   Sleep(150);
   AssertEquals('cada item do lote pode gerar no maximo um OnDelivered por conexao que casou',
-    2, PipeAtomicGet(FDeliveredCount));
+    2, PcAtomicGet(FDeliveredCount));
 end;
 
 procedure TPipePubSubTests.OnDeliveryFailed_PayloadExcedeMaxMessageSize;
@@ -1011,10 +1011,10 @@ begin
   AssertEquals(1, CountLogIn(FDeliveryFailedLog,
     IntToStr(FLastConnId) + '|caixa.3.status|'));
   AssertEquals('entrega que falhou nao pode contar como OnDelivered',
-    0, PipeAtomicGet(FDeliveredCount));
+    0, PcAtomicGet(FDeliveredCount));
   Sleep(150);
   AssertEquals('o cliente nao pode ter recebido o payload que nao coube no teto',
-    0, PipeAtomicGet(FTopicCount[0]));
+    0, PcAtomicGet(FTopicCount[0]));
 end;
 
 initialization

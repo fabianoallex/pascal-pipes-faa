@@ -1,0 +1,3 @@
+# Scripts de shell sempre com LF: com core.autocrlf=true um checkout no Windows
+# gravaria CRLF, e o sh (Git Bash ou o container do test_fpc_docker.sh) quebra com .
+*.sh text eol=lf

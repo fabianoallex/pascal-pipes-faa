@@ -15,7 +15,7 @@ uses
   Classes,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Server,
   Pipes.Client;
@@ -102,8 +102,8 @@ var
 
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_e2e_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_e2e_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 { TPipeEndToEndTests }
@@ -140,10 +140,10 @@ function TPipeEndToEndTests.WaitCount(var ACounter: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 procedure TPipeEndToEndTests.OnSrvMessage(Sender: TObject;
@@ -152,19 +152,19 @@ begin
   FLock.Enter;
   try
     if FServerTexts.Count = 0 then
-      FConnCountAtFirstMsg := PipeAtomicGet(FConnectedCount);
+      FConnCountAtFirstMsg := PcAtomicGet(FConnectedCount);
     FServerTexts.Add(PipeUtf8Decode(AData));
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FSrvMsgCount);
+  PcAtomicInc(FSrvMsgCount);
 end;
 
 procedure TPipeEndToEndTests.OnSrvMessageGrouped(Sender: TObject;
   AConnId: TPipeConnectionId; const AData: TBytes);
 begin
-  if PipeAtomicCompareExchange(FGroupBusy, 1, 0) <> 0 then
-    PipeAtomicSet(FGroupViolation, 1); // outra msg da MESMA chave ja rodando
+  if PcAtomicCompareExchange(FGroupBusy, 1, 0) <> 0 then
+    PcAtomicSet(FGroupViolation, 1); // outra msg da MESMA chave ja rodando
   try
     Sleep(3); // alarga a janela: dispatch quebrado sobreporia aqui
     FLock.Enter;
@@ -174,9 +174,9 @@ begin
       FLock.Leave;
     end;
   finally
-    PipeAtomicSet(FGroupBusy, 0);
+    PcAtomicSet(FGroupBusy, 0);
   end;
-  PipeAtomicInc(FSrvMsgCount);
+  PcAtomicInc(FSrvMsgCount);
 end;
 
 procedure TPipeEndToEndTests.OnSrvMessageSlow(Sender: TObject;
@@ -189,7 +189,7 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FSrvMsgCount);
+  PcAtomicInc(FSrvMsgCount);
 end;
 
 procedure TPipeEndToEndTests.OnCliMessage(Sender: TObject;
@@ -201,7 +201,7 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FCliMsgCount);
+  PcAtomicInc(FCliMsgCount);
 end;
 
 procedure TPipeEndToEndTests.OnSrvClientConnected(Sender: TObject;
@@ -213,25 +213,25 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FConnectedCount);
+  PcAtomicInc(FConnectedCount);
 end;
 
 procedure TPipeEndToEndTests.OnSrvClientDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FSrvDiscCount);
+  PcAtomicInc(FSrvDiscCount);
 end;
 
 procedure TPipeEndToEndTests.OnCliDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliDiscCount);
+  PcAtomicInc(FCliDiscCount);
 end;
 
 procedure TPipeEndToEndTests.OnCliConnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliConnCount);
+  PcAtomicInc(FCliConnCount);
 end;
 
 procedure TPipeEndToEndTests.OnSrvRequestEco(Sender: TObject;
@@ -419,10 +419,10 @@ begin
   OpenPair;
   for I := 1 to 20 do
     FClient.SendText('trafego' + IntToStr(I));
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   FServer.Stop;
   AssertTrue('Stop sob trafego demorou demais (deadlock?)',
-    PipeTickMs - T0 < 2000);
+    PcTickMs - T0 < 2000);
   AssertTrue('servidor devia estar inativo', not FServer.Active);
   AssertTrue('cliente nao percebeu o Stop do servidor',
     WaitCount(FCliDiscCount, 1, 3000));
@@ -477,11 +477,11 @@ var
   T0: UInt64;
 begin
   OpenPair; // sem OnRequest atribuido
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   AssertException(EPipeError, DoRequestNoHandler);
   // Voltou pelo reply de erro do servidor, nao pelo timeout de 3000 ms.
   AssertTrue('devia falhar rapido (reply de erro), nao por timeout',
-    PipeTickMs - T0 < 2000);
+    PcTickMs - T0 < 2000);
 end;
 
 procedure TPipeEndToEndTests.Request_Timeout_LevantaEPipeTimeout;
@@ -490,10 +490,10 @@ var
 begin
   OpenPair;
   FServer.OnRequest := OnSrvRequestLento; // dorme 800 ms; timeout = 200 ms
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   AssertException(EPipeTimeout, DoRequestShortTimeout);
-  AssertTrue('timeout retornou cedo demais', PipeTickMs - T0 >= 180);
-  AssertTrue('timeout demorou demais', PipeTickMs - T0 < 3000);
+  AssertTrue('timeout retornou cedo demais', PcTickMs - T0 >= 180);
+  AssertTrue('timeout demorou demais', PcTickMs - T0 < 3000);
 end;
 
 procedure TPipeEndToEndTests.AutoReconnect_ReconectaAposRestartDoServidor;
@@ -523,7 +523,7 @@ begin
   // Contrato do AutoReconnect: um send pode pegar uma janela de churn
   // (EPipeClosed transitorio entre queda e re-reconexao) — o chamador
   // re-tenta, como um app real faria.
-  LDeadline := PipeTickMs + 5000;
+  LDeadline := PcTickMs + 5000;
   while True do
   begin
     try
@@ -531,7 +531,7 @@ begin
       Break;
     except
       on EPipeClosed do
-        if PipeTickMs >= LDeadline then
+        if PcTickMs >= LDeadline then
           raise;
     end;
     Sleep(50);
@@ -563,10 +563,10 @@ begin
 
   // Console: quem drena a fila da main thread e' o CheckSynchronize (num app
   // LCL/VCL o proprio loop de mensagens faz isso).
-  LDeadline := PipeTickMs + 5000;
-  while (PipeAtomicGet(FSrvMsgCount) < 1) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + 5000;
+  while (PcAtomicGet(FSrvMsgCount) < 1) and (PcTickMs < LDeadline) do
     CheckSynchronize(10);
-  AssertEquals(1, PipeAtomicGet(FSrvMsgCount));
+  AssertEquals(1, PcAtomicGet(FSrvMsgCount));
   FLock.Enter;
   try
     AssertEquals('via main thread', FServerTexts[0]);
@@ -688,7 +688,7 @@ begin
   AssertTrue('nem todas as mensagens do grupo chegaram',
     WaitCount(FSrvMsgCount, N, 5000));
   AssertEquals('duas mensagens do MESMO grupo rodaram sobrepostas em pdmPool',
-    0, PipeAtomicGet(FGroupViolation));
+    0, PcAtomicGet(FGroupViolation));
   FLock.Enter;
   try
     AssertEquals(N, FServerTexts.Count);
@@ -706,13 +706,13 @@ var
 begin
   OpenPair;
   FServer.OnMessage := OnSrvMessageSlow;
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   FClient.SendBytes(PipeUtf8Encode('a'), 'grupoA');
   FClient.SendBytes(PipeUtf8Encode('b'), 'grupoB');
   AssertTrue('as duas mensagens nao chegaram', WaitCount(FSrvMsgCount, 2, 3000));
   // Serializado (bug) levaria ~400ms; em paralelo, ~200ms — folga generosa.
   AssertTrue('chaves diferentes nao processaram em paralelo (parece serializado)',
-    PipeTickMs - T0 < 350);
+    PcTickMs - T0 < 350);
 end;
 
 procedure TPipeEndToEndTests.Compressao_ClienteParaServidor_ChegaIntegroEStatsLogicos;

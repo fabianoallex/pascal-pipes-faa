@@ -74,7 +74,7 @@ uses
   Classes,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing; // PipeUtf8Encode/Decode (lossless nos dois compiladores)
 
 const
@@ -570,7 +570,7 @@ end;
 
 procedure TPipeUdpChannel.Abort;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit;
   if FStopEvent <> DISC_WSA_INVALID_EVENT then
     WSASetEvent(FStopEvent); // manual-reset: acorda esperas atuais e futuras
@@ -583,7 +583,7 @@ var
   LWait: Cardinal;
   LRc: Cardinal;
 begin
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     Exit(uwStop);
   LEvents[0] := FRecvEvent;
   LEvents[1] := FStopEvent;
@@ -597,7 +597,7 @@ begin
       [WSAGetLastError]);
   if LRc = DISC_WSA_WAIT_TIMEOUT then
     Exit(uwTimeout);
-  if (LRc = DISC_WSA_WAIT_EVENT_0 + 1) or (PipeAtomicGet(FClosed) <> 0) then
+  if (LRc = DISC_WSA_WAIT_EVENT_0 + 1) or (PcAtomicGet(FClosed) <> 0) then
     Exit(uwStop);
   // Reseta FRecvEvent e consome o FD_READ pendente; sem isso a proxima espera
   // nao bloquearia (mesmo idioma do endpoint TCP).
@@ -618,7 +618,7 @@ begin
   AFromPort := 0;
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       Exit(False);
     LAddrLen := SizeOf(LAddr);
     FillChar(LAddr, SizeOf(LAddr), 0);
@@ -772,7 +772,7 @@ procedure TPipeUdpChannel.Abort;
 var
   LByte: Byte;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit;
   LByte := 1;
   if FStopW >= 0 then
@@ -786,18 +786,18 @@ var
   LDeadline: UInt64;
   LWait: Int64;
 begin
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     Exit(uwStop);
   LDeadline := 0;
   if ATimeoutMs >= 0 then
-    LDeadline := PipeTickMs + UInt64(ATimeoutMs);
+    LDeadline := PcTickMs + UInt64(ATimeoutMs);
   repeat
     if ATimeoutMs < 0 then
       LWait := -1
     else
     begin
       // Recalculado a cada volta: um EINTR nao pode reiniciar o prazo.
-      LWait := Int64(LDeadline) - Int64(PipeTickMs);
+      LWait := Int64(LDeadline) - Int64(PcTickMs);
       if LWait < 0 then
         LWait := 0;
     end;
@@ -812,7 +812,7 @@ begin
   if LRc < 0 then
     raise EPipeError.CreateFmt('poll de descoberta falhou (erro %d)', [errno]);
   if ((LFds[1].revents and DISC_POLLIN) <> 0) or
-     (PipeAtomicGet(FClosed) <> 0) then
+     (PcAtomicGet(FClosed) <> 0) then
     Exit(uwStop);
   if LRc = 0 then
     Exit(uwTimeout);
@@ -833,7 +833,7 @@ begin
   AFromPort := 0;
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       Exit(False);
     LAddrLen := SizeOf(LAddr);
     FillChar(LAddr, SizeOf(LAddr), 0);
@@ -962,7 +962,7 @@ procedure TPipeUdpChannel.Abort;
 var
   LByte: Byte;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit;
   LByte := 1;
   if FStopW >= 0 then
@@ -976,18 +976,18 @@ var
   LDeadline: UInt64;
   LWait: Int64;
 begin
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     Exit(uwStop);
   LDeadline := 0;
   if ATimeoutMs >= 0 then
-    LDeadline := PipeTickMs + UInt64(ATimeoutMs);
+    LDeadline := PcTickMs + UInt64(ATimeoutMs);
   repeat
     if ATimeoutMs < 0 then
       LWait := -1
     else
     begin
       // Recalculado a cada volta: um EINTR nao pode reiniciar o prazo.
-      LWait := Int64(LDeadline) - Int64(PipeTickMs);
+      LWait := Int64(LDeadline) - Int64(PcTickMs);
       if LWait < 0 then
         LWait := 0;
     end;
@@ -1003,7 +1003,7 @@ begin
     raise EPipeError.CreateFmt('poll de descoberta falhou (erro %d)',
       [fpgeterrno]);
   if ((LFds[1].revents and POLLIN) <> 0) or
-     (PipeAtomicGet(FClosed) <> 0) then
+     (PcAtomicGet(FClosed) <> 0) then
     Exit(uwStop);
   if LRc = 0 then
     Exit(uwTimeout);
@@ -1024,7 +1024,7 @@ begin
   AFromPort := 0;
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       Exit(False);
     LAddrLen := SizeOf(LAddr);
     FillChar(LAddr, SizeOf(LAddr), 0);
@@ -1230,18 +1230,18 @@ begin
   // tambem broadcast dirigido (ex.: '192.168.1.255').
   LChannel := TPipeUdpChannel.Create(0, True);
   try
-    LDeadline := PipeTickMs + ATimeoutMs;
+    LDeadline := PcTickMs + ATimeoutMs;
     // Primeira sonda: falha propaga (sem rede nenhuma o usuario tem que
     // saber). Reenvios sao melhor esforco.
     LChannel.SendTo(ATargetIp, ADiscoveryPort, LProbe);
-    LNextSend := PipeTickMs + DISC_RESEND_MS;
+    LNextSend := PcTickMs + DISC_RESEND_MS;
     while True do
     begin
-      LRemaining := Int64(LDeadline) - Int64(PipeTickMs);
+      LRemaining := Int64(LDeadline) - Int64(PcTickMs);
       if LRemaining <= 0 then
         Break;
       LWaitMs := LRemaining;
-      LToResend := Int64(LNextSend) - Int64(PipeTickMs);
+      LToResend := Int64(LNextSend) - Int64(PcTickMs);
       if LToResend < LWaitMs then
         LWaitMs := LToResend;
       if LWaitMs < 0 then
@@ -1260,7 +1260,7 @@ begin
         uwTimeout:
           ; // hora de reenviar ou de encerrar a janela
       end;
-      if Int64(PipeTickMs) - Int64(LNextSend) >= 0 then
+      if Int64(PcTickMs) - Int64(LNextSend) >= 0 then
       begin
         try
           LChannel.SendTo(ATargetIp, ADiscoveryPort, LProbe);
@@ -1268,7 +1268,7 @@ begin
           on EPipeError do
             ; // reenvio perdido = sonda perdida; a janela segue
         end;
-        LNextSend := PipeTickMs + DISC_RESEND_MS;
+        LNextSend := PcTickMs + DISC_RESEND_MS;
       end;
     end;
   finally

@@ -16,7 +16,7 @@ uses
   SysUtils,
   Classes,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Transport;
 
@@ -65,8 +65,8 @@ var
 // Nome unico por teste: evita colisao entre execucoes/instancias paralelas.
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_test_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_test_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 type
@@ -135,13 +135,13 @@ begin
     FLen := FEndpoint.Read(LBuf, SizeOf(LBuf));
   except
     on EPipeClosed do
-      PipeAtomicSet(FGotClosed, 1);
+      PcAtomicSet(FGotClosed, 1);
   end;
 end;
 
 function TReadOneThread.GotClosed: Boolean;
 begin
-  Result := PipeAtomicGet(FGotClosed) = 1;
+  Result := PcAtomicGet(FGotClosed) = 1;
 end;
 
 { TPipeTransportTests }
@@ -207,7 +207,7 @@ begin
   // WSAEACCES (10013). A faixa antiga (40000..60000) atravessava essas reservas
   // e falhava de forma intermitente conforme a porta sorteada.
   Result := '127.0.0.1:' +
-    IntToStr(20000 + (Int64(PipeTickMs) mod 18000) + PipeAtomicInc(GNameSeq));
+    IntToStr(20000 + (Int64(PcTickMs) mod 18000) + PcAtomicInc(GNameSeq));
 end;
 
 function TPipeTcpTransportTests.MissingAddress: string;
@@ -283,10 +283,10 @@ begin
   LAcc := TAcceptThread.Create(FListener, 1);
   try
     Sleep(100); // deixa a thread entrar no Accept
-    T0 := PipeTickMs;
+    T0 := PcTickMs;
     FListener.Close;
     LAcc.WaitFor;
-    AssertTrue('Close nao desbloqueou o Accept em ate 2s', PipeTickMs - T0 < 2000);
+    AssertTrue('Close nao desbloqueou o Accept em ate 2s', PcTickMs - T0 < 2000);
     AssertNull('Accept devia devolver nil apos Close', LAcc.Accepted(0));
   finally
     LAcc.Free;
@@ -302,10 +302,10 @@ begin
   LReader := TReadOneThread.Create(FServerEp);
   try
     Sleep(100); // deixa a thread entrar no Read
-    T0 := PipeTickMs;
+    T0 := PcTickMs;
     FServerEp.CloseAbort;
     LReader.WaitFor;
-    AssertTrue('CloseAbort nao desbloqueou o Read em ate 2s', PipeTickMs - T0 < 2000);
+    AssertTrue('CloseAbort nao desbloqueou o Read em ate 2s', PcTickMs - T0 < 2000);
     AssertTrue('Read abortado devia levantar EPipeClosed', LReader.GotClosed);
   finally
     LReader.Free;
@@ -321,11 +321,11 @@ begin
   LReader := TReadOneThread.Create(FServerEp);
   try
     Sleep(100);
-    T0 := PipeTickMs;
+    T0 := PcTickMs;
     FClientEp.CloseAbort;
     FreeAndNil(FClientEp); // fecha o handle do cliente: par do servidor caiu
     LReader.WaitFor;
-    AssertTrue('queda do par nao desbloqueou o Read em ate 2s', PipeTickMs - T0 < 2000);
+    AssertTrue('queda do par nao desbloqueou o Read em ate 2s', PcTickMs - T0 < 2000);
     AssertTrue('queda do par devia levantar EPipeClosed', LReader.GotClosed);
   finally
     LReader.Free;
@@ -336,10 +336,10 @@ procedure TPipeTransportTests.Connect_TimeoutQuandoServidorNaoExiste;
 var
   T0: UInt64;
 begin
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   AssertException(EPipeTimeout, DoConnectInexistente);
-  AssertTrue('timeout retornou cedo demais', PipeTickMs - T0 >= 250);
-  AssertTrue('timeout demorou demais', PipeTickMs - T0 < 5000);
+  AssertTrue('timeout retornou cedo demais', PcTickMs - T0 >= 250);
+  AssertTrue('timeout demorou demais', PcTickMs - T0 < 5000);
 end;
 
 procedure TPipeTransportTests.MultiplosClientes_CadaUmComSeuEndpoint;

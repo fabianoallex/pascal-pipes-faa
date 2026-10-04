@@ -16,7 +16,7 @@ uses
   SysUtils,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Server,
   Pipes.Client;
 
@@ -57,8 +57,8 @@ var
 
 function UniquePipeName(const ASufixo: string): string;
 begin
-  Result := 'pipes_faa_failover_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq)) + '_' + ASufixo;
+  Result := 'pipes_faa_failover_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq)) + '_' + ASufixo;
 end;
 
 { TPipeFailoverTests }
@@ -86,10 +86,10 @@ function TPipeFailoverTests.WaitCount(var ACounter: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 function TPipeFailoverTests.WaitClientCount(AServer: TPipeServer;
@@ -97,8 +97,8 @@ function TPipeFailoverTests.WaitClientCount(AServer: TPipeServer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (AServer.ClientCount < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (AServer.ClientCount < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
   Result := AServer.ClientCount >= AExpected;
 end;
@@ -106,7 +106,7 @@ end;
 procedure TPipeFailoverTests.OnCliConnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliConnCount);
+  PcAtomicInc(FCliConnCount);
 end;
 
 procedure TPipeFailoverTests.OnCliError(Sender: TObject;

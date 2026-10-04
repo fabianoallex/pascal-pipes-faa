@@ -27,7 +27,7 @@ uses
   SysUtils,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Server,
   Pipes.Client;
 
@@ -93,8 +93,8 @@ var
 
 function UniquePipeName(const ASufixo: string): string;
 begin
-  Result := 'pipes_faa_connasync_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq)) + '_' + ASufixo;
+  Result := 'pipes_faa_connasync_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq)) + '_' + ASufixo;
 end;
 
 { TPipeConnectAsyncTests }
@@ -124,7 +124,7 @@ end;
 procedure TPipeConnectAsyncTests.OnCliConnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliConnCount);
+  PcAtomicInc(FCliConnCount);
 end;
 
 procedure TPipeConnectAsyncTests.OnCliError(Sender: TObject;
@@ -136,7 +136,7 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FErrCount); // depois de gravar: quem acorda no contador ja le' a mensagem
+  PcAtomicInc(FErrCount); // depois de gravar: quem acorda no contador ja le' a mensagem
 end;
 
 function TPipeConnectAsyncTests.LastError: string;
@@ -160,7 +160,7 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FAttemptCount); // por ultimo: quem acorda no contador ja le' tudo
+  PcAtomicInc(FAttemptCount); // por ultimo: quem acorda no contador ja le' tudo
 end;
 
 function TPipeConnectAsyncTests.AttemptAddrs: string;
@@ -208,10 +208,10 @@ function TPipeConnectAsyncTests.WaitCount(var ACounter: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 function TPipeConnectAsyncTests.WaitClientCount(AServer: TPipeServer;
@@ -219,8 +219,8 @@ function TPipeConnectAsyncTests.WaitClientCount(AServer: TPipeServer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (AServer.ClientCount < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (AServer.ClientCount < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
   Result := AServer.ClientCount >= AExpected;
 end;
@@ -229,8 +229,8 @@ function TPipeConnectAsyncTests.WaitNotConnecting(ATimeoutMs: Cardinal): Boolean
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while FClient.Connecting and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while FClient.Connecting and (PcTickMs < LDeadline) do
     Sleep(5);
   Result := not FClient.Connecting;
 end;
@@ -319,9 +319,9 @@ begin
   AssertTrue(FClient.Connecting);
 
   Sleep(100); // no meio da PRIMEIRA tentativa
-  LT0 := PipeTickMs;
+  LT0 := PcTickMs;
   FClient.Disconnect;
-  LDecorrido := PipeTickMs - LT0;
+  LDecorrido := PcTickMs - LT0;
 
   // O teto e' UMA tentativa em curso, nao zero: nenhum backend de transporte
   // cancela um connect em progresso, e Disconnect herda o mesmo trade-off que

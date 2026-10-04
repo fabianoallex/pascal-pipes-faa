@@ -65,7 +65,7 @@ interface
 uses
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Transport;
 
 type
@@ -272,7 +272,7 @@ procedure TPipeAndroidEndpoint.CloseAbort;
 var
   LByte: Byte;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit; // ja abortado
   LByte := 1;
   if FStopW >= 0 then
@@ -293,11 +293,11 @@ var
   LDeadline: UInt64;
   LWait: Int64;
 begin
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     raise EPipeClosed.Create(AOp + ' em endpoint fechado');
   LDeadline := 0;
   if FIoTimeoutMs <> 0 then
-    LDeadline := PipeTickMs + FIoTimeoutMs;
+    LDeadline := PcTickMs + FIoTimeoutMs;
   repeat
     if FIoTimeoutMs = 0 then
       LWait := -1
@@ -305,7 +305,7 @@ begin
     begin
       // Recalculado a cada volta: sem isso um EINTR reiniciaria o prazo, e uma
       // rajada de sinais esticaria a espera indefinidamente.
-      LWait := Int64(LDeadline) - Int64(PipeTickMs);
+      LWait := Int64(LDeadline) - Int64(PcTickMs);
       if LWait < 0 then
         LWait := 0;
     end;
@@ -323,7 +323,7 @@ begin
     raise EPipeTimeout.CreateFmt('%s: o par nao respondeu em %u ms',
       [AOp, FIoTimeoutMs]);
   if ((LFds[1].revents and ANDROID_POLLIN) <> 0)
-    or (PipeAtomicGet(FClosed) <> 0) then
+    or (PcAtomicGet(FClosed) <> 0) then
     raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
   // POLLERR/POLLHUP no fd da operacao: deixa o recv/send reportar — ainda
   // pode haver dados enfileirados para ler apos o HUP.
@@ -411,7 +411,7 @@ procedure TPipeAndroidListener.Close;
 var
   LByte: Byte;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit;
   LByte := 1;
   if FStopW >= 0 then
@@ -428,7 +428,7 @@ begin
   // devolver endpoint morto (mesma semantica dos demais listeners).
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       Exit;
     LFds[0].fd := FFd;
     LFds[0].events := ANDROID_POLLIN;
@@ -444,7 +444,7 @@ begin
       RaiseIoError('accept (poll)', errno);
     end;
     if ((LFds[1].revents and ANDROID_POLLIN) <> 0)
-      or (PipeAtomicGet(FClosed) <> 0) then
+      or (PcAtomicGet(FClosed) <> 0) then
       Exit; // Close: devolve nil
     LConn := android_accept(FFd, nil, nil);
     if LConn >= 0 then
@@ -531,7 +531,7 @@ begin
       __close(LFd);
       Exit;
     end;
-    LRemaining := Int64(ADeadline) - Int64(PipeTickMs);
+    LRemaining := Int64(ADeadline) - Int64(PcTickMs);
     if LRemaining < 0 then
       LRemaining := 0;
     repeat
@@ -577,7 +577,7 @@ var
   LFd, LErr: Integer;
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   LInfo := ResolveAddress(AAddress, False);
   try
     while True do
@@ -599,7 +599,7 @@ begin
       // e' o que da a Connect(timeout) a mesma semantica das outras plataformas.
       if (LErr <> ECONNREFUSED) and (LErr <> ETIMEDOUT) then
         RaiseIoError(Format('conexao a %s', [AAddress]), LErr);
-      if Int64(LDeadline) - Int64(PipeTickMs) <= 0 then
+      if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
         raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando a %s',
           [ATimeoutMs, AAddress]);
       Sleep(25);

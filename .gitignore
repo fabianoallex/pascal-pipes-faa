@@ -38,6 +38,12 @@ tests/Android/Android/
 tests/Unit/fpc/PipesUnitTestsFpc
 tests/Integration/fpc/PipesIntegrationTestsFpc
 
+# logs de tools/test_fpc.sh
+tests/Unit/fpc/build.log
+tests/Unit/fpc/run.log
+tests/Integration/fpc/build.log
+tests/Integration/fpc/run.log
+
 # arquivos de sessao/IDE
 *.lps
 *.local

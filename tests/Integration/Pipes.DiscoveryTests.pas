@@ -17,7 +17,7 @@ uses
   DUnitX.TestFramework,
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Discovery;
 
 type
@@ -150,11 +150,11 @@ begin
   FRespA := TPipeDiscoveryResponder.Create(PORTA_SERVICO_A, ptTcp, 'A',
     PORTA_DESC_A, '');
   FRespA.Start;
-  LInicio := PipeTickMs;
+  LInicio := PcTickMs;
   FRespA.Stop;
-  Assert.IsTrue(PipeTickMs - LInicio < 2000,
+  Assert.IsTrue(PcTickMs - LInicio < 2000,
     'Stop com thread ociosa conclui em < 2s (levou ' +
-    IntToStr(Int64(PipeTickMs - LInicio)) + 'ms)');
+    IntToStr(Int64(PcTickMs - LInicio)) + 'ms)');
   Assert.IsFalse(FRespA.Active, 'inativo apos Stop');
   LFound := PipeDiscoverServers('127.0.0.1', 300, PORTA_DESC_A, '');
   EqualInt(0, Length(LFound), 'parado nao responde');

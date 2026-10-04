@@ -83,6 +83,8 @@ uses
   Classes,
   SyncObjs,
   Generics.Collections,
+  PascalCommon.Threading,
+  PascalCommon.ThreadPool,
   Pipes.Types,
   Pipes.Threading,
   Pipes.Framing,
@@ -115,7 +117,7 @@ type
     FHeartbeatThread: TThread;
     FHbStopEvent: TEvent;
     // Contadores de Pipes.Server.ConnectionStats (Pipes.Types.TPipeConnStats).
-    // Sempre ativos (sem opt-in): custam um PipeAtomicAdd64 por frame, no
+    // Sempre ativos (sem opt-in): custam um PcAtomicAdd64 por frame, no
     // MESMO ponto que ja atualiza FLastReadTick/FLastWriteTick.
     FBytesSent: UInt64;
     FBytesReceived: UInt64;
@@ -464,7 +466,7 @@ type
 
   { Limpeza pos-morte de uma conexao cujo teardown pertence a um work item
     (morte natural/DisconnectClient): join do reader + Release do registro. }
-  TPipeConnCleanupWork = class(TPipeWorkItem)
+  TPipeConnCleanupWork = class(TPcWorkItem)
   private
     FServer: TPipeServer;
     FConn: TPipeServerConnection;
@@ -474,7 +476,7 @@ type
   end;
 
   { Um request em execucao: handler + envio do reply, no pool. }
-  TPipeRequestWork = class(TPipeWorkItem)
+  TPipeRequestWork = class(TPcWorkItem)
   private
     FServer: TPipeServer;
     FConn: TPipeServerConnection; // AddRef feito no despacho
@@ -555,15 +557,15 @@ begin
         // Transparente daqui pra baixo: Stats (a parte LOGICA) e HandleFrame
         // veem o frame como se nunca tivesse sido comprimido no fio.
         LFrame := PipeUndoCompress(LFrame, FConn.FServer.MaxMessageSize);
-      PipeAtomicWrite64(FConn.FLastReadTick, PipeTickMs);
-      PipeAtomicAdd64(FConn.FBytesReceived,
+      PcAtomicWrite64(FConn.FLastReadTick, PcTickMs);
+      PcAtomicAdd64(FConn.FBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
-      PipeAtomicAdd64(FConn.FBytesReceivedWire, LWireBytes);
-      PipeAtomicAdd64(FConn.FMessagesReceived, 1);
-      PipeAtomicAdd64(FConn.FServer.FTotalBytesReceived,
+      PcAtomicAdd64(FConn.FBytesReceivedWire, LWireBytes);
+      PcAtomicAdd64(FConn.FMessagesReceived, 1);
+      PcAtomicAdd64(FConn.FServer.FTotalBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
-      PipeAtomicAdd64(FConn.FServer.FTotalBytesReceivedWire, LWireBytes);
-      PipeAtomicAdd64(FConn.FServer.FTotalMessagesReceived, 1);
+      PcAtomicAdd64(FConn.FServer.FTotalBytesReceivedWire, LWireBytes);
+      PcAtomicAdd64(FConn.FServer.FTotalMessagesReceived, 1);
       FConn.FServer.HandleFrame(FConn, LFrame);
     end;
   except
@@ -638,12 +640,12 @@ end;
 
 procedure TPipeServerConnection.AddRef;
 begin
-  PipeAtomicInc(FRefs);
+  PcAtomicInc(FRefs);
 end;
 
 procedure TPipeServerConnection.Release;
 begin
-  if PipeAtomicDec(FRefs) = 0 then
+  if PcAtomicDec(FRefs) = 0 then
     Free;
 end;
 
@@ -666,15 +668,15 @@ begin
   FWriteLock.Enter;
   try
     PipeWriteFrame(FStream, LWire, FServer.MaxMessageSize);
-    PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
+    PcAtomicWrite64(FLastWriteTick, PcTickMs); // so' em caso de sucesso
     LBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload));
     LWireBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload));
-    PipeAtomicAdd64(FBytesSent, LBytes);
-    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
-    PipeAtomicAdd64(FMessagesSent, 1);
-    PipeAtomicAdd64(FServer.FTotalBytesSent, LBytes);
-    PipeAtomicAdd64(FServer.FTotalBytesSentWire, LWireBytes);
-    PipeAtomicAdd64(FServer.FTotalMessagesSent, 1);
+    PcAtomicAdd64(FBytesSent, LBytes);
+    PcAtomicAdd64(FBytesSentWire, LWireBytes);
+    PcAtomicAdd64(FMessagesSent, 1);
+    PcAtomicAdd64(FServer.FTotalBytesSent, LBytes);
+    PcAtomicAdd64(FServer.FTotalBytesSentWire, LWireBytes);
+    PcAtomicAdd64(FServer.FTotalMessagesSent, 1);
   finally
     FWriteLock.Leave;
   end;
@@ -697,7 +699,7 @@ begin
   FWriteLock.Enter;
   try
     PipeWriteFrames(FStream, LWireFrames, FServer.MaxMessageSize);
-    PipeAtomicWrite64(FLastWriteTick, PipeTickMs); // so' em caso de sucesso
+    PcAtomicWrite64(FLastWriteTick, PcTickMs); // so' em caso de sucesso
     LBytes := 0;
     LWireBytes := 0;
     for I := 0 to High(AFrames) do
@@ -705,12 +707,12 @@ begin
       Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrames[I].Payload)));
       Inc(LWireBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWireFrames[I].Payload)));
     end;
-    PipeAtomicAdd64(FBytesSent, LBytes);
-    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
-    PipeAtomicAdd64(FMessagesSent, UInt64(Length(AFrames)));
-    PipeAtomicAdd64(FServer.FTotalBytesSent, LBytes);
-    PipeAtomicAdd64(FServer.FTotalBytesSentWire, LWireBytes);
-    PipeAtomicAdd64(FServer.FTotalMessagesSent, UInt64(Length(AFrames)));
+    PcAtomicAdd64(FBytesSent, LBytes);
+    PcAtomicAdd64(FBytesSentWire, LWireBytes);
+    PcAtomicAdd64(FMessagesSent, UInt64(Length(AFrames)));
+    PcAtomicAdd64(FServer.FTotalBytesSent, LBytes);
+    PcAtomicAdd64(FServer.FTotalBytesSentWire, LWireBytes);
+    PcAtomicAdd64(FServer.FTotalMessagesSent, UInt64(Length(AFrames)));
   finally
     FWriteLock.Leave;
   end;
@@ -721,8 +723,8 @@ begin
   if (FServer.HeartbeatIntervalMs = 0) or
      not (FServer.Transport in [ptTcp, ptTls]) then
     Exit;
-  PipeAtomicWrite64(FLastReadTick, PipeTickMs);
-  PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+  PcAtomicWrite64(FLastReadTick, PcTickMs);
+  PcAtomicWrite64(FLastWriteTick, PcTickMs);
   FHbStopEvent := TEvent.Create(nil, True, False, ''); // manual-reset
   FHeartbeatThread := TPipeHeartbeatThread.Create(FServer.HeartbeatIntervalMs,
     FHbStopEvent, HeartbeatTick);
@@ -743,11 +745,11 @@ procedure TPipeServerConnection.HeartbeatTick;
 var
   LNow: UInt64;
 begin
-  LNow := PipeTickMs;
+  LNow := PcTickMs;
   // Nenhum frame recebido (Ping incluso) ha' mais de 2x o intervalo: trata
   // como morta. CloseAbort e' thread-safe/idempotente (Pipes.Transport) e
   // desbloqueia a propria reader thread, que segue o teardown normal.
-  if (LNow - PipeAtomicRead64(FLastReadTick)) >
+  if (LNow - PcAtomicRead64(FLastReadTick)) >
      (2 * UInt64(FServer.HeartbeatIntervalMs)) then
   begin
     FEndpoint.CloseAbort;
@@ -755,7 +757,7 @@ begin
   end;
   // Ocioso na escrita ha' >= metade do intervalo: manda um Ping para o peer
   // resetar o relogio de leitura dele.
-  if (LNow - PipeAtomicRead64(FLastWriteTick)) >=
+  if (LNow - PcAtomicRead64(FLastWriteTick)) >=
      (UInt64(FServer.HeartbeatIntervalMs) div 2) then
     try
       SendFrame(TPipeFrame.Ping);
@@ -832,7 +834,7 @@ begin
     TeardownDispatch;
     raise;
   end;
-  PipeAtomicSet(FStopping, 0);
+  PcAtomicSet(FStopping, 0);
   FActive := True;
   FAcceptor := TPipeAcceptorThread.Create(Self);
 end;
@@ -844,7 +846,7 @@ var
 begin
   if not FActive then
     Exit;
-  PipeAtomicSet(FStopping, 1);
+  PcAtomicSet(FStopping, 1);
 
   // 1) para de aceitar: fecha o listener e espera o acceptor.
   FListener.Close;
@@ -885,7 +887,7 @@ var
   LConn: TPipeServerConnection;
   LId: TPipeConnectionId;
 begin
-  if PipeAtomicGet(FStopping) <> 0 then
+  if PcAtomicGet(FStopping) <> 0 then
   begin
     AEndpoint.CloseAbort;
     AEndpoint.Free;
@@ -928,7 +930,7 @@ begin
   // Acceptor caiu com o servidor ativo (ex.: CreateNamedPipe falhou): o
   // servidor para de aceitar novos clientes, mas os conectados seguem; o
   // usuario decide (Stop/Listen de novo) a partir do OnError.
-  if (AError <> '') and (PipeAtomicGet(FStopping) = 0) then
+  if (AError <> '') and (PcAtomicGet(FStopping) = 0) then
     DispatchError(0, 'acceptor encerrado: ' + AError);
 end;
 
@@ -1456,10 +1458,13 @@ end;
 
 procedure TPipeServer.QueueCleanup(AConn: TPipeServerConnection);
 begin
-  // Sempre no pool GLOBAL: nao pode entrar atras de callbacks do usuario no
-  // pool serializado. Contada em FInFlight para o Stop/Destroy esperarem.
+  // Sempre no pool GLOBAL (PcPool): nao pode entrar atras de callbacks do
+  // usuario no pool serializado. No PcPool ela pode esperar atras de itens
+  // de outros componentes e de outras libs *-faa do processo (o pool e'
+  // compartilhado), o que so' atrasa a liberacao: contada em FInFlight, o
+  // Stop/Destroy espera por ela de qualquer jeito.
   IncInFlight;
-  PipePool.Queue(TPipeConnCleanupWork.Create(Self, AConn));
+  PcPool.Queue(TPipeConnCleanupWork.Create(Self, AConn));
 end;
 
 procedure TPipeServer.RunCleanup(AConn: TPipeServerConnection);
@@ -1646,8 +1651,8 @@ begin
   finally
     FConnLock.Leave;
   end;
-  AConn.FConnectedSinceTick := PipeTickMs;
-  PipeAtomicAdd64(FTotalConnectionsAccepted, 1);
+  AConn.FConnectedSinceTick := PcTickMs;
+  PcAtomicAdd64(FTotalConnectionsAccepted, 1);
 end;
 
 function TPipeServer.ClientCount: Integer;
@@ -1701,13 +1706,13 @@ function TPipeServer.Stats: TPipeServerStats;
 begin
   FillChar(Result, SizeOf(Result), 0);
   Result.ClientCount := ClientCount;
-  Result.TotalConnectionsAccepted := PipeAtomicRead64(FTotalConnectionsAccepted);
-  Result.TotalBytesSent := PipeAtomicRead64(FTotalBytesSent);
-  Result.TotalBytesReceived := PipeAtomicRead64(FTotalBytesReceived);
-  Result.TotalBytesSentWire := PipeAtomicRead64(FTotalBytesSentWire);
-  Result.TotalBytesReceivedWire := PipeAtomicRead64(FTotalBytesReceivedWire);
-  Result.TotalMessagesSent := PipeAtomicRead64(FTotalMessagesSent);
-  Result.TotalMessagesReceived := PipeAtomicRead64(FTotalMessagesReceived);
+  Result.TotalConnectionsAccepted := PcAtomicRead64(FTotalConnectionsAccepted);
+  Result.TotalBytesSent := PcAtomicRead64(FTotalBytesSent);
+  Result.TotalBytesReceived := PcAtomicRead64(FTotalBytesReceived);
+  Result.TotalBytesSentWire := PcAtomicRead64(FTotalBytesSentWire);
+  Result.TotalBytesReceivedWire := PcAtomicRead64(FTotalBytesReceivedWire);
+  Result.TotalMessagesSent := PcAtomicRead64(FTotalMessagesSent);
+  Result.TotalMessagesReceived := PcAtomicRead64(FTotalMessagesReceived);
   Result.PoolQueueDepth := EventPool.QueueDepth;
 end;
 
@@ -1733,12 +1738,12 @@ begin
   if not Result then
     Exit;
   try
-    AStats.BytesSent := PipeAtomicRead64(LConn.FBytesSent);
-    AStats.BytesReceived := PipeAtomicRead64(LConn.FBytesReceived);
-    AStats.BytesSentWire := PipeAtomicRead64(LConn.FBytesSentWire);
-    AStats.BytesReceivedWire := PipeAtomicRead64(LConn.FBytesReceivedWire);
-    AStats.MessagesSent := PipeAtomicRead64(LConn.FMessagesSent);
-    AStats.MessagesReceived := PipeAtomicRead64(LConn.FMessagesReceived);
+    AStats.BytesSent := PcAtomicRead64(LConn.FBytesSent);
+    AStats.BytesReceived := PcAtomicRead64(LConn.FBytesReceived);
+    AStats.BytesSentWire := PcAtomicRead64(LConn.FBytesSentWire);
+    AStats.BytesReceivedWire := PcAtomicRead64(LConn.FBytesReceivedWire);
+    AStats.MessagesSent := PcAtomicRead64(LConn.FMessagesSent);
+    AStats.MessagesReceived := PcAtomicRead64(LConn.FMessagesReceived);
     AStats.ConnectedSinceTick := LConn.FConnectedSinceTick;
   finally
     LConn.Release;

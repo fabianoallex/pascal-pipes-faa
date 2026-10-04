@@ -39,7 +39,7 @@ uses
   Classes,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Server;
 
@@ -100,10 +100,10 @@ begin
   // Deteccao de reentrancia: CAS sem lock de verdade. Sob pdmSerialized isto
   // NUNCA acusa concorrencia (so um handler roda por vez); sob pdmPool vai
   // acusar quando dois workers caem aqui ao mesmo tempo.
-  LJaOcupado := PipeAtomicCompareExchange(FBusy, 1, 0) <> 0;
+  LJaOcupado := PcAtomicCompareExchange(FBusy, 1, 0) <> 0;
   if LJaOcupado then
   begin
-    PipeAtomicInc(FReentrancias);
+    PcAtomicInc(FReentrancias);
     Log(Format('  !!! job %d comecou com OUTRO handler ainda em andamento ' +
       '(concorrencia real) !!!', [LJob]));
   end;
@@ -112,7 +112,7 @@ begin
 
     if LJob <> FProximoJob then
     begin
-      PipeAtomicInc(FForaDeOrdem);
+      PcAtomicInc(FForaDeOrdem);
       Log(Format('job %d concluido FORA DE ORDEM (esperava %d)', [LJob, FProximoJob]));
     end
     else
@@ -120,7 +120,7 @@ begin
     FProximoJob := LJob + 1; // segue comparando a partir daqui mesmo se furou
   finally
     if not LJaOcupado then
-      PipeAtomicSet(FBusy, 0);
+      PcAtomicSet(FBusy, 0);
   end;
 end;
 

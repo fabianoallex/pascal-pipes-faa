@@ -334,9 +334,10 @@ WriteLn('latencia media de request: ', LCliStats.AvgRequestLatencyMs, ' ms');
 - **`Server.Stats: TPipeServerStats`** — agregado cumulativo desde o `Listen`, sobrevive a
   conexões que já caíram: `TotalConnectionsAccepted` (só estabelecidas), `TotalBytesSent/
   Received`, `TotalMessagesSent/Received`, `ClientCount`, e `PoolQueueDepth`. **Ressalva:**
-  em `pdmPool` (padrão) o pool de despacho é GLOBAL, compartilhado por todo `TPipeServer`/
-  `TPipeClient` do processo — `PoolQueueDepth` reflete o backlog de todo mundo, não só deste
-  servidor. Só é exclusivo dele em `pdmSerialized`.
+  em `pdmPool` (padrão) o pool de despacho é o `PcPool` da pascal-common-faa, GLOBAL do
+  processo: compartilhado por todo `TPipeServer`/`TPipeClient` e pelas outras libs `*-faa`
+  que o usam (amqp, redis) — `PoolQueueDepth` reflete o backlog de todo mundo, não só deste
+  servidor nem só do pipes. Só é exclusivo dele em `pdmSerialized`.
 - **`Client.Stats: TPipeClientStats`** — bytes/mensagens da SESSÃO atual (zera a cada
   `Connect`/reconexão, sem contador cumulativo entre sessões), `ReconnectAttempts`,
   `PendingRequests`, e `AvgRequestLatencyMs`/`MaxRequestLatencyMs` — só contam Requests que
@@ -696,13 +697,26 @@ errados — atualize os dois lados.
 
 ## Instalação
 
-**Delphi:** adicione `src\` ao search path (ou abra `Pipes.groupproj`).
+**Dependência de compilação: [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa)
+1.0.0 ou mais nova.** Atomics, ticks monotônicos, o monitor e o pool de threads (`PcPool`)
+vêm dela, compartilhados com as outras libs `*-faa` (amqp, redis, db). A **aplicação**
+fornece uma cópia só:
 
-**Lazarus:** abra/compile `packages\pipes_faa.lpk` uma vez e adicione `pipes_faa` aos
-requisitos do seu projeto (ou use `lazbuild --add-package-link packages\pipes_faa.lpk`).
+**Delphi:** adicione ao search path o `src\` desta lib **e** o `src\` da pascal-common-faa
+(ou abra `Pipes.groupproj`, cujos projetos já apontam para o submódulo).
 
-**Dependências:** nenhuma para `ptLocal` e `ptTcp`, e nenhuma em tempo de compilação em
-nenhum caso. Para `ptTls` depende do backend:
+**Lazarus:** abra/compile `pascal_common_faa.lpk` uma vez (o Lazarus passa a achá-lo pelo
+nome) e depois `packages\pipes_faa.lpk`, que o exige pelo nome; adicione `pipes_faa` aos
+requisitos do seu projeto (ou use `lazbuild --add-package-link` nos dois `.lpk`).
+
+Este repositório tem a pascal-common-faa como submódulo em `external/pascal-common-faa`,
+**só** para os próprios testes e samples: não compile uma aplicação contra essa cópia se ela
+também usa outra lib `*-faa` (seriam duas cópias da mesma unit). Uma pascal-common-faa velha
+demais para o build com "pascal-named-pipes-faa precisa da pascal-common-faa 1.0.0 ou mais
+nova".
+
+**Dependências de execução:** nenhuma para `ptLocal` e `ptTcp`. Para `ptTls` depende do
+backend:
 
 - **Schannel** (padrão no Windows): nada a instalar — é SSPI, parte do SO.
 - **OpenSSL** (`-dPIPES_OPENSSL`; único no Linux): precisa de `libssl`/`libcrypto` **na
@@ -938,6 +952,25 @@ Server.PipeName := 'outro';                    // igual a Server.Address
 O nome antigo amarrava a API ao Named Pipe do Windows, que passa a ser apenas um dos
 transportes possíveis — no Linux o backend já é Unix Domain Socket. Os aliases serão
 marcados `deprecated` só depois que samples e testes migrarem.
+
+**Sem alias, de propósito:** os nomes de concorrência que foram para a pascal-common-faa
+(decisão "sem compatibilidade retroativa" daquela lib). Quem usava algum deles direto no
+próprio código troca o nome e acrescenta a unit ao `uses`:
+
+| Antes (`Pipes.Threading`) | Agora | Unit |
+|---|---|---|
+| `PipeAtomicInc/Dec/Get/Set/CompareExchange` | `PcAtomicInc/Dec/Get/Set/CompareExchange` | `PascalCommon.Threading` |
+| `PipeAtomicRead64/Write64/CompareExchange64/Add64` | `PcAtomicRead64/Write64/CompareExchange64/Add64` | `PascalCommon.Threading` |
+| `PipeTickMs` | `PcTickMs` | `PascalCommon.Threading` |
+| `TPipeMonitor`, `TPipeWorkItem`, `TPipeThreadPool` | `TPcMonitor`, `TPcWorkItem`, `TPcThreadPool` | `PascalCommon.ThreadPool` |
+| `PipePool`, `PIPES_WAIT_INFINITE` | `PcPool`, `PC_WAIT_INFINITE` | `PascalCommon.ThreadPool` |
+
+Ficam em `Pipes.Threading` com o mesmo nome: `TPipeKeyedDispatcher`, `PipeGroupDispatcher`
+e `TPipeHeartbeatThread`. Duas diferenças de comportamento: o `PcPool` é do processo inteiro
+(o backlog de `PoolQueueDepth` inclui trabalho de outras libs `*-faa`), e
+`TPipeKeyedDispatcher.Destroy` agora espera as drenagens em voo — a ordem "pool primeiro,
+dispatcher depois" deixou de ser obrigatória ([`docs/ARQUITETURA.md`](docs/ARQUITETURA.md)
+§15.4 e §23).
 
 ## Samples (`samples/`)
 
@@ -1178,23 +1211,20 @@ marcados `deprecated` só depois que samples e testes migrarem.
 
 ## Testes
 
+Toda suíte compila o submódulo da pascal-common-faa: rode `git submodule update --init` uma
+vez depois de clonar. Sem `--recursive`: o submódulo da própria pascal-common-faa só serve
+aos testes dela.
+
 - Delphi: abra `Pipes.groupproj` e rode `Pipes.UnitTests` e `Pipes.IntegrationTests` (DUnitX).
-- FPC/Lazarus (Windows): `lazbuild tests\Unit\fpc\PipesUnitTestsFpc.lpi` e
-  `lazbuild tests\Integration\fpc\PipesIntegrationTestsFpc.lpi`; rode os exes com
+- FPC/Lazarus (Windows): `sh tools/test_fpc.sh` (lazbuild + as duas suítes; critério: 0
+  erros, 0 falhas, "0 unfreed memory blocks" do heaptrc e nenhuma linha "FINALIZATION CHECK
+  FAILED"). À mão: `lazbuild` nos `.lpi` de `tests\*\fpc` e rodar os exes com
   `--all --format=plain` (sem parâmetros abre a GUI de testes).
-- Linux (Docker): imagem Debian Bookworm traz o FPC 3.2.2 exato:
-
-  ```bash
-  docker run --rm -v "$PWD:/work" debian:bookworm bash -c '
-    apt-get update -qq && apt-get install -y -qq fpc >/dev/null
-    cd /work/tests/Integration/fpc
-    fpc -MDelphi -Sh -B -Fu../../../src -Fi../../../src -FU/tmp -o/tmp/t \
-      PipesIntegrationTestsFpc.lpr
-    /tmp/t --all --format=plain'
-  ```
-
-  (`-Fi` é necessário desde que os testes passaram a incluir `pipes.inc`, para enxergar
-  quais backends o build tem.)
+- Linux (Docker, FPC 3.2.2 do Debian Bookworm): `sh tools/test_fpc_docker.sh`.
+  `FPCOPT=-dPIPES_OPENSSL` liga o `ptTls` (e com ele a suíte de TLS); `CPUS=1` e `RUNS=N`
+  servem para caçar corrida de concorrência (vários containers ao mesmo tempo, cada um
+  limitado a 1 CPU). A imagem padrão é `fpc322-bookworm` (`debian:bookworm` + `apt-get
+  install fpc`); `FPC_IMAGE` troca.
 
 - OpenSSL **1.1** (o outro ramo suportado): trocar a imagem por `debian:bullseye`, que traz
   `libssl 1.1.1` e **não** tem a 3.x, e compilar com `-dPIPES_OPENSSL` (sem a diretiva não
@@ -1205,7 +1235,9 @@ marcados `deprecated` só depois que samples e testes migrarem.
   docker run --rm -v "$PWD:/work" debian:bullseye bash -c '
     apt-get update -qq && apt-get install -y -qq fpc libssl1.1 >/dev/null
     cd /work/tests/Integration/fpc
-    fpc -MDelphi -Sh -B -dPIPES_OPENSSL -Fu../../../src -Fi../../../src       -FU/tmp -o/tmp/t PipesIntegrationTestsFpc.lpr
+    C=../../../external/pascal-common-faa/src
+    fpc -MDelphi -Sh -B -dPIPES_OPENSSL -Fu../../../src -Fi../../../src -Fu$C -Fi$C \
+      -FU/tmp -o/tmp/t PipesIntegrationTestsFpc.lpr
     /tmp/t --all --format=plain'
   ```
 
@@ -1254,7 +1286,9 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing,
                      Pipes.Json (bytes<->JSON, OPCIONAL — nao acoplada ao core)
                      Pipes.Commands (roteador de comandos por nome, OPCIONAL, por
                      cima de OnMessage — nao acoplada ao core)
-packages/            pipes_faa.lpk (pacote Lazarus)
+packages/            pipes_faa.lpk (pacote Lazarus; exige pascal_common_faa pelo nome)
+external/            submodulo pascal-common-faa (so' testes e samples; ver "Instalacao")
+tools/               test_fpc.sh (Windows), test_fpc_docker.sh (Linux), gerar-pki.sh
 samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),
                      EchoCommand (Pipes.Commands.pas, opcional),
                      EchoFailover (FailoverAddresses, reaproveita o EchoServer.exe),

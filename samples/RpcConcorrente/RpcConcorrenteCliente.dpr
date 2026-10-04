@@ -42,7 +42,7 @@ uses
   Classes,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Client;
 
 type
@@ -110,17 +110,17 @@ end;
 
 procedure TRpcConcorrenteClienteApp.RegistrarOk;
 begin
-  PipeAtomicInc(FTotalOk);
+  PcAtomicInc(FTotalOk);
 end;
 
 procedure TRpcConcorrenteClienteApp.RegistrarMismatch;
 begin
-  PipeAtomicInc(FTotalMismatch);
+  PcAtomicInc(FTotalMismatch);
 end;
 
 procedure TRpcConcorrenteClienteApp.RegistrarErro;
 begin
-  PipeAtomicInc(FTotalErro);
+  PcAtomicInc(FTotalErro);
 end;
 
 procedure TRpcConcorrenteClienteApp.OnConn(Sender: TObject; AConnId: TPipeConnectionId);

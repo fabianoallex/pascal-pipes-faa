@@ -63,7 +63,7 @@ unit Pipes.Client;
   - Failover de endereco (FailoverAddresses): FAddrIndex e' o unico estado
     novo, e segue o mesmo dono-por-vez de FReconnectAttempts/FSessionUpTick —
     escrito so' por quem tem a sessao no momento (Connect ou a thread de
-    reconexao, nunca as duas), lido de fora via PipeAtomicGet em
+    reconexao, nunca as duas), lido de fora via PcAtomicGet em
     GetActiveAddress. Connect SEMPRE zera FAddrIndex antes de tentar (prefere
     o primario); TryReopenSession avanca para o proximo endereco a cada
     tentativa que falha, e volta a zerar quando uma sessao e' DURAVEL (o
@@ -95,6 +95,7 @@ uses
   Classes,
   SyncObjs,
   Generics.Collections,
+  PascalCommon.Threading,
   Pipes.Types,
   Pipes.Threading,
   Pipes.Framing,
@@ -144,7 +145,7 @@ type
     FFailoverAddresses: TArray<string>;
     // Escrito so' por quem detem a sessao no momento (Connect OU a thread de
     // reconexao - nunca as duas ao mesmo tempo, mesma exclusao mutua de
-    // FReconnecting); lido de qualquer thread via PipeAtomicGet em
+    // FReconnecting); lido de qualquer thread via PcAtomicGet em
     // GetActiveAddress, mesmo padrao de FReconnectAttempts em Stats.
     FAddrIndex: Integer;
     // Atomico: 1 quando MaxReconnectAttempts foi atingido. Impede que
@@ -467,11 +468,11 @@ begin
       LWireBytes := PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload));
       if LFrame.Kind = pfkCompressed then
         LFrame := PipeUndoCompress(LFrame, FClient.MaxMessageSize);
-      PipeAtomicWrite64(FClient.FLastReadTick, PipeTickMs);
-      PipeAtomicAdd64(FClient.FBytesReceived,
+      PcAtomicWrite64(FClient.FLastReadTick, PcTickMs);
+      PcAtomicAdd64(FClient.FBytesReceived,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
-      PipeAtomicAdd64(FClient.FBytesReceivedWire, LWireBytes);
-      PipeAtomicAdd64(FClient.FMessagesReceived, 1);
+      PcAtomicAdd64(FClient.FBytesReceivedWire, LWireBytes);
+      PcAtomicAdd64(FClient.FMessagesReceived, 1);
       FClient.HandleFrame(LFrame);
     end;
   except
@@ -497,8 +498,8 @@ var
 begin
   // O contador de tentativas e o teto vivem em TryReopenSession, no cliente:
   // aqui eles reiniciariam a cada thread nova (ver ReaderFinished).
-  while (PipeAtomicGet(FClient.FDeliberate) = 0) and
-        (PipeAtomicGet(FClient.FGaveUp) = 0) do
+  while (PcAtomicGet(FClient.FDeliberate) = 0) and
+        (PcAtomicGet(FClient.FGaveUp) = 0) do
   begin
     LDePe := False;
     if FClient.TryReopenSession then
@@ -521,9 +522,9 @@ begin
       // MESMO instante. Reler FConnected no if de baixo abriria a janela em
       // que a sessao cai entre uma leitura e outra e ninguem limpa o flag.
       LConn := FClient.FConnected;
-      LDelib := PipeAtomicGet(FClient.FDeliberate) <> 0;
+      LDelib := PcAtomicGet(FClient.FDeliberate) <> 0;
       LDePe := LDelib or LConn or
-               (PipeAtomicCompareExchange(FClient.FReconnecting, 1, 0) <> 0);
+               (PcAtomicCompareExchange(FClient.FReconnecting, 1, 0) <> 0);
       if LDePe then
       begin
         // So' limpa FConnectingAsync se ESTA thread ainda detem o ciclo:
@@ -539,7 +540,7 @@ begin
         // thread que retoma o laco pelo CAS, e o gate de ReopenAllowed so'
         // deixa passar porque FConnectingAsync ainda vale 1.
         if LConn or LDelib then
-          PipeAtomicSet(FClient.FConnectingAsync, 0);
+          PcAtomicSet(FClient.FConnectingAsync, 0);
         Exit; // reconectou e a sessao continua de pe
       end;
     end;
@@ -548,8 +549,8 @@ begin
   // FConnectingAsync ANTES de FReconnecting - e' este ultimo que solta o
   // WaitReconnectDone do Disconnect, e quem acorda de la' deve ja' ver
   // Connecting = False.
-  PipeAtomicSet(FClient.FConnectingAsync, 0);
-  PipeAtomicSet(FClient.FReconnecting, 0);
+  PcAtomicSet(FClient.FConnectingAsync, 0);
+  PcAtomicSet(FClient.FReconnecting, 0);
 end;
 
 { TPipeClient }
@@ -589,7 +590,7 @@ end;
 
 function TPipeClient.GetConnecting: Boolean;
 begin
-  Result := PipeAtomicGet(FConnectingAsync) <> 0;
+  Result := PcAtomicGet(FConnectingAsync) <> 0;
 end;
 
 function TPipeClient.GetLifecycleLocked: Boolean;
@@ -598,7 +599,7 @@ begin
   // properties; com ConnectAsync ele volta na hora, entao a trava precisa
   // valer tambem durante a tentativa - senao trocar Address no meio dela
   // faria a proxima tentativa mirar outro servidor sem ninguem pedir.
-  Result := FConnected or (PipeAtomicGet(FConnectingAsync) <> 0);
+  Result := FConnected or (PcAtomicGet(FConnectingAsync) <> 0);
 end;
 
 procedure TPipeClient.WaitBetweenRetries;
@@ -608,7 +609,7 @@ begin
   if FLastAttemptTick = 0 then
     Exit; // primeira tentativa desta reconexao: vai direto
   LRestante := Int64(FReconnectDelayMs) -
-    (Int64(PipeTickMs) - Int64(FLastAttemptTick));
+    (Int64(PcTickMs) - Int64(FLastAttemptTick));
   if LRestante <= 0 then
     Exit; // a propria tentativa ja consumiu o intervalo
   // Espera no evento, nao em Sleep: um Disconnect durante o intervalo acorda
@@ -620,7 +621,7 @@ procedure TPipeClient.WaitReconnectDone;
 begin
   // FDeliberate ja esta em 1: a thread de reconexao desiste no proximo passo
   // (pior caso: espera um PipeConnect de ate ReconnectDelayMs terminar).
-  while PipeAtomicGet(FReconnecting) <> 0 do
+  while PcAtomicGet(FReconnecting) <> 0 do
     Sleep(5);
 end;
 
@@ -639,7 +640,7 @@ end;
 
 function TPipeClient.GetActiveAddress: string;
 begin
-  Result := AddressAt(PipeAtomicGet(FAddrIndex));
+  Result := AddressAt(PcAtomicGet(FAddrIndex));
 end;
 
 function TPipeClient.ConnectAnyAddress(ATimeoutMs: Cardinal): TPipeEndpoint;
@@ -660,7 +661,7 @@ begin
   LSliceMs := ATimeoutMs div Cardinal(LCount);
   if LSliceMs = 0 then
     LSliceMs := 1;
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   LLastErr := '';
   LLastWasTimeout := True;
   repeat
@@ -676,7 +677,7 @@ begin
         FAddrIndex := (FAddrIndex + 1) mod LCount;
       end;
     end;
-  until PipeTickMs >= LDeadline;
+  until PcTickMs >= LDeadline;
   if LLastWasTimeout then
     raise EPipeTimeout.CreateFmt(
       'nenhum dos %d enderecos respondeu em %u ms (ultimo erro: %s)',
@@ -701,10 +702,10 @@ begin
   FReconnectAbort.ResetEvent; // sessao nova: o abort anterior nao vale mais
   FLastAttemptTick := 0;      // Connect explicito nao espera espacamento
   FReconnectAttempts := 0;    // e reabre o orcamento de tentativas
-  FSessionUpTick := PipeTickMs;
-  PipeAtomicSet(FGaveUp, 0);
-  PipeAtomicSet(FDeliberate, 0);
-  PipeAtomicSet(FDisconnectNotified, 0);
+  FSessionUpTick := PcTickMs;
+  PcAtomicSet(FGaveUp, 0);
+  PcAtomicSet(FDeliberate, 0);
+  PcAtomicSet(FDisconnectNotified, 0);
   FConnected := True;
   FReader := TPipeClientReaderThread.Create(Self);
   ResetSessionStats;
@@ -726,8 +727,8 @@ begin
   FReconnectAttempts := 0;
   FLastAttemptTick := 0;
   FSessionUpTick := 0;
-  PipeAtomicSet(FGaveUp, 0);
-  PipeAtomicSet(FDeliberate, 0);
+  PcAtomicSet(FGaveUp, 0);
+  PcAtomicSet(FDeliberate, 0);
   FReconnectAbort.ResetEvent;
   // FDisconnectNotified nao precisa de reset aqui: quem instala a sessao e'
   // o caminho de sucesso de TryReopenSession, e ele ja zera - diferente de
@@ -736,8 +737,8 @@ begin
   // Este flag ANTES do CAS: e' ele que faz ReopenAllowed deixar a thread
   // passar. Ligado depois, a thread poderia rodar a primeira passagem com o
   // gate fechado e desistir sem tentar nada.
-  PipeAtomicSet(FConnectingAsync, 1);
-  if PipeAtomicCompareExchange(FReconnecting, 1, 0) = 0 then
+  PcAtomicSet(FConnectingAsync, 1);
+  if PcAtomicCompareExchange(FReconnecting, 1, 0) = 0 then
     TPipeReconnectThread.Create(Self);
 end;
 
@@ -745,7 +746,7 @@ procedure TPipeClient.Disconnect;
 var
   LHadSession: Boolean;
 begin
-  PipeAtomicSet(FDeliberate, 1);
+  PcAtomicSet(FDeliberate, 1);
   // Antes do WaitReconnectDone: se a thread de reconexao estiver no intervalo
   // entre tentativas, isto a acorda em vez de deixar o Disconnect esperando.
   FReconnectAbort.SetEvent;
@@ -754,7 +755,7 @@ begin
   // reconexao (a unica que poderia estar tentando) ja saiu. Sem isto a
   // limpeza dependeria da ordem em que ela zera os dois flags, e Connecting
   // poderia ler True por um instante DEPOIS de Disconnect ter retornado.
-  PipeAtomicSet(FConnectingAsync, 0);
+  PcAtomicSet(FConnectingAsync, 0);
   LHadSession := Assigned(FEndpoint);
   FConnected := False;
   if LHadSession then
@@ -783,7 +784,7 @@ end;
 
 function TPipeClient.ReopenAllowed: Boolean;
 begin
-  Result := FAutoReconnect or (PipeAtomicGet(FConnectingAsync) <> 0);
+  Result := FAutoReconnect or (PcAtomicGet(FConnectingAsync) <> 0);
 end;
 
 function TPipeClient.TryReopenSession: Boolean;
@@ -792,7 +793,7 @@ var
   LTentado: string;
 begin
   Result := False;
-  if PipeAtomicGet(FDeliberate) <> 0 then
+  if PcAtomicGet(FDeliberate) <> 0 then
     Exit;
   // Limpa a sessao morta (o reader que disparou a reconexao ja esta saindo).
   if Assigned(FReader) then
@@ -817,7 +818,7 @@ begin
   // e era esse o caso do servidor mTLS no SChannel, que aceita o handshake e
   // so' depois valida a cadeia.
   WaitBetweenRetries;
-  if PipeAtomicGet(FDeliberate) <> 0 then
+  if PcAtomicGet(FDeliberate) <> 0 then
     Exit; // Disconnect durante a espera
   // AutoReconnect e' relido AQUI, e nao so' quando a thread foi criada. Sem
   // isto, desliga-lo de dentro de OnDisconnected nao teria efeito sobre a
@@ -842,7 +843,7 @@ begin
   // Sem isso, um cliente de longa duracao que reconecta legitimamente varias
   // vezes ao longo de dias acabaria esbarrando no teto.
   if (FSessionUpTick <> 0) and
-     (Int64(PipeTickMs) - Int64(FSessionUpTick) >= Int64(FReconnectDelayMs)) then
+     (Int64(PcTickMs) - Int64(FSessionUpTick) >= Int64(FReconnectDelayMs)) then
   begin
     FReconnectAttempts := 0;
     // Sessao duravel: a proxima FALHA (se houver) volta a preferir o
@@ -858,10 +859,10 @@ begin
     // FGaveUp e' o que impede ReaderFinished de criar outra thread e reiniciar
     // tudo. Sem ele o teto so' valeria dentro de uma thread, que e' justamente
     // o furo que fazia o par "aceita e derruba" nunca esbarrar no limite.
-    PipeAtomicSet(FGaveUp, 1);
+    PcAtomicSet(FGaveUp, 1);
     // "reconexao esgotada" soaria estranho para quem nunca chegou a
     // conectar: com ConnectAsync em voo, este teto e' o da PRIMEIRA conexao.
-    if PipeAtomicGet(FConnectingAsync) <> 0 then
+    if PcAtomicGet(FConnectingAsync) <> 0 then
       DispatchError(0, 'conexao inicial esgotada apos ' +
         IntToStr(FMaxReconnectAttempts) + ' tentativas')
     else
@@ -869,7 +870,7 @@ begin
         IntToStr(FMaxReconnectAttempts) + ' tentativas');
     Exit;
   end;
-  FLastAttemptTick := PipeTickMs;
+  FLastAttemptTick := PcTickMs;
   LTentado := AddressAt(FAddrIndex);
   try
     // Reconexao usa as MESMAS credenciais: um cliente que reconecta sem elas
@@ -898,7 +899,7 @@ begin
   //
   // Nao fecha a janela por completo (nada fecha: o par pode aceitar no exato
   // instante da decisao), mas reduz a um caso raro o que antes era certo.
-  if (PipeAtomicGet(FDeliberate) <> 0) or (not ReopenAllowed) then
+  if (PcAtomicGet(FDeliberate) <> 0) or (not ReopenAllowed) then
   begin
     LEndpoint.CloseAbort;
     LEndpoint.Free;
@@ -911,9 +912,9 @@ begin
   finally
     FWriteLock.Leave;
   end;
-  PipeAtomicSet(FDisconnectNotified, 0);
+  PcAtomicSet(FDisconnectNotified, 0);
   FConnected := True;
-  FSessionUpTick := PipeTickMs; // marca para o criterio de sessao duravel
+  FSessionUpTick := PcTickMs; // marca para o criterio de sessao duravel
   FReader := TPipeClientReaderThread.Create(Self);
   ResetSessionStats;
   StartHeartbeat;
@@ -926,51 +927,51 @@ begin
   // So DEPOIS de a sessao estar completa (FReader atribuido): e' este flag
   // que libera o WaitReconnectDone do Disconnect — zera-lo antes deixaria o
   // Disconnect correr em paralelo com a montagem da sessao.
-  PipeAtomicSet(FReconnecting, 0);
+  PcAtomicSet(FReconnecting, 0);
   Result := True;
 end;
 
 procedure TPipeClient.NotifyDisconnectedOnce;
 begin
-  if PipeAtomicCompareExchange(FDisconnectNotified, 1, 0) = 0 then
+  if PcAtomicCompareExchange(FDisconnectNotified, 1, 0) = 0 then
     DispatchConnEvent(FOnDisconnected, 0);
 end;
 
 procedure TPipeClient.ResetSessionStats;
 begin
-  PipeAtomicWrite64(FBytesSent, 0);
-  PipeAtomicWrite64(FBytesReceived, 0);
-  PipeAtomicWrite64(FBytesSentWire, 0);
-  PipeAtomicWrite64(FBytesReceivedWire, 0);
-  PipeAtomicWrite64(FMessagesSent, 0);
-  PipeAtomicWrite64(FMessagesReceived, 0);
-  PipeAtomicWrite64(FReqCount, 0);
-  PipeAtomicWrite64(FReqTotalMs, 0);
-  PipeAtomicWrite64(FReqMaxMs, 0);
+  PcAtomicWrite64(FBytesSent, 0);
+  PcAtomicWrite64(FBytesReceived, 0);
+  PcAtomicWrite64(FBytesSentWire, 0);
+  PcAtomicWrite64(FBytesReceivedWire, 0);
+  PcAtomicWrite64(FMessagesSent, 0);
+  PcAtomicWrite64(FMessagesReceived, 0);
+  PcAtomicWrite64(FReqCount, 0);
+  PcAtomicWrite64(FReqTotalMs, 0);
+  PcAtomicWrite64(FReqMaxMs, 0);
 end;
 
 procedure TPipeClient.RecordRequestLatency(AElapsedMs: UInt64);
 var
   LOldMax: UInt64;
 begin
-  PipeAtomicAdd64(FReqCount, 1);
-  PipeAtomicAdd64(FReqTotalMs, AElapsedMs);
+  PcAtomicAdd64(FReqCount, 1);
+  PcAtomicAdd64(FReqTotalMs, AElapsedMs);
   // CAS loop para o maximo: um Add64 simples nao serve (nao e' soma, e' "so
   // atualiza se for maior"), e duas chamadas concorrentes de Request podem
   // disputar o mesmo campo.
   repeat
-    LOldMax := PipeAtomicRead64(FReqMaxMs);
+    LOldMax := PcAtomicRead64(FReqMaxMs);
     if AElapsedMs <= LOldMax then
       Break;
-  until PipeAtomicCompareExchange64(FReqMaxMs, AElapsedMs, LOldMax) = LOldMax;
+  until PcAtomicCompareExchange64(FReqMaxMs, AElapsedMs, LOldMax) = LOldMax;
 end;
 
 procedure TPipeClient.StartHeartbeat;
 begin
   if (HeartbeatIntervalMs = 0) or not (Transport in [ptTcp, ptTls]) then
     Exit;
-  PipeAtomicWrite64(FLastReadTick, PipeTickMs);
-  PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+  PcAtomicWrite64(FLastReadTick, PcTickMs);
+  PcAtomicWrite64(FLastWriteTick, PcTickMs);
   FHbStopEvent := TEvent.Create(nil, True, False, ''); // manual-reset
   FHeartbeatThread := TPipeHeartbeatThread.Create(HeartbeatIntervalMs,
     FHbStopEvent, HeartbeatTick);
@@ -991,12 +992,12 @@ procedure TPipeClient.HeartbeatTick;
 var
   LNow: UInt64;
 begin
-  LNow := PipeTickMs;
+  LNow := PcTickMs;
   // Nenhum frame recebido (Ping incluso) ha' mais de 2x o intervalo: trata
   // como morta. CloseAbort e' thread-safe/idempotente (Pipes.Transport) e
   // desbloqueia a propria reader thread, que segue o teardown normal
   // (ReaderFinished, e AutoReconnect se estiver ligado).
-  if (LNow - PipeAtomicRead64(FLastReadTick)) >
+  if (LNow - PcAtomicRead64(FLastReadTick)) >
      (2 * UInt64(HeartbeatIntervalMs)) then
   begin
     if FConnected and Assigned(FEndpoint) then
@@ -1005,7 +1006,7 @@ begin
   end;
   // Ocioso na escrita ha' >= metade do intervalo: manda um Ping para o
   // servidor resetar o relogio de leitura dele.
-  if (LNow - PipeAtomicRead64(FLastWriteTick)) <
+  if (LNow - PcAtomicRead64(FLastWriteTick)) <
      (UInt64(HeartbeatIntervalMs) div 2) then
     Exit;
   FWriteLock.Enter;
@@ -1014,11 +1015,11 @@ begin
       Exit; // sessao trocou/caiu entre a checagem acima e aqui
     try
       PipeWriteFrame(FStream, TPipeFrame.Ping, MaxMessageSize);
-      PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
-      PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE);
+      PcAtomicWrite64(FLastWriteTick, PcTickMs);
+      PcAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE);
       // Ping nunca e' comprimido (fora de PipeIsCompressible): fio = logico.
-      PipeAtomicAdd64(FBytesSentWire, PIPE_FRAME_HEADER_SIZE);
-      PipeAtomicAdd64(FMessagesSent, 1);
+      PcAtomicAdd64(FBytesSentWire, PIPE_FRAME_HEADER_SIZE);
+      PcAtomicAdd64(FMessagesSent, 1);
     except
       // Escrita falhou = sessao morrendo (mesma tolerancia de
       // SendControlFrame): o reader esta a ponto de notificar a queda.
@@ -1032,13 +1033,13 @@ procedure TPipeClient.ReaderFinished(const AError: string);
 begin
   FConnected := False;
   FailPendingRpc; // Requests pendentes acordam com EPipeClosed
-  if PipeAtomicGet(FDeliberate) <> 0 then
+  if PcAtomicGet(FDeliberate) <> 0 then
     Exit; // Disconnect deliberado: quem notifica e' o proprio Disconnect
   if AError <> '' then
     DispatchError(0, AError);
   NotifyDisconnectedOnce;
-  if FAutoReconnect and (PipeAtomicGet(FGaveUp) = 0) and
-     (PipeAtomicCompareExchange(FReconnecting, 1, 0) = 0) then
+  if FAutoReconnect and (PcAtomicGet(FGaveUp) = 0) and
+     (PcAtomicCompareExchange(FReconnecting, 1, 0) = 0) then
     TPipeReconnectThread.Create(Self);
 end;
 
@@ -1095,14 +1096,14 @@ begin
       Exit; // sem sessao: o replay da proxima cobre
     try
       PipeWriteFrame(FStream, AFrame, MaxMessageSize);
-      PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+      PcAtomicWrite64(FLastWriteTick, PcTickMs);
       // Subscribe/Unsubscribe nunca sao comprimidos (fora de
       // PipeIsCompressible): fio = logico.
-      PipeAtomicAdd64(FBytesSent,
+      PcAtomicAdd64(FBytesSent,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload)));
-      PipeAtomicAdd64(FBytesSentWire,
+      PcAtomicAdd64(FBytesSentWire,
         PIPE_FRAME_HEADER_SIZE + UInt64(Length(AFrame.Payload)));
-      PipeAtomicAdd64(FMessagesSent, 1);
+      PcAtomicAdd64(FMessagesSent, 1);
     except
       // Escrita falhou = sessao morrendo. Nao levanta: o reader esta a ponto de
       // notificar a queda, e o filtro (que ja esta em FSubs) volta no replay da
@@ -1196,16 +1197,16 @@ begin
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
     PipeWriteFrame(FStream, LWire, MaxMessageSize);
-    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    PcAtomicWrite64(FLastWriteTick, PcTickMs);
     // Tamanho do payload JA CODIFICADO (topico em UTF-8 + envelope), nao um
     // recalculo manual: Length(ATopic) sozinho mentiria para topico nao-ASCII.
     // FBytesSent usa LFrame (logico); FBytesSentWire usa LWire (o que foi de
     // fato escrito) — a diferenca e' a economia da compressao.
-    PipeAtomicAdd64(FBytesSent,
+    PcAtomicAdd64(FBytesSent,
       PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrame.Payload)));
-    PipeAtomicAdd64(FBytesSentWire,
+    PcAtomicAdd64(FBytesSentWire,
       PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload)));
-    PipeAtomicAdd64(FMessagesSent, 1);
+    PcAtomicAdd64(FMessagesSent, 1);
   finally
     FWriteLock.Leave;
   end;
@@ -1240,7 +1241,7 @@ begin
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
     PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
-    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    PcAtomicWrite64(FLastWriteTick, PcTickMs);
     LBytes := 0;
     LWireBytes := 0;
     for I := 0 to High(LFrames) do
@@ -1248,9 +1249,9 @@ begin
       Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrames[I].Payload)));
       Inc(LWireBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWireFrames[I].Payload)));
     end;
-    PipeAtomicAdd64(FBytesSent, LBytes);
-    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
-    PipeAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
+    PcAtomicAdd64(FBytesSent, LBytes);
+    PcAtomicAdd64(FBytesSentWire, LWireBytes);
+    PcAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
   finally
     FWriteLock.Leave;
   end;
@@ -1306,8 +1307,8 @@ var
   LStart: UInt64;
   LWire: TPipeFrame;
 begin
-  LStart := PipeTickMs;
-  LCorrId := UInt64(Cardinal(PipeAtomicInc(FCorrSeq)));
+  LStart := PcTickMs;
+  LCorrId := UInt64(Cardinal(PcAtomicInc(FCorrSeq)));
   PipeValidateMaxPayload(Length(AData), MaxMessageSize);
   LWire := PipeMaybeCompress(TPipeFrame.Request(LCorrId, AData), CompressionMinSize);
   LSlot := TPipeRpcSlot.Create;
@@ -1324,11 +1325,11 @@ begin
         if (not FConnected) or (FStream = nil) then
           raise EPipeClosed.Create('cliente nao esta conectado');
         PipeWriteFrame(FStream, LWire, MaxMessageSize);
-        PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
-        PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
-        PipeAtomicAdd64(FBytesSentWire,
+        PcAtomicWrite64(FLastWriteTick, PcTickMs);
+        PcAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
+        PcAtomicAdd64(FBytesSentWire,
           PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload)));
-        PipeAtomicAdd64(FMessagesSent, 1);
+        PcAtomicAdd64(FMessagesSent, 1);
       finally
         FWriteLock.Leave;
       end;
@@ -1355,7 +1356,7 @@ begin
     begin
       // So' o caminho de sucesso entra na latencia — timeout e erro nao sao
       // "quanto tempo o servidor levou para responder".
-      RecordRequestLatency(PipeTickMs - LStart);
+      RecordRequestLatency(PcTickMs - LStart);
       Exit(LSlot.Data); // inclui reply que chegou entre o timeout e a remocao
     end;
     if LSlot.Closed then
@@ -1378,26 +1379,26 @@ var
   LTotal: UInt64;
 begin
   FillChar(Result, SizeOf(Result), 0);
-  Result.BytesSent := PipeAtomicRead64(FBytesSent);
-  Result.BytesReceived := PipeAtomicRead64(FBytesReceived);
-  Result.BytesSentWire := PipeAtomicRead64(FBytesSentWire);
-  Result.BytesReceivedWire := PipeAtomicRead64(FBytesReceivedWire);
-  Result.MessagesSent := PipeAtomicRead64(FMessagesSent);
-  Result.MessagesReceived := PipeAtomicRead64(FMessagesReceived);
-  Result.ReconnectAttempts := PipeAtomicGet(FReconnectAttempts);
+  Result.BytesSent := PcAtomicRead64(FBytesSent);
+  Result.BytesReceived := PcAtomicRead64(FBytesReceived);
+  Result.BytesSentWire := PcAtomicRead64(FBytesSentWire);
+  Result.BytesReceivedWire := PcAtomicRead64(FBytesReceivedWire);
+  Result.MessagesSent := PcAtomicRead64(FMessagesSent);
+  Result.MessagesReceived := PcAtomicRead64(FMessagesReceived);
+  Result.ReconnectAttempts := PcAtomicGet(FReconnectAttempts);
   FRpcLock.Enter;
   try
     Result.PendingRequests := FRpcSlots.Count;
   finally
     FRpcLock.Leave;
   end;
-  LCount := PipeAtomicRead64(FReqCount);
+  LCount := PcAtomicRead64(FReqCount);
   if LCount > 0 then
   begin
-    LTotal := PipeAtomicRead64(FReqTotalMs);
+    LTotal := PcAtomicRead64(FReqTotalMs);
     Result.AvgRequestLatencyMs := Cardinal(LTotal div LCount);
   end;
-  Result.MaxRequestLatencyMs := Cardinal(PipeAtomicRead64(FReqMaxMs));
+  Result.MaxRequestLatencyMs := Cardinal(PcAtomicRead64(FReqMaxMs));
 end;
 
 procedure TPipeClient.SendBytes(const AData: TBytes; const AGroupKey: string);
@@ -1412,11 +1413,11 @@ begin
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
     PipeWriteFrame(FStream, LWire, MaxMessageSize);
-    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
-    PipeAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
-    PipeAtomicAdd64(FBytesSentWire,
+    PcAtomicWrite64(FLastWriteTick, PcTickMs);
+    PcAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
+    PcAtomicAdd64(FBytesSentWire,
       PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWire.Payload)));
-    PipeAtomicAdd64(FMessagesSent, 1);
+    PcAtomicAdd64(FMessagesSent, 1);
   finally
     FWriteLock.Leave;
   end;
@@ -1448,7 +1449,7 @@ begin
     if (not FConnected) or (FStream = nil) then
       raise EPipeClosed.Create('cliente nao esta conectado');
     PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
-    PipeAtomicWrite64(FLastWriteTick, PipeTickMs);
+    PcAtomicWrite64(FLastWriteTick, PcTickMs);
     LBytes := 0;
     LWireBytes := 0;
     for I := 0 to High(LFrames) do
@@ -1456,9 +1457,9 @@ begin
       Inc(LBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LFrames[I].Payload)));
       Inc(LWireBytes, PIPE_FRAME_HEADER_SIZE + UInt64(Length(LWireFrames[I].Payload)));
     end;
-    PipeAtomicAdd64(FBytesSent, LBytes);
-    PipeAtomicAdd64(FBytesSentWire, LWireBytes);
-    PipeAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
+    PcAtomicAdd64(FBytesSent, LBytes);
+    PcAtomicAdd64(FBytesSentWire, LWireBytes);
+    PcAtomicAdd64(FMessagesSent, UInt64(Length(LFrames)));
   finally
     FWriteLock.Leave;
   end;

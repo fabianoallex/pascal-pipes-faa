@@ -18,7 +18,7 @@ uses
   fpcunit, testregistry,
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Discovery;
 
 type
@@ -148,11 +148,11 @@ begin
   FRespA := TPipeDiscoveryResponder.Create(PORTA_SERVICO_A, ptTcp, 'A',
     PORTA_DESC_A, '');
   FRespA.Start;
-  LInicio := PipeTickMs;
+  LInicio := PcTickMs;
   FRespA.Stop;
   AssertTrue('Stop com thread ociosa conclui em < 2s (levou ' +
-    IntToStr(Int64(PipeTickMs - LInicio)) + 'ms)',
-    PipeTickMs - LInicio < 2000);
+    IntToStr(Int64(PcTickMs - LInicio)) + 'ms)',
+    PcTickMs - LInicio < 2000);
   AssertFalse('inativo apos Stop', FRespA.Active);
   LFound := PipeDiscoverServers('127.0.0.1', 300, PORTA_DESC_A, '');
   AssertEquals('parado nao responde', 0, Length(LFound));

@@ -72,6 +72,14 @@ Decision: **copy the unit** to `src/Pipes.Threading.pas`, renaming the prefixes
 coupling between repositories; each lib is distributable standalone. Extracting a shared
 lib remains a future refactor if a third project ever needs it.
 
+**Superseded on 2026-10-04.** The third and fourth projects showed up (`pascal-redis-faa`,
+`pascal-db-faa`), and the shared part was extracted into `pascal-common-faa` (a submodule in
+`external/`, for tests and CI only). `Pipes.Threading` kept only what belongs to pipes
+(`TPipeKeyedDispatcher`, `PipeGroupDispatcher`, `TPipeHeartbeatThread`); atomics, monitor and
+pool became `PcAtomic*`/`PcTickMs`/`TPcMonitor`/`TPcWorkItem`/`TPcThreadPool`/`PcPool`.
+Decisions and measurements of the migration in §23. The text above stays as the record of the
+original reasoning.
+
 ### 2.4 Dual-compiler compatibility
 
 - `src/pipes.inc` (template: `amqp.inc`): on FPC enables `{$MODE DELPHI}{$H+}`; defines
@@ -202,7 +210,7 @@ changing the magic.
 ```
 Client                                     Server
 Request():                                 reader: reads request frame
-  corrId := PipeAtomicInc(FCorrSeq)          dispatches TPipeRequestWork to the pool
+  corrId := PcAtomicInc(FCorrSeq)          dispatches TPipeRequestWork to the pool
   registers slot {corrId → TEvent}         worker: calls OnRequest(..., out Reply)
   sends frame(request, corrId)               sends frame(reply, corrId) [write lock,
   slot.Event.WaitFor(timeout)                 connection refcount guard]
@@ -222,7 +230,7 @@ SERVER                                     CLIENT
 └─────────────────────────────────┘        ┌─ Reconnect thread (ephemeral,│
 ┌─ Reader thread (1 per conn) ────┐        │  FreeOnTerminate) ──────────┘
 │ reads frame → decodes →         │
-│ dispatches work item            │        ┌─ TPipeThreadPool ───────────┐
+│ dispatches work item            │        ┌─ TPcThreadPool ─────────────┐
 └─────────────────────────────────┘        │ runs the user's OnMessage/  │
                                            │ OnRequest/OnConnected...    │
                                            └─────────────────────────────┘
@@ -626,7 +634,7 @@ sample uses their own app timer calling `Stats` whenever convenient.
 ### 11.2 Always on, no opt-in
 
 Unlike the heartbeat (which only exists with `HeartbeatIntervalMs` configured), the
-byte/message counters cost one `PipeAtomicAdd64` per frame — nanoseconds, the same order of
+byte/message counters cost one `PcAtomicAdd64` per frame — nanoseconds, the same order of
 magnitude `FInFlight` already pays on every dispatched callback. There is no `EnableStats`
 property: the cost is too low to justify one more configuration decision, and a metric that
 only sometimes exists is the classic source of "why didn't I see this on the dashboard."
@@ -645,9 +653,12 @@ doesn't inflate the number.
 ### 11.4 `PoolQueueDepth` can lie — and that's documented, not hidden
 
 Under `pdmPool` (the default), `EventPool` resolves to the process's **global** pool
-(`Pipes.Threading.PipePool`), shared by every `TPipeServer`/`TPipeClient` in the same
+(`PascalCommon.ThreadPool.PcPool`), shared by every `TPipeServer`/`TPipeClient` in the same
 application. `Server.Stats.PoolQueueDepth` reflects EVERYONE's backlog in that case, not just
-this server's — it's only exclusive to it under `pdmSerialized` (private 1-worker pool). The
+this server's — it's only exclusive to it under `pdmSerialized` (private 1-worker pool).
+Since the migration to `pascal-common-faa` (§23), "everyone" includes the OTHER `*-faa`
+libraries in the process that use `PcPool` (amqp, redis): the number can grow from work that
+isn't even pipes', and `pdmPool` callbacks compete with theirs for the same workers. The
 alternative — filtering by owner inside the global pool — would require linking each work
 item back to the server that queued it, real complexity for a number that's already cheap the
 simple way. The choice was to document the caveat in the property's XMLDoc rather than solve
@@ -660,9 +671,9 @@ the wrong problem.
 inside `if LSlot.Ok then` — never on timeout or error reply. The reason: "how long did the
 server take to respond" and "the server didn't respond" are different questions, and adding a
 30s timeout into the latency average would turn an availability problem into a lying
-performance number. `MaxRequestLatencyMs` uses a CAS loop (not a `PipeAtomicAdd64`, which
+performance number. `MaxRequestLatencyMs` uses a CAS loop (not a `PcAtomicAdd64`, which
 sums — here the operation is "swap only if greater"), for the same reason that motivated
-`PipeAtomicAdd64` to exist: there is no portable `InterlockedMax64` across both compilers.
+`PcAtomicAdd64` to exist: there is no portable `InterlockedMax64` across both compilers.
 
 ### 11.6 Client counters are per SESSION, no cross-session cumulative
 
@@ -677,7 +688,7 @@ answers "why did the session change" better than a lifetime byte total would.
 
 | # | Milestone | Content | Status |
 |---|-----------|---------|--------|
-| S0 | `Pipes.Threading` | `PipeAtomicCompareExchange64`/`PipeAtomicAdd64` (CAS loop); `TPipeThreadPool.QueueDepth` | done |
+| S0 | `Pipes.Threading` | `PipeAtomicCompareExchange64`/`PipeAtomicAdd64` (CAS loop); `TPipeThreadPool.QueueDepth` (now `PcAtomic*`/`TPcThreadPool` in `pascal-common-faa`, §23) | done |
 | S1 | `Pipes.Types` | `TPipeConnStats`/`TPipeServerStats`/`TPipeClientStats` | done |
 | S2 | Server | per-connection and aggregate counters, `Stats`/`ConnectionStats` (same Try* pattern as `TryClientIdentity`) | done |
 | S3 | Client | per-session counters, Request latency (success only), `Stats` | done |
@@ -1136,7 +1147,7 @@ generalizing `pdmSerialized`, which is already exactly this pattern with K=1, se
 `Pipes.Base.FDispatchPool`) was dropped for two reasons: it would need a new property just to
 tune K, and hash collisions would serialize two UNRELATED groups against each other just for
 landing in the same bucket — worse still considering `pdmPool` is already a GLOBAL pool shared
-by the whole application (`Pipes.Threading.PipePool`), so groups from DIFFERENT components
+by the whole application (`PascalCommon.ThreadPool.PcPool`), so groups from DIFFERENT components
 could collide by chance.
 
 The design that stuck is simpler to use and more correct: a per-key mailbox with a
@@ -1145,10 +1156,10 @@ queue, only ONE worker drains it at a time, and parallelism across keys self-reg
 against the pool's own worker cap, with no new property. `AGroupKey` is just one more
 parameter on `SendBytes`; there is no new dispatch mode to learn.
 
-### 15.2 `TPipeKeyedDispatcher` (`Pipes.Threading.pas`): additive, does not touch `TPipeThreadPool`
+### 15.2 `TPipeKeyedDispatcher` (`Pipes.Threading.pas`): additive, does not touch `TPcThreadPool`
 
-`TPipeThreadPool`/`TPipeWorkItem` (the engine copied/adapted from `pascal-amqp-faa`, see the
-unit header) needed NO changes at all. `TPipeKeyedDispatcher` is a layer on top:
+`TPcThreadPool`/`TPcWorkItem` (the engine copied/adapted from `pascal-amqp-faa`, now in
+`pascal-common-faa` — see §23) needed NO changes at all. `TPipeKeyedDispatcher` is a layer on top:
 
 - `Enqueue(AKey, AItem)`: under `FLock`, appends `AItem` to `AKey`'s mailbox (creating it if
   absent). If the mailbox JUST got created (nobody was draining it), it fires ONE
@@ -1157,8 +1168,8 @@ unit header) needed NO changes at all. `TPipeKeyedDispatcher` is a layer on top:
   the mailbox and executes it, or (mailbox empty) removes the key from the dictionary and
   ends.
 
-Since `TPipeMailboxDrainWork` is just another regular `TPipeWorkItem`, it occupies a pool
-worker like any other job — no new API on `TPipeThreadPool`, no dedicated worker.
+Since `TPipeMailboxDrainWork` is just another regular `TPcWorkItem`, it occupies a pool
+worker like any other job — no new API on `TPcThreadPool`, no dedicated worker.
 `TPipeMessageWork` (the item that already existed for plain messages) is reused as-is as the
 item that travels inside the mailbox — `DispatchMessage` only decides WHERE to send that same
 instance (`EventPool.Queue` directly, or `PipeGroupDispatcher.Enqueue`).
@@ -1180,25 +1191,43 @@ item" OR "remove the key") and `Enqueue` (deciding "append" OR "create and fire"
 the same lock, that window doesn't exist: the two decisions are serialized, one always sees
 the other's outcome.
 
-### 15.4 Lifecycle: the dispatcher does NOT own the pool — Destroy order matters
+### 15.4 Lifecycle: the dispatcher does NOT own the pool — and both Destroy orders are safe
 
-`TPipeKeyedDispatcher.Create(APool)` only references the pool, it does not own it.
-`TPipeThreadPool.Destroy` already joins (`WaitFor`) each worker before returning — which, by
-transitivity, drains any `TPipeMailboxDrainWork` in flight (its `Execute` only returns once
-the WHOLE MAILBOX has drained, not just the current item). That's why the GLOBAL dispatcher's
-(`PipeGroupDispatcher`, paired with `PipePool`) finalization order is **always pool first**:
+`TPipeKeyedDispatcher.Create(APool)` only references the pool, it does not own it. Until the
+migration to `pascal-common-faa`, safety came from the order: the global pool and the global
+dispatcher lived in the same unit, and finalization freed **the pool first** —
+`TPipeThreadPool.Destroy` ran the whole queue and joined (`WaitFor`) each worker, which, by
+transitivity, drained any `TPipeMailboxDrainWork` in flight (its `Execute` only returns once
+the WHOLE MAILBOX has drained). Only then was the dispatcher freed.
+
+The migration reversed that order for the global dispatcher: the pool became `PcPool`, freed
+in `PascalCommon.ThreadPool`'s finalization — which runs AFTER `Pipes.Threading`'s, because
+the latter uses the former. Freeing the dispatcher as before would be a use-after-free: a
+drain still queued or running on `PcPool` would call `FDispatcher.Fetch` on a freed object,
+and the items pending in the mailboxes would be discarded without running. So the guarantee
+moved out of the ORDER and into `TPipeKeyedDispatcher.Destroy` itself (§23.1):
+
+- `FActiveDrains` (atomic) counts live drains: incremented in `Enqueue`, under `FLock`, when a
+  mailbox is born; decremented in `TPipeMailboxDrainWork`'s **destructor** — which runs both
+  after `Execute` and when the pool discards the item without running it, and is the drain's
+  LAST access to the dispatcher.
+- `Destroy` sets `FShutdown` under `FLock` (from then on `Enqueue` frees the item without
+  running it, the same contract as `TPcThreadPool.Queue` after `Destroy`), waits for
+  `FActiveDrains` to reach zero by polling, and only then frees mailboxes and lock. Polling,
+  not an event, on purpose: with an event the drain's last act would be a `SetEvent` on an
+  object the waiter may already be freeing.
 
 ```pascal
 finalization
-  GPool.Free;             // joins workers; drains any TPipeMailboxDrainWork in flight
-  GGroupDispatcher.Free;  // only now can no thread still touch FMailboxes
+  // Runs BEFORE PascalCommon.ThreadPool's, with PcPool alive:
+  // Destroy waits for the drains in flight.
+  FreeAndNil(GGroupDispatcher);
 ```
 
-The reverse order would be a use-after-free: a pool thread still running
-`TPipeMailboxDrainWork.Execute` (calling `FDispatcher.Fetch`) while the dispatcher has already
-been freed. `TPipeKeyedDispatcher.Destroy` cleans up any leftover mailbox as a safety net, but
-under the documented lifecycle it already arrives empty (the preceding `GPool.Free` already
-drained everything).
+Result: pool first (the case of a dispatcher on a private pool) is still safe and reaches
+`Destroy` with `FActiveDrains = 0`; dispatcher first (the global one) is safe too. The only
+forbidden order now is calling `Destroy` from inside an item dispatched by the same
+dispatcher (it would wait for its own drain).
 
 ### 15.5 Wire: reuses `CorrId`, zero format change
 
@@ -1459,7 +1488,7 @@ payload, exactly as documented before, and every piece of code that already read
 today doesn't change behaviour.
 
 Mechanics: at the same points that already compute `LWire`/`LWireFrames` (write) or capture
-the frame before `PipeUndoCompress` (read), plus one `PipeAtomicAdd64` — identical cost to
+the frame before `PipeUndoCompress` (read), plus one `PcAtomicAdd64` — identical cost to
 what S0-S4 already pays per frame, no new lock. For kinds that are never compressed (Ping,
 Subscribe/Unsubscribe), the Wire value always equals the logical one by construction (same
 call, same number) — important so the `TotalBytesSentWire` arithmetic stays comparable to
@@ -1515,7 +1544,8 @@ registered handler, or a payload outside the `MinSize`/`MaxSize` range call
 same way an `OnMessage` with no subscriber does nothing. The reason isn't stylistic:
 `HandleMessage` runs INSIDE the work item that already dispatches `OnMessage`
 (`TPipeMessageWork.Execute`, in `Pipes.Base.pas`), and an exception there does NOT reach
-`OnError` — `TPipePoolWorker.Execute` (`Pipes.Threading.pas`) swallows any exception from a
+`OnError` — `TPcThreadPool`'s worker (`PascalCommon.ThreadPool`; at the time,
+`TPipePoolWorker.Execute` in `Pipes.Threading.pas`) swallows any exception from a
 user callback so it doesn't take down the worker, exactly as it would with a bug inside the
 dev's own `OnMessage`. If `HandleMessage` raised instead of calling an event, discarding an
 unknown command or a malformed payload would vanish in total silence — the same problem that
@@ -1896,7 +1926,7 @@ function:
 ```pascal
 function TPipeClient.ReopenAllowed: Boolean;
 begin
-  Result := FAutoReconnect or (PipeAtomicGet(FConnectingAsync) <> 0);
+  Result := FAutoReconnect or (PcAtomicGet(FConnectingAsync) <> 0);
 end;
 ```
 
@@ -1918,7 +1948,7 @@ already asked to stop) — so it does not go away, it just starts asking the rig
 ### 21.3 Who clears `FConnectingAsync` — and why it is NOT `TryReopenSession`
 
 The clearing lives in `TPipeReconnectThread.Execute` (and, deliberately, in `Disconnect`),
-**never** in `TryReopenSession` next to `PipeAtomicSet(FReconnecting, 0)`. That looks like the
+**never** in `TryReopenSession` next to `PcAtomicSet(FReconnecting, 0)`. That looks like the
 natural place, and it is wrong — this paragraph exists so nobody "simplifies it back".
 
 The case that breaks is the peer that **accepts and drops**: the mTLS server on the SChannel
@@ -1942,13 +1972,13 @@ is explicit:
 
 ```pascal
 LConn  := FClient.FConnected;
-LDelib := PipeAtomicGet(FClient.FDeliberate) <> 0;
+LDelib := PcAtomicGet(FClient.FDeliberate) <> 0;
 LDePe  := LDelib or LConn or
-          (PipeAtomicCompareExchange(FClient.FReconnecting, 1, 0) <> 0);
+          (PcAtomicCompareExchange(FClient.FReconnecting, 1, 0) <> 0);
 if LDePe then
 begin
   if LConn or LDelib then
-    PipeAtomicSet(FClient.FConnectingAsync, 0);
+    PcAtomicSet(FClient.FConnectingAsync, 0);
   Exit;
 end;
 ```
@@ -2193,3 +2223,117 @@ unit already exercises):
 | DIAG0b | `Pipes.Base` | `qeAttemptFailed`, `TPipeAttemptFailedWork`, `DispatchAttemptFailedEvent` | done |
 | DIAG0c | `Pipes.Client` | `OnConnectAttemptFailed`, `LTentado` and `on E:` in `TryReopenSession`'s `except` | done |
 | DIAG0d | Tests | 4 integration tests in both frameworks | done |
+
+## 23. Migration to `pascal-common-faa` (its phase F8)
+
+On 2026-10-04 the part of `Pipes.Threading` that was a copy of `AMQP.Threading` (atomics,
+`PipeTickMs`, monitor, pool, global pool) was replaced by `pascal-common-faa` 1.0.0, the base
+library that pipes, amqp, redis and db now share (plan and decisions in
+`external/pascal-common-faa/docs/plan.md`; name map in its `docs/migrating.md`). No
+compatibility alias, by that library's decision — the name table is in `README.en.md`,
+"Compatibility with the previous API".
+
+Arrangement, the same as `pascal-db-faa`'s (which migrated first):
+
+- **Submodule** `external/pascal-common-faa` at tag `v1.0.0`, checked out WITHOUT
+  `--recursive` (pascal-common-faa's own submodule is only for its own tests). For this
+  repository's tests, samples and scripts only: the application provides the single copy.
+- **`pipes_faa.lpk`** requires `pascal_common_faa` by name only, with `MinVersion Major="1"`. A
+  `DefaultFilename` into `external/` would let Lazarus fall back to this library's private copy
+  — the diamond pascal-common-faa rules out.
+- **Test and sample `.lpi`** list `pascal_common_faa` first, with `DefaultFilename` into
+  `external/` and `Prefer="True"` (without `Prefer`, a package registered in the IDE would
+  win). The `.dproj` got `external\pascal-common-faa\src` on the search path.
+- **Minimum-version check** in `Pipes.Threading`, right after the `uses` that brings in
+  `PascalCommon.Version`: it is the unit every pascal-common-faa consumer inside pipes compiles
+  (Base, Transport, Discovery use it).
+
+What stayed in `Pipes.Threading`: `TPipeKeyedDispatcher`, `TPipeMailboxDrainWork`,
+`PipeGroupDispatcher` and `TPipeHeartbeatThread`. The migration required deciding and measuring
+five points, below.
+
+### 23.1 `PipeGroupDispatcher`'s finalization order reversed — the wait moved into `Destroy`
+
+Before, `Pipes.Threading`'s finalization freed the pool (which ran the queue and joined the
+workers, draining the `TPipeMailboxDrainWork` in flight) and only THEN the dispatcher. Now the
+pool is `PcPool`, freed in `PascalCommon.ThreadPool`'s finalization, which runs after pipes':
+freeing the dispatcher as before would be a use-after-free. Details of the new mechanism in
+§15.4 — `FActiveDrains` counted from `Enqueue` to the drain's destructor, `Destroy` refusing new
+`Enqueue` calls and waiting for the counter to reach zero by polling.
+
+Alternatives ruled out: keeping the old order isn't possible (the pool no longer belongs to
+pipes); an event instead of polling would leave a `SetEvent` as the drain's last act, on an
+object the waiter may already be freeing; counting only from `Execute` would miss a drain still
+in the pool's queue.
+
+Proofs, both with the failure path measured (removing the wait from `Destroy` once):
+
+- `KeyedDispatcher_DestruidoAntesDoPool_EsperaDrenagemEmVoo`: 3 keys × 5 items of 20 ms, the
+  dispatcher's `Free` with the pool alive; requires all 15 to have run when `Free` returns.
+  Without the wait: **0 of 15**.
+- The GLOBAL dispatcher's real path, on every unit-suite run:
+  `tests/Unit/Pipes.FinalizationCheck.pas` is initialized before `Pipes.Threading` (it comes
+  before any pipes unit in the program's `uses`) and therefore finalized AFTER it;
+  `Pipes.ThreadingTests`' finalization queues 5 slow items on one `PipeGroupDispatcher` key, and
+  the check requires all 5 to have run. Without the wait: `FINALIZATION CHECK FAILED ... rodaram
+  0 de 5 itens`, exit 1 and 6 blocks leaked in heaptrc. Same protocol as
+  `PascalCommon.ThreadPoolTests` (a "FINALIZATION CHECK FAILED" line + `ExitCode = 1`, which
+  the `tools/test_fpc*.sh` scripts look for).
+
+One more test covers the new contract: `Enqueue` during `Destroy` frees the item without running
+it (`KeyedDispatcher_EnqueueDuranteDestroy_LiberaSemExecutar`).
+
+### 23.2 `PipeGroupDispatcher` created in `initialization`
+
+It used to be created on demand with double-checked locking whose first read has no barrier —
+safe on x86/x64, but pipes has ARM targets (Android, Linux ARM64), the same family as the race
+fixed in `pascal-db-faa` (`5c853c6`). Creating it in `initialization` is cheap (a lock and a
+dictionary, no thread) and is the rule pascal-common-faa adopted for `PcPool`. `PcPool` already
+exists at that point: `PascalCommon.ThreadPool` is initialized first, because `Pipes.Threading`
+uses it.
+
+### 23.3 `PcPool` belongs to the process, not to pipes
+
+Under `pdmPool`, pipes' callbacks now compete for workers with those of the other `*-faa`
+libraries that use `PcPool`, and `TPipeServerStats.PoolQueueDepth` counts their items too
+(XMLDoc in `Pipes.Types`, §11.4, README). The server's connection cleanup (`QueueCleanup`) also
+goes to `PcPool` and may wait behind those items — that only delays the release, since `Stop`
+waits for it through `FInFlight` anyway. The worker ceiling is unchanged (max(16, 4 × cores));
+whoever needs to isolate pipes from the rest has `pdmSerialized` (a private pool), as before.
+
+### 23.4 `TPcThreadPool.Destroy` runs the whole queue — and always did
+
+The old `Pipes.Threading` header ("items nobody got to run" freed in `Destroy`) and the test
+`Pool_DestroyComItensPendentes_NaoTrava` ("discard the pending ones") described a contract the
+code never had: the workers look at the queue before the shutdown flag and empty it before
+exiting (measured in pascal-common-faa's F3). Both left with the moved code; the equivalent test
+that stayed in pipes (`KeyedDispatcher_PoolDestruidoPrimeiro_ExecutaTodosOsPendentes`) now
+requires ALL pending items to run. `DrainInFlight` and `TeardownDispatch` in `Pipes.Base`
+already described the right behavior ("drains its own queue in Destroy").
+
+### 23.5 64-bit counters bind to the `UInt64` overload
+
+pascal-common-faa has `PcAtomic*64` in two overloads (`Int64` and `UInt64`). Every pipes target
+is `UInt64` (`Stats` counters, heartbeat ticks, Request latency), and a `var` parameter needs the
+identical type — the variable picks the overload, and a `UInt64` doesn't bind to the `Int64`
+one. Checked by inspecting every call and by compiling on both compilers. Inherited behavior
+change: 64-bit operations wrap around instead of raising under `{$Q+}`, which is right for
+cumulative counters.
+
+### 23.6 Verification
+
+| Where | Result |
+|---|---|
+| FPC 3.2.2 Windows x64 (`tools/test_fpc.sh`) | unit 137/137, integration 139/139, 0 leaks, finalization check silent; 32 Lazarus samples building against the submodule |
+| FPC 3.2.2 Linux x86_64 (`tools/test_fpc_docker.sh`) | unit 137/137; integration 115/115 without and 139/139 with `-dPIPES_OPENSSL`; 0 leaks |
+| Linux, concurrency | unit: 8 containers at once × 5 runs at `--cpus=1` = 40/40 green. Integration (with OpenSSL): 4 containers × 3 runs at `--cpus=1` = 12/12 green |
+| Delphi 12 (built in the IDE, exes run from the command line) | Win64 and Win32: unit 137/137 and integration 139/139, 0 leaks/failures/errors, finalization check silent; "build all" of `Pipes.groupproj` ok on Win32 and Win64; `tests/Android` compiled (not run on a device this round) |
+
+The unit suite went from 147 to 137: the 12 atomics/monitor/pool tests left (covered in
+pascal-common-faa) and 2 dispatcher-lifecycle tests came in. `TPipeHeartbeatThread` never had a
+unit test; it stays covered by `Pipes.HeartbeatTests` (integration). Android was compiled in the IDE
+but not run on a device this round.
+
+Delphi-only pitfall found on the way: a unit with `finalization` and NO `initialization`
+compiles on FPC and fails on Delphi with `E2029 Declaration expected but 'FINALIZATION'
+found` — `Pipes.FinalizationCheck` got an empty `initialization`.

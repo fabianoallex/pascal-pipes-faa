@@ -16,7 +16,7 @@ uses
   fpcunit, testregistry,
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Server,
   Pipes.Client;
 
@@ -45,14 +45,14 @@ var
 
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_peeraddr_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_peeraddr_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 function UniqueTcpAddress: string;
 begin
-  Result := '127.0.0.1:' + IntToStr(25000 + (Int64(PipeTickMs) mod 9000) +
-    PipeAtomicInc(GNameSeq));
+  Result := '127.0.0.1:' + IntToStr(25000 + (Int64(PcTickMs) mod 9000) +
+    PcAtomicInc(GNameSeq));
 end;
 
 // Connect() devolve assim que o CLIENTE se considera conectado; o servidor so
@@ -64,8 +64,8 @@ function WaitClientCount(AServer: TPipeServer; AExpected: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (AServer.ClientCount < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (AServer.ClientCount < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
   Result := AServer.ClientCount >= AExpected;
 end;
@@ -88,7 +88,7 @@ end;
 procedure TPipePeerAddressTests.OnSrvDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FDisconnected);
+  PcAtomicInc(FDisconnected);
 end;
 
 function TPipePeerAddressTests.WaitFlag(var AFlag: Integer;
@@ -96,10 +96,10 @@ function TPipePeerAddressTests.WaitFlag(var AFlag: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(AFlag) = 0) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(AFlag) = 0) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(AFlag) <> 0;
+  Result := PcAtomicGet(AFlag) <> 0;
 end;
 
 procedure TPipePeerAddressTests.Tcp_ClienteEstabelecido_DevolveIpEPorta;

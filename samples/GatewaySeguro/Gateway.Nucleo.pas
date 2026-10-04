@@ -95,7 +95,7 @@ uses
   SyncObjs,
   Generics.Collections,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Base,
   Pipes.Client,
@@ -330,12 +330,12 @@ end;
 
 procedure TGatewayPar.AddRef;
 begin
-  PipeAtomicInc(FRefs);
+  PcAtomicInc(FRefs);
 end;
 
 procedure TGatewayPar.Release;
 begin
-  if PipeAtomicDec(FRefs) = 0 then
+  if PcAtomicDec(FRefs) = 0 then
     FGateway.FCeifador.Enfileirar(Self);
 end;
 
@@ -368,7 +368,7 @@ procedure TGatewayPar.Repassar(const AData: TBytes);
 begin
   try
     FLocal.SendBytes(AData); // opaco: o gateway nao entende o protocolo
-    PipeAtomicInc(FMensagens);
+    PcAtomicInc(FMensagens);
   except
     on E: EPipeError do
       Derrubar('servico local indisponivel: ' + E.Message);
@@ -379,7 +379,7 @@ procedure TGatewayPar.Derrubar(const AMotivo: string);
 begin
   // Uma vez so': a morte da ponta local e a da ponta remota podem chegar
   // juntas, e as duas passam por aqui.
-  if PipeAtomicCompareExchange(FCaindo, 1, 0) <> 0 then
+  if PcAtomicCompareExchange(FCaindo, 1, 0) <> 0 then
     Exit;
   FGateway.Log(Format('[remota %d] %s: derrubando (%s)',
     [FConnRemota, FIdentidade, AMotivo]));
@@ -456,7 +456,7 @@ end;
 
 procedure TGatewaySeguro.Iniciar(const APkiDir: string);
 begin
-  PipeAtomicSet(FParando, 0);
+  PcAtomicSet(FParando, 0);
   FCeifador := TGatewayCeifador.Create;
 
   FSrv := TPipeServer.Create(FEnderecoTls, ptTls);
@@ -523,7 +523,7 @@ begin
     // ceifador vai fazer dispara LocalDisconnected, e sem esta marca aquele
     // handler tentaria "derrubar com motivo" uma conexao remota que o Stop
     // logo abaixo ja' vai fechar — e o motivo seria o errado.
-    if PipeAtomicCompareExchange(LPares[I].FCaindo, 1, 0) = 0 then
+    if PcAtomicCompareExchange(LPares[I].FCaindo, 1, 0) = 0 then
       if AAvisar then
       begin
         try
@@ -547,7 +547,7 @@ begin
   // 1) Fechar a porta de entrada em nivel de aplicacao: uma conexao aceita
   //    daqui em diante nao vira par nenhum (senao ela poderia se registrar
   //    DEPOIS da varredura do passo 2 e nunca ser destruida).
-  PipeAtomicSet(FParando, 1);
+  PcAtomicSet(FParando, 1);
 
   // 2) Soltar os pares ANTES de parar o servidor. Assim quem executa o
   //    Disconnect de cada ponta local e' o ceifador, com o servidor TLS ainda
@@ -639,7 +639,7 @@ var
   LPar: TGatewayPar;
   LMotivo: string;
 begin
-  if PipeAtomicGet(FParando) <> 0 then
+  if PcAtomicGet(FParando) <> 0 then
   begin
     // O gateway esta encerrando: um par criado agora poderia se registrar
     // depois da varredura do Parar e nunca ser destruido.
@@ -675,7 +675,7 @@ begin
       [AConnId, LIdent.CommonName, LMotivo]));
     RecusarRemoto(AConnId, 'servico local indisponivel: ' + LMotivo);
     // O motivo ja' foi dado: nao deixar o LocalDisconnected repetir a dose.
-    PipeAtomicSet(LPar.FCaindo, 1);
+    PcAtomicSet(LPar.FCaindo, 1);
     LPar.Release; // nunca registrado: vai direto para o ceifador
     Exit;
   end;
@@ -725,7 +725,7 @@ begin
     // teardown" ANTES de ceifar impede que o LocalDisconnected — que o
     // Disconnect do ceifador vai disparar daqui a pouco — tente derrubar com
     // motivo uma conexao remota que ja' nao existe.
-    PipeAtomicSet(LPar.FCaindo, 1);
+    PcAtomicSet(LPar.FCaindo, 1);
     // Espelhamento de ciclo de vida: morreu a remota, morre a local.
     Ceifar(LPar);
   finally
@@ -761,7 +761,7 @@ begin
       Result[I].Identidade := LPar.FIdentidade;
       Result[I].LocalSeq := LPar.FLocalSeq;
       Result[I].Desde := LPar.FDesde;
-      Result[I].Mensagens := PipeAtomicGet(LPar.FMensagens);
+      Result[I].Mensagens := PcAtomicGet(LPar.FMensagens);
       Inc(I);
     end;
   finally

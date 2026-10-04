@@ -20,6 +20,9 @@ uses
   Interfaces, Forms, GuiTestRunner,
   {$ENDIF}
   Classes, consoletestrunner, testregistry,
+  // Antes de qualquer unit do pipes: finalizada DEPOIS de Pipes.Threading
+  // (ver o cabecalho da unit).
+  Pipes.FinalizationCheck,
   Pipes.ThreadingTests,
   Pipes.FramingTests,
   Pipes.CompressionTests,

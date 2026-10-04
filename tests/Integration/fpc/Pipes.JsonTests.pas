@@ -21,7 +21,7 @@ uses
   SyncObjs,
   fpjson,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Server,
   Pipes.Client,
@@ -66,8 +66,8 @@ var
 
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_json_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_json_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 function MakeBytes(const AValues: array of Byte): TBytes;
@@ -102,10 +102,10 @@ function TPipeJsonTests.WaitCount(var ACounter: Integer; AExpected: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 procedure TPipeJsonTests.OnSrvMessage(Sender: TObject;
@@ -117,7 +117,7 @@ begin
   finally
     FLock.Leave;
   end;
-  PipeAtomicInc(FSrvMsgCount);
+  PcAtomicInc(FSrvMsgCount);
 end;
 
 procedure TPipeJsonTests.OnSrvRequestDobraNumero(Sender: TObject;

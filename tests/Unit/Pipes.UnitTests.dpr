@@ -8,6 +8,9 @@ uses
   DUnitX.Loggers.Console,
   DUnitX.Loggers.Xml.NUnit,
   DUnitX.TestFramework,
+  // Antes de qualquer unit do pipes: finalizada DEPOIS de Pipes.Threading
+  // (ver o cabecalho da unit).
+  Pipes.FinalizationCheck in 'Pipes.FinalizationCheck.pas',
   Pipes.Threading in '..\..\src\Pipes.Threading.pas',
   Pipes.Types in '..\..\src\Pipes.Types.pas',
   Pipes.Framing in '..\..\src\Pipes.Framing.pas',

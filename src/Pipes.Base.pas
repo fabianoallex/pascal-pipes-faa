@@ -8,8 +8,10 @@ unit Pipes.Base;
 
   Invariantes de despacho:
   - Threads de leitura/accept NUNCA executam codigo do usuario: todo evento
-    vira um TPipeWorkItem enfileirado no pool — o global (pdmPool) ou um pool
-    privado de 1 worker (pdmSerialized: ordem FIFO global garantida).
+    vira um TPcWorkItem enfileirado no pool — o PcPool da pascal-common-faa
+    (pdmPool; global do processo, compartilhado inclusive com outras libs
+    *-faa) ou um pool privado de 1 worker (pdmSerialized: ordem FIFO global
+    garantida).
   - O handler e' capturado em campo do work item NO DESPACHO (leitura de
     method pointer nao e' atomica; capturar evita ler um ponteiro rasgado se
     o usuario trocar o evento com o componente ativo).
@@ -31,6 +33,8 @@ interface
 uses
   SysUtils,
   Classes,
+  PascalCommon.Threading,
+  PascalCommon.ThreadPool,
   Pipes.Types,
   Pipes.Threading;
 
@@ -107,7 +111,7 @@ type
     FCompressionMinSize: Cardinal;
     FOnMessage: TPipeMessageEvent;
     FOnError: TPipeErrorEvent;
-    FDispatchPool: TPipeThreadPool; // pool privado (pdmSerialized); nil = global
+    FDispatchPool: TPcThreadPool; // pool privado (pdmSerialized); nil = global
     FInFlight: Integer;             // work items despachados em execucao (atomico)
     FGuard: TPipeGuard;             // guarda dos eventos pdmMainThread
     FTlsConfig: TPipeTlsConfig;     // sempre existe; so' consultado em ptTls
@@ -133,7 +137,7 @@ type
     /// unit: protected e' acessivel entre classes daqui).
     procedure EnsureInactive(const AWhat: string);
     /// Pool onde os eventos do usuario executam.
-    function EventPool: TPipeThreadPool;
+    function EventPool: TPcThreadPool;
     /// Chamar na ativacao (Listen/Connect): valida o modo de despacho e cria
     /// o pool privado se pdmSerialized.
     procedure SetupDispatch;
@@ -271,7 +275,7 @@ type
 
   { Work items dos eventos: dados capturados em campos (sem closures), dec de
     FInFlight no finally — mesmo contrato do TAMQPDeliveryWork. }
-  TPipeMessageWork = class(TPipeWorkItem)
+  TPipeMessageWork = class(TPcWorkItem)
   private
     FOwner: TPipeBase;
     FCallback: TPipeMessageEvent;
@@ -283,7 +287,7 @@ type
     procedure Execute; override;
   end;
 
-  TPipeConnEventWork = class(TPipeWorkItem)
+  TPipeConnEventWork = class(TPcWorkItem)
   private
     FOwner: TPipeBase;
     FCallback: TPipeConnectionEvent;
@@ -294,7 +298,7 @@ type
     procedure Execute; override;
   end;
 
-  TPipeErrorWork = class(TPipeWorkItem)
+  TPipeErrorWork = class(TPcWorkItem)
   private
     FOwner: TPipeBase;
     FCallback: TPipeErrorEvent;
@@ -306,7 +310,7 @@ type
     procedure Execute; override;
   end;
 
-  TPipeTopicWork = class(TPipeWorkItem)
+  TPipeTopicWork = class(TPcWorkItem)
   private
     FOwner: TPipeBase;
     FCallback: TPipeTopicEvent;
@@ -321,7 +325,7 @@ type
     procedure Execute; override;
   end;
 
-  TPipeSubscriptionWork = class(TPipeWorkItem)
+  TPipeSubscriptionWork = class(TPcWorkItem)
   private
     FOwner: TPipeBase;
     FCallback: TPipeSubscriptionEvent;
@@ -333,7 +337,7 @@ type
     procedure Execute; override;
   end;
 
-  TPipeAttemptFailedWork = class(TPipeWorkItem)
+  TPipeAttemptFailedWork = class(TPcWorkItem)
   private
     FOwner: TPipeBase;
     FCallback: TPipeAttemptFailedEvent;
@@ -346,7 +350,7 @@ type
     procedure Execute; override;
   end;
 
-  TPipeDeliveryFailedWork = class(TPipeWorkItem)
+  TPipeDeliveryFailedWork = class(TPcWorkItem)
   private
     FOwner: TPipeBase;
     FCallback: TPipeDeliveryFailedEvent;
@@ -373,22 +377,22 @@ end;
 
 function TPipeGuard.IsValid: Boolean;
 begin
-  Result := PipeAtomicGet(FValid) = 1;
+  Result := PcAtomicGet(FValid) = 1;
 end;
 
 procedure TPipeGuard.Invalidate;
 begin
-  PipeAtomicSet(FValid, 0);
+  PcAtomicSet(FValid, 0);
 end;
 
 procedure TPipeGuard.AddRef;
 begin
-  PipeAtomicInc(FRefs);
+  PcAtomicInc(FRefs);
 end;
 
 procedure TPipeGuard.Release;
 begin
-  if PipeAtomicDec(FRefs) = 0 then
+  if PcAtomicDec(FRefs) = 0 then
     Free;
 end;
 
@@ -718,18 +722,18 @@ begin
   FCompressionMinSize := AValue; // 0 = desligado, valor valido (nao um erro)
 end;
 
-function TPipeBase.EventPool: TPipeThreadPool;
+function TPipeBase.EventPool: TPcThreadPool;
 begin
   if Assigned(FDispatchPool) then
     Result := FDispatchPool
   else
-    Result := PipePool;
+    Result := PcPool;
 end;
 
 procedure TPipeBase.SetupDispatch;
 begin
   if FDispatchMode = pdmSerialized then
-    FDispatchPool := TPipeThreadPool.Create(1); // 1 worker: ordem FIFO global
+    FDispatchPool := TPcThreadPool.Create(1); // 1 worker: ordem FIFO global
 end;
 
 procedure TPipeBase.TeardownDispatch;
@@ -739,18 +743,18 @@ end;
 
 procedure TPipeBase.DrainInFlight;
 begin
-  while PipeAtomicGet(FInFlight) > 0 do
+  while PcAtomicGet(FInFlight) > 0 do
     Sleep(10);
 end;
 
 procedure TPipeBase.IncInFlight;
 begin
-  PipeAtomicInc(FInFlight);
+  PcAtomicInc(FInFlight);
 end;
 
 procedure TPipeBase.DecInFlight;
 begin
-  PipeAtomicDec(FInFlight);
+  PcAtomicDec(FInFlight);
 end;
 
 procedure TPipeBase.DispatchMessage(AConnId: TPipeConnectionId;

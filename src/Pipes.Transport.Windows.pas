@@ -33,7 +33,7 @@ uses
   Windows,
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Transport;
 
 type
@@ -137,7 +137,7 @@ end;
 
 procedure TPipeWinEndpoint.CloseAbort;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit; // ja abortado
   SetEvent(FStopEvent);        // acorda esperas atuais e futuras (manual-reset)
   CancelIoEx(FHandle, nil);    // cancela IO pendente emitido por outra thread
@@ -172,7 +172,7 @@ var
   LOv: TOverlapped;
   LDummy, LGot, LErr: DWORD;
 begin
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     raise EPipeClosed.Create('leitura em endpoint fechado');
   FillChar(LOv, SizeOf(LOv), 0);
   ResetEvent(FReadEvent);
@@ -199,7 +199,7 @@ begin
   P := @ABuffer;
   while ACount > 0 do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       raise EPipeClosed.Create('escrita em endpoint fechado');
     FillChar(LOv, SizeOf(LOv), 0);
     ResetEvent(FWriteEvent);
@@ -258,7 +258,7 @@ end;
 
 procedure TPipeWinListener.Close;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit;
   SetEvent(FStopEvent); // desbloqueia o Accept pendente (que devolve nil)
 end;
@@ -275,7 +275,7 @@ begin
   // a instancia e volta a esperar, sem devolver endpoint morto.
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       Exit;
     if FPending = 0 then
       FPending := CreateInstance;
@@ -342,7 +342,7 @@ var
   LWaitMs: DWORD;
 begin
   LNative := PipeNativeName(AAddress);
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   while True do
   begin
     LHandle := CreateFile(PChar(LNative), GENERIC_READ or GENERIC_WRITE,
@@ -357,7 +357,7 @@ begin
     if (LErr <> ERROR_PIPE_BUSY) and (LErr <> ERROR_FILE_NOT_FOUND) then
       raise EPipeError.CreateFmt('conexao ao pipe %s falhou (erro %d: %s)',
         [LNative, LErr, SysErrorMessage(LErr)]);
-    LRemaining := Int64(LDeadline) - Int64(PipeTickMs);
+    LRemaining := Int64(LDeadline) - Int64(PcTickMs);
     if LRemaining <= 0 then
       raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando ao pipe %s',
         [ATimeoutMs, LNative]);

@@ -36,7 +36,7 @@ uses
   Sockets,
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Transport;
 
 type
@@ -165,7 +165,7 @@ procedure TPipePosixEndpoint.CloseAbort;
 var
   LByte: Byte;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit; // ja abortado
   LByte := 1;
   if FStopW >= 0 then
@@ -185,7 +185,7 @@ var
 begin
   AAddress := '';
   Result := False;
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     Exit;
   FillChar(LStorage, SizeOf(LStorage), 0);
   LLen := SizeOf(LStorage);
@@ -213,11 +213,11 @@ var
   LDeadline: UInt64;
   LWait: Int64;
 begin
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     raise EPipeClosed.Create(AOp + ' em endpoint fechado');
   LDeadline := 0;
   if FIoTimeoutMs <> 0 then
-    LDeadline := PipeTickMs + FIoTimeoutMs;
+    LDeadline := PcTickMs + FIoTimeoutMs;
   repeat
     if FIoTimeoutMs = 0 then
       LWait := -1
@@ -225,7 +225,7 @@ begin
     begin
       // Recalculado a cada volta: sem isso um EINTR reiniciaria o prazo, e uma
       // rajada de sinais esticaria a espera indefinidamente.
-      LWait := Int64(LDeadline) - Int64(PipeTickMs);
+      LWait := Int64(LDeadline) - Int64(PcTickMs);
       if LWait < 0 then
         LWait := 0;
     end;
@@ -242,7 +242,7 @@ begin
   if (LRc = 0) and (FIoTimeoutMs <> 0) then
     raise EPipeTimeout.CreateFmt('%s: o par nao respondeu em %u ms',
       [AOp, FIoTimeoutMs]);
-  if ((LFds[1].revents and POLLIN) <> 0) or (PipeAtomicGet(FClosed) <> 0) then
+  if ((LFds[1].revents and POLLIN) <> 0) or (PcAtomicGet(FClosed) <> 0) then
     raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
   // POLLERR/POLLHUP no fd da operacao: deixa o recv/send reportar — ainda
   // pode haver dados enfileirados para ler apos o HUP.
@@ -356,7 +356,7 @@ procedure TPipePosixListener.Close;
 var
   LByte: Byte;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit;
   LByte := 1;
   if FStopW >= 0 then
@@ -373,7 +373,7 @@ begin
   // sem devolver endpoint morto (paridade com o listener Windows).
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       Exit;
     LFds[0].fd := FFd;
     LFds[0].events := POLLIN;
@@ -388,7 +388,7 @@ begin
         Continue;
       RaiseIoError('accept (poll)', fpgeterrno);
     end;
-    if ((LFds[1].revents and POLLIN) <> 0) or (PipeAtomicGet(FClosed) <> 0) then
+    if ((LFds[1].revents and POLLIN) <> 0) or (PcAtomicGet(FClosed) <> 0) then
       Exit; // Close: devolve nil
     LConn := fpAccept(FFd, nil, nil);
     if LConn >= 0 then
@@ -417,7 +417,7 @@ var
 begin
   LNative := PipeNativeName(AAddress);
   BuildUnixAddr(LNative, LAddr, LLen);
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   while True do
   begin
     LFd := fpSocket(AF_UNIX, SOCK_STREAM, 0);
@@ -433,7 +433,7 @@ begin
     // Connect(timeout) nas duas plataformas.
     if (LErr <> ESysENOENT) and (LErr <> ESysECONNREFUSED) then
       RaiseIoError(Format('conexao ao socket %s', [LNative]), LErr);
-    if Int64(LDeadline) - Int64(PipeTickMs) <= 0 then
+    if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
       raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando ao socket %s',
         [ATimeoutMs, LNative]);
     Sleep(25); // servidor ausente/ocupado: polling curto

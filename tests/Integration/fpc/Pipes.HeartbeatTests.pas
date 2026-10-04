@@ -18,7 +18,7 @@ uses
   fpcunit, testregistry,
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Transport,
   Pipes.Server,
   Pipes.Client;
@@ -58,13 +58,13 @@ var
 function UniqueTcpAddress: string;
 begin
   Result := '127.0.0.1:' +
-    IntToStr(20000 + (Int64(PipeTickMs) mod 18000) + PipeAtomicInc(GNameSeq));
+    IntToStr(20000 + (Int64(PcTickMs) mod 18000) + PcAtomicInc(GNameSeq));
 end;
 
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_hb_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_hb_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 { TPipeHeartbeatTests }
@@ -92,29 +92,29 @@ function TPipeHeartbeatTests.WaitCount(var ACounter: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 function TPipeHeartbeatTests.WaitStill(var ACounter: Integer;
   AExpected: Integer; ATimeoutMs: Cardinal): Boolean;
 begin
   Sleep(ATimeoutMs);
-  Result := PipeAtomicGet(ACounter) < AExpected;
+  Result := PcAtomicGet(ACounter) < AExpected;
 end;
 
 procedure TPipeHeartbeatTests.OnSrvClientDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FSrvDiscCount);
+  PcAtomicInc(FSrvDiscCount);
 end;
 
 procedure TPipeHeartbeatTests.OnCliDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliDiscCount);
+  PcAtomicInc(FCliDiscCount);
 end;
 
 procedure TPipeHeartbeatTests.Servidor_DetectaClienteZumbi;
@@ -200,15 +200,15 @@ begin
   FClient.Connect(3000);
   Sleep(50); // deixa as duas heartbeat threads (servidor e cliente) de pe
 
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   FServer.Stop;
   AssertTrue('Stop com heartbeat ativo demorou demais (deadlock na StopHeartbeat?)',
-    PipeTickMs - T0 < 2000);
+    PcTickMs - T0 < 2000);
 
-  T0 := PipeTickMs;
+  T0 := PcTickMs;
   FClient.Disconnect;
   AssertTrue('Disconnect com heartbeat ativo demorou demais (deadlock na StopHeartbeat?)',
-    PipeTickMs - T0 < 2000);
+    PcTickMs - T0 < 2000);
 end;
 
 initialization

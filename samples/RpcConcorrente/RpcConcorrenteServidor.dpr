@@ -29,7 +29,7 @@ uses
   Classes,
   SyncObjs,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Server;
 
@@ -103,7 +103,7 @@ begin
   LResultado := LId * 31 + 7; // funcao deterministica simples pro cliente validar
   AReply := PipeUtf8Encode(Format('rep:%d:%d', [LId, LResultado]));
 
-  LAtendido := PipeAtomicInc(FTotalAtendido);
+  LAtendido := PcAtomicInc(FTotalAtendido);
   if LAtendido mod 50 = 0 then
     Log(Format('[conn %d] %d requests atendidos ate agora', [AConnId, LAtendido]));
 end;

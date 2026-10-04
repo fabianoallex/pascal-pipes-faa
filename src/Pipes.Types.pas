@@ -20,8 +20,10 @@ type
   TPipeConnectionId = UInt64;
 
   { Onde os eventos do usuario executam:
-    - pdmPool: pool de threads compartilhado (padrao; paralelismo entre
-      conexoes, sem garantia de ordem global).
+    - pdmPool: o PcPool da pascal-common-faa (padrao; paralelismo entre
+      conexoes, sem garantia de ordem global). E' um pool do PROCESSO, nao
+      do pipes: outras libs *-faa que o usam (amqp, redis) disputam os
+      mesmos workers.
     - pdmSerialized: pool dedicado de 1 worker (ordem FIFO global garantida).
     - pdmMainThread: TThread.Queue para a main thread (apps VCL/LCL consomem
       eventos sem Synchronize manual; nao usar em apps console sem loop de
@@ -120,7 +122,7 @@ type
     /// economizou nesta conexao; sempre <= BytesSent/BytesReceived.
     BytesSentWire: UInt64;
     BytesReceivedWire: UInt64;
-    /// PipeTickMs no instante em que OnClientConnected disparou.
+    /// PcTickMs no instante em que OnClientConnected disparou.
     ConnectedSinceTick: UInt64;
   end;
 
@@ -143,10 +145,11 @@ type
     TotalMessagesSent: UInt64;
     TotalMessagesReceived: UInt64;
     /// Itens aguardando um worker no pool de despacho (EventPool). Em
-    /// pdmPool (padrao) esse pool e' GLOBAL, compartilhado por todo
-    /// TPipeServer/TPipeClient do MESMO PROCESSO — este numero e' o backlog
-    /// de todo mundo, nao so deste servidor. So e' exclusivo deste servidor em
-    /// pdmSerialized (pool privado de 1 worker).
+    /// pdmPool (padrao) esse pool e' o PcPool da pascal-common-faa, GLOBAL
+    /// do MESMO PROCESSO: compartilhado por todo TPipeServer/TPipeClient e
+    /// tambem pelas outras libs *-faa que o usam (amqp, redis) — este numero
+    /// e' o backlog de todo mundo, nao so deste servidor nem so do pipes. So
+    /// e' exclusivo deste servidor em pdmSerialized (pool privado de 1 worker).
     PoolQueueDepth: Integer;
   end;
 

@@ -24,9 +24,25 @@ implementar qualquer milestone novo.
 - **Framing próprio** (length-prefix, header de 20 bytes com magic `NPF1`, kind, corrId,
   length) idêntico em todos os transportes (`ptLocal`/`ptTcp`/`ptTls`). Não depender de
   `PIPE_READMODE_MESSAGE`.
-- **Threading:** cópia renomeada de `AMQP.Threading.pas` (do projeto
-  `..\pascal-amqp-faa\src\`) como `Pipes.Threading.pas` — prefixos `TPipe*`/`Pipe*`.
-  Sem dependência entre repositórios.
+- **Threading:** atomics, `PcTickMs`, monitor e pool vêm da **pascal-common-faa ≥ 1.0.0**
+  (`PascalCommon.Threading`/`PascalCommon.ThreadPool`: `PcAtomic*`, `TPcMonitor`,
+  `TPcWorkItem`, `TPcThreadPool`, `PcPool`, `PC_WAIT_INFINITE`), migrada na F8 dela em
+  2026-10-04 — antes era uma cópia renomeada de `AMQP.Threading.pas`. `Pipes.Threading` ficou
+  só com `TPipeKeyedDispatcher`/`TPipeMailboxDrainWork`/`PipeGroupDispatcher`/
+  `TPipeHeartbeatThread` e com a checagem `{$IF PASCALCOMMON_VERSION < 10000}`. Submódulo em
+  `external/pascal-common-faa` (tag `v1.0.0`, sem `--recursive`) SÓ para testes/samples/
+  scripts; `pipes_faa.lpk` exige `pascal_common_faa` só pelo nome (`MinVersion Major="1"`, sem
+  `DefaultFilename` — senão vira o diamante); todo `.lpi` de teste/sample lista
+  `pascal_common_faa` PRIMEIRO com `DefaultFilename` em `external/` e `Prefer="True"`; todo
+  `.dproj` tem `external\pascal-common-faa\src` no search path. **Não altere a
+  pascal-common-faa daqui**: o que precisar mudar lá vai para um arquivo de achados (molde:
+  `.ci/f8-findings-for-pascal-common-faa.md`). Duas consequências que não se rediscutem sem
+  ler `docs/ARQUITETURA.md` §23 e §15.4: o `PcPool` é do PROCESSO (outras libs `*-faa`
+  disputam os workers e entram no `PoolQueueDepth`), e o `PipeGroupDispatcher` (criado na
+  `initialization`) é liberado ANTES do `PcPool` — por isso `TPipeKeyedDispatcher.Destroy`
+  espera as drenagens em voo (`FActiveDrains`, contado do `Enqueue` ao DESTRUTOR da
+  drenagem, espera por polling). `tests/Unit/Pipes.FinalizationCheck.pas` prova isso a cada
+  execução e tem de vir antes de qualquer unit do pipes no `uses` do runner.
 - **Backend `ptTcp`:** socket TCP nos dois OS, keepalive ligado por padrão
   (`KeepAliveSeconds`). Adicionado depois do M8 para o caso de PDVs de loja sobre VPN
   (ver `docs/ARQUITETURA.md`, "Milestones posteriores").
@@ -243,7 +259,8 @@ out): Boolean` (por conexão, morre com ela — padrão Try* de `TryClientIdenti
 `Client.Stats: TPipeClientStats` (da SESSÃO atual, zera a cada reconexão, sem contador
 cumulativo entre sessões). Snapshot sob demanda, mesmo molde de `ClientCount`/
 `Subscriptions` — NÃO é um evento periódico. Sempre ativos, sem opt-in (custo de um
-`PipeAtomicAdd64` por frame). `PoolQueueDepth` é o backlog do pool GLOBAL em `pdmPool`,
+`PcAtomicAdd64` por frame). `PoolQueueDepth` é o backlog do pool GLOBAL em `pdmPool` — o
+`PcPool` da pascal-common-faa, do PROCESSO inteiro (inclui trabalho de outras libs `*-faa`),
 não só deste servidor — só é exclusivo dele em `pdmSerialized`. Latência de Request só
 conta o caminho de SUCESSO (timeout e erro ficam de fora). `BytesSentWire`/
 `BytesReceivedWire` (irmãos aditivos de `BytesSent`/`BytesReceived`, entraram junto com C0
@@ -335,13 +352,18 @@ src/Pipes.Discovery.pas          (descoberta LAN por broadcast UDP — complemen
 src/Pipes.Json.pas                (bytes<->JSON OPCIONAL: System.JSON/fpjson — ver README.md)
 src/Pipes.Commands.pas            (roteador de comandos por nome OPCIONAL, por cima de
                                   OnMessage — ver §18)
-tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery)
+tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery + FinalizationCheck, a
+  checagem de finalização do PipeGroupDispatcher — ver §23.1)
   + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json/Failover/
     Discovery/PeerAddress)
   — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
 samples/ (20 amostras — ver README.md)  docs/ARQUITETURA.md  docs/INTEROP.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
+external/pascal-common-faa (submódulo, tag v1.0.0 — só testes/samples/scripts)
+tools/test_fpc.sh (FPC Windows: lazbuild + as duas suítes, heaptrc, checagem de finalização)
+tools/test_fpc_docker.sh (FPC Linux em Docker; FPCOPT=-dPIPES_OPENSSL liga ptTls, CPUS=1 e
+  RUNS=N para caçar corrida com vários containers ao mesmo tempo)
 ```
 
 Todo `.dproj`/`.lpi` novo (teste, sample) deve ser registrado nos DOIS grupos da
@@ -396,6 +418,7 @@ qualquer nova verificação Android continua sendo manual, pelo IDE + aparelho.
 | CONN0 | Connect assíncrono: `TPipeClient.ConnectAsync`/`Connecting`, `FConnectingAsync` + `ReopenAllowed` reaproveitando a `TPipeReconnectThread` existente, `GetLifecycleLocked` em `TPipeBase` — ver `docs/ARQUITETURA.md` §21 | opus | concluído: verde nos dois compiladores (FPC/Win64 unit 147/147 + integração 135/135, eram 126 — suíte `TPipeConnectAsyncTests` com 9 testes novos, os 2 de risco rodados 5x seguidas; Delphi/DUnitX 147/147 unit + 135/135 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-24). O plano formalizado tinha dois furos reais encontrados na implementação: o SEGUNDO gate de `TryReopenSession` (a rechecagem com a conexão já aberta) e um TOCTOU na limpeza de `FConnectingAsync` em `Execute` — ver §21.2/§21.3 |
 | DIAG0 | Diagnóstico de tentativa de conexão: `TPipeClient.OnConnectAttemptFailed`, `TPipeAttemptFailedEvent` em `Pipes.Types`, `TPipeAttemptFailedWork`/`qeAttemptFailed`/`DispatchAttemptFailedEvent` em `Pipes.Base` (espelham `TPipeDeliveryFailedWork` de §20) — ver `docs/ARQUITETURA.md` §22 | opus | concluído: verde nos dois compiladores (FPC/Win64 unit 147/147 + integração 139/139, eram 135 — 4 testes novos na fixture `TPipeConnectAsyncTests`, rodada 3x seguidas; Delphi/DUnitX 147/147 unit + 139/139 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-24). Encontrou de lambuja que o `except` de `TryReopenSession` descartava a mensagem do transporte (`on EPipeError do` sem o `E:`) — justamente o que separa "servidor ausente" de "certificado recusado" |
 | DLV0 | Confirmação de entrega por assinante: `TPipeServer.OnDelivered`/`OnDeliveryFailed`, disparados por conexão em `FanOut`/`SendRetained`/`PublishBatch` depois do `Write` retornar (sucesso/exceção) — ver `docs/ARQUITETURA.md` §20 | sonnet | concluído: verde nos dois compiladores (FPC/Win64 unit 147/147 + integração 126/126, suíte `TPipePubSubTests` com os 4 testes novos + 1 regressão; Delphi/DUnitX 147/147 unit + 126/126 integração, 0 leak/falha/erro, confirmado pelo usuário 2026-08-22). Encontrou e corrigiu de lambuja um bug pré-existente em `PublishBatch` (`ARetained` errado em entrega ao vivo — ver §20.6) |
+| F8 | Migração para a pascal-common-faa 1.0.0 (fase F8 do plano dela): submódulo `external/`, `Pipes.Threading` sem atomics/monitor/pool, `pipes_faa.lpk` exigindo `pascal_common_faa` pelo nome, `.lpi` com `Prefer`, checagem de versão, `TPipeKeyedDispatcher.Destroy` esperando as drenagens em voo, `PipeGroupDispatcher` na `initialization` — ver `docs/ARQUITETURA.md` §23 | opus | FPC verde: Win64 unit 137/137 (eram 147: −12 movidos, +2 de ciclo de vida) + integração 139/139; Linux unit 137/137 + integração 139/139 com `-dPIPES_OPENSSL`; 0 leak; 40/40 rodadas unit e 12/12 integração com `--cpus=1` em vários containers; 32 samples Lazarus compilando. Delphi/DUnitX Win64 e Win32: 137/137 unit + 139/139 integração, 0 leak/falha/erro, confirmado 2026-10-04 (build all do grupo ok em 32/64; `tests/Android` compilado, não executado). Achados para a pascal-common-faa em `.ci/f8-findings-for-pascal-common-faa.md` |
 
 Dependências: M0 → M1 → M2 → (M3 ‖ M4) → M5 → M6 → M7 → M8 → (T0 → T1 → (T2 ‖ T3) → T4 → T5).
 A0-A3 dependem de T5 (concluído) mas são um eixo à parte, independente de P0-P5/H0-H4/

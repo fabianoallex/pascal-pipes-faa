@@ -29,8 +29,8 @@ unit Pipes.Commands;
   registrado cai em OnUnknownCommand. Os dois sao opcionais e silenciosos
   por padrao (mesmo comportamento de um OnMessage sem assinante) — e nao por
   acaso: uma excecao levantada dentro de HandleMessage seria engolida em
-  silencio pelo pool de qualquer jeito (TPipePoolWorker.Execute, em
-  Pipes.Threading, nao tem para onde relatar excecao de callback de
+  silencio pelo pool de qualquer jeito (o worker de TPcThreadPool, em
+  PascalCommon.ThreadPool, nao tem para onde relatar excecao de callback de
   usuario), entao um evento proprio, e nao raise, e' o unico jeito do dev
   enxergar o descarte.
 

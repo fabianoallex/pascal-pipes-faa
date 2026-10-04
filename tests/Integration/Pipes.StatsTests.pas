@@ -15,7 +15,7 @@ uses
   DUnitX.TestFramework,
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Server,
   Pipes.Client;
@@ -66,8 +66,8 @@ var
 
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_stats_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_stats_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 { TPipeStatsTests }
@@ -91,22 +91,22 @@ function TPipeStatsTests.WaitCount(var ACounter: Integer; AExpected: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 procedure TPipeStatsTests.OnSrvMessage(Sender: TObject;
   AConnId: TPipeConnectionId; const AData: TBytes);
 begin
-  PipeAtomicInc(FSrvMsgCount);
+  PcAtomicInc(FSrvMsgCount);
 end;
 
 procedure TPipeStatsTests.OnCliMessage(Sender: TObject;
   AConnId: TPipeConnectionId; const AData: TBytes);
 begin
-  PipeAtomicInc(FCliMsgCount);
+  PcAtomicInc(FCliMsgCount);
 end;
 
 procedure TPipeStatsTests.OnSrvRequestEco(Sender: TObject;

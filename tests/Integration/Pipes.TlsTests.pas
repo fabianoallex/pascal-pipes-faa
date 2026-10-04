@@ -169,7 +169,7 @@ implementation
 {$IFDEF PIPES_TLS}
 
 uses
-  Pipes.Threading;
+  PascalCommon.Threading;
 
 // DUnitX recebe (condicao, mensagem) e o FPCUnit (mensagem, condicao). Estes
 // wrappers adotam a ordem do FPCUnit para que os dois arquivos deste fixture
@@ -243,7 +243,7 @@ end;
 function UniqueAddr: string;
 begin
   Inc(GPortSeq);
-  Result := '127.0.0.1:' + IntToStr(24000 + (Int64(PipeTickMs) mod 9000) +
+  Result := '127.0.0.1:' + IntToStr(24000 + (Int64(PcTickMs) mod 9000) +
     GPortSeq);
 end;
 
@@ -307,12 +307,12 @@ end;
 
 function TTlsHarness.CliConnCount: Integer;
 begin
-  Result := PipeAtomicGet(FCliConnCount);
+  Result := PcAtomicGet(FCliConnCount);
 end;
 
 function TTlsHarness.CliDiscCount: Integer;
 begin
-  Result := PipeAtomicGet(FCliDiscCount);
+  Result := PcAtomicGet(FCliDiscCount);
 end;
 
 procedure TTlsHarness.OnClientDisconnected(Sender: TObject;
@@ -333,13 +333,13 @@ end;
 procedure TTlsHarness.OnClienteConectou(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliConnCount);
+  PcAtomicInc(FCliConnCount);
 end;
 
 procedure TTlsHarness.OnClienteDesconectou(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FCliDiscCount);
+  PcAtomicInc(FCliDiscCount);
   if FDesligarReconexaoAoCair then
     FClient.AutoReconnect := False; // decisao tomada DE DENTRO do callback
 end;
@@ -452,10 +452,10 @@ function TTlsHarness.EsperaClienteConectou(AVezes: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(FCliConnCount) < AVezes) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(FCliConnCount) < AVezes) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(FCliConnCount) >= AVezes;
+  Result := PcAtomicGet(FCliConnCount) >= AVezes;
 end;
 
 function TTlsHarness.EsperaClienteDesconectou(AVezes: Integer;
@@ -463,10 +463,10 @@ function TTlsHarness.EsperaClienteDesconectou(AVezes: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(FCliDiscCount) < AVezes) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(FCliDiscCount) < AVezes) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(FCliDiscCount) >= AVezes;
+  Result := PcAtomicGet(FCliDiscCount) >= AVezes;
 end;
 
 { TPipeTlsTests }
@@ -545,9 +545,9 @@ begin
   // Contrato do AutoReconnect (igual ao teste equivalente em texto claro,
   // Pipes.EndToEndTests): um Eco pode pegar uma janela de churn entre a
   // reconexao de TCP e o handshake TLS concluir — o chamador re-tenta.
-  LDeadline := PipeTickMs + 5000;
+  LDeadline := PcTickMs + 5000;
   LOk := False;
-  while PipeTickMs < LDeadline do
+  while PcTickMs < LDeadline do
   begin
     if FHarness.Eco('depois da reconexao mtls', 300) then
     begin
@@ -727,7 +727,7 @@ begin
   FHarness.Listen('');
   LMudo := TPipeClient.Create(FAddr, ptTcp);
   try
-    LT0 := PipeTickMs;
+    LT0 := PcTickMs;
     LMudo.Connect(5000);
     // O sinal que de fato prova o timeout: o servidor tem de REPORTAR o erro
     // (OnError) sozinho, sem ninguem fechar a conexao. Sem o prazo, a reader
@@ -738,7 +738,7 @@ begin
       FHarness.EsperaErroServidor(4000));
     // O erro chegou perto do prazo (1500ms), nao no fim de uma espera longa.
     AssertTrue('servidor demorou muito alem do prazo do handshake',
-      PipeTickMs - LT0 < 4000);
+      PcTickMs - LT0 < 4000);
     AssertFalse('cliente mudo nao deveria ser autenticado',
       FHarness.ClienteAutenticado(200));
   finally

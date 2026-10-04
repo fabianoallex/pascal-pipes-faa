@@ -1,33 +1,34 @@
-﻿unit Pipes.Threading;
+unit Pipes.Threading;
 
 {$I pipes.inc}
 
-{ Primitivas de concorrencia compartilhadas entre Delphi e Free Pascal
-  (copia adaptada de AMQP.Threading.pas do projeto pascal-amqp-faa).
+{ Concorrencia propria do pipes, por cima da pascal-common-faa: o despacho
+  por chave (TPipeKeyedDispatcher, com o global PipeGroupDispatcher) e a
+  thread de heartbeat (TPipeHeartbeatThread).
 
-  Este projeto nao usa System.Threading (TTask) nem System.TMonitor porque
-  nenhum dos dois existe no FPC. Em vez disso:
+  Atomics, PcTickMs, monitor, pool e o pool global vieram da copia de
+  AMQP.Threading que esta unit carregava e agora sao da pascal-common-faa
+  (PascalCommon.Threading e PascalCommon.ThreadPool; mapa de nomes em
+  external/pascal-common-faa/docs/migrating.md). Sem alias: quem usava
+  PipeAtomic*/TPipeThreadPool/PipePool passa a usar PcAtomic*/TPcThreadPool/
+  PcPool direto.
 
-  - Atomics: wrappers finos sobre os intrinsics de cada compilador
-    (AtomicIncrement/... no Delphi, InterLocked* no FPC). Os de 64 bits
-    importam no Win32/Linux-32: um load/store cru de 64 bits pode ser "torn".
+  PcPool e' de TODO o processo, nao so' do pipes: outras libs *-faa (amqp,
+  redis) despacham no mesmo pool. Em pdmPool, os callbacks do pipes disputam
+  os workers com os delas, e TPcThreadPool.QueueDepth conta os itens de
+  todas (ver TPipeServerStats.PoolQueueDepth).
 
-  - TPipeMonitor: lock + variavel de condicao (equivalente ao subconjunto de
-    System.TMonitor que a lib usava: Enter/Exit/Wait/PulseAll). Implementado
-    com o padrao de "evento por geracao": cada PulseAll sinaliza o evento da
-    geracao corrente e cria uma nova para os proximos waiters — sem wakeups
-    perdidos. Waiters podem acordar espuriamente; o chamador SEMPRE re-checa a
-    condicao em loop (todo uso nesta lib deve fazer isso).
+  Esta unit e' a que todo consumidor do pipes compila com a pascal-common-faa
+  (Base, Transport, Discovery usam-na), por isso a checagem da versao minima
+  fica aqui, logo depois do uses que traz PascalCommon.Version.
 
-  - TPipeThreadPool: pool de threads proprio para despachar callbacks de
-    usuario (substitui TTask.Run). Cresce sob demanda ate MaxWorkers; workers
-    sao persistentes (nao ha idle-exit). Itens de trabalho sao objetos
-    (TPipeWorkItem.Execute) porque method pointers `of object` nao capturam
-    variaveis locais como closures capturariam.
-
-  PipePool devolve o pool global (lazy). E' liberado na finalizacao da unit;
-  quem despacha para o pool deve drenar seus itens antes de destruir os
-  objetos que eles referenciam (padrao DrainInFlight; ver docs/ARQUITETURA.md). }
+  Finalizacao: as units sao finalizadas na ordem inversa da inicializacao, e
+  esta usa PascalCommon.ThreadPool, entao roda ANTES da finalizacao dela —
+  PcPool ainda existe e ainda executa trabalho quando o PipeGroupDispatcher e'
+  liberado aqui. Por isso TPipeKeyedDispatcher.Destroy espera as drenagens
+  em voo terminarem antes de liberar o que elas tocam (ver o cabecalho da
+  classe). Antes da migracao o pool era desta unit e era liberado primeiro;
+  agora a ordem se inverteu e a espera e' o que mantem a liberacao segura. }
 
 interface
 
@@ -35,120 +36,13 @@ uses
   SysUtils,
   Classes,
   SyncObjs,
-  Generics.Collections;
+  Generics.Collections,
+  PascalCommon.Version,
+  PascalCommon.ThreadPool;
 
-const
-  PIPES_WAIT_INFINITE = Cardinal($FFFFFFFF);
-
-// --- Atomics ---------------------------------------------------------------
-
-/// Incrementa/decrementa atomicamente; devolve o valor NOVO.
-function PipeAtomicInc(var ATarget: Integer): Integer;
-function PipeAtomicDec(var ATarget: Integer): Integer;
-/// Leitura atomica de um Integer compartilhado.
-function PipeAtomicGet(var ATarget: Integer): Integer;
-/// Troca o valor atomicamente; devolve o valor ANTIGO.
-function PipeAtomicSet(var ATarget: Integer; AValue: Integer): Integer;
-/// Troca por ANew somente se o valor atual for AComparand; devolve o valor
-/// ANTIGO (compare-and-swap classico, para loops de CAS).
-function PipeAtomicCompareExchange(var ATarget: Integer; ANew, AComparand: Integer): Integer;
-/// Leitura/escrita atomica de 64 bits (ticks de heartbeat).
-function PipeAtomicRead64(var ATarget: UInt64): UInt64;
-procedure PipeAtomicWrite64(var ATarget: UInt64; AValue: UInt64);
-/// Troca por ANew somente se o valor atual for AComparand; devolve o valor
-/// ANTIGO (CAS de 64 bits, para loops de CAS — base de PipeAtomicAdd64).
-function PipeAtomicCompareExchange64(var ATarget: UInt64;
-  ANew, AComparand: UInt64): UInt64;
-/// Soma ADelta atomicamente (contadores de bytes/mensagens); devolve o valor
-/// NOVO. CAS loop sobre PipeAtomicCompareExchange64 — nao ha
-/// InterlockedExchangeAdd64 portatil nos dois compiladores.
-function PipeAtomicAdd64(var ATarget: UInt64; ADelta: UInt64): UInt64;
-
-/// Milissegundos monotonicos (GetTickCount64).
-function PipeTickMs: UInt64;
-
-// --- Monitor (lock + variavel de condicao) ----------------------------------
-
-type
-  { Uma "geracao" de espera: um evento manual-reset compartilhado pelos waiters
-    que dormiram antes do mesmo PulseAll. Refs conta o dono (o monitor, se for
-    a geracao corrente) + waiters; o ultimo a soltar libera o objeto. }
-  TPipeCondGen = class
-  public
-    Event: TEvent;
-    Refs: Integer;
-    constructor Create;
-    destructor Destroy; override;
-  end;
-
-  TPipeMonitor = class
-  private
-    FLock: TCriticalSection;
-    FGen: TPipeCondGen;
-    // Solta uma referencia (chamar segurando FLock).
-    procedure ReleaseGen(AGen: TPipeCondGen);
-  public
-    constructor Create;
-    destructor Destroy; override;
-    procedure Enter;
-    procedure Leave;
-    /// Solta o lock, espera um PulseAll (ou timeout) e readquire o lock.
-    /// Chamar SEGURANDO o lock. Pode acordar espuriamente — re-cheque a
-    /// condicao em loop com deadline.
-    procedure Wait(ATimeoutMs: Cardinal);
-    /// Acorda todos os waiters. Chamar SEGURANDO o lock.
-    procedure PulseAll;
-  end;
-
-// --- Thread pool -------------------------------------------------------------
-
-type
-  { Unidade de trabalho enfileirada no pool. O pool assume a posse: apos
-    Execute (com ou sem excecao), o item e' liberado pelo worker. }
-  TPipeWorkItem = class
-  public
-    procedure Execute; virtual; abstract;
-  end;
-
-  TPipeThreadPool = class;
-
-  TPipePoolWorker = class(TThread)
-  private
-    FPool: TPipeThreadPool;
-  protected
-    procedure Execute; override;
-  public
-    constructor Create(APool: TPipeThreadPool);
-  end;
-
-  TPipeThreadPool = class
-  private
-    FLock: TCriticalSection;
-    FWork: TEvent;                       // auto-reset: 1 Set acorda 1 worker
-    FQueue: TQueue<TPipeWorkItem>;
-    FWorkers: TList<TPipePoolWorker>;
-    FIdle: Integer;                      // workers dormindo (sob FLock)
-    FMaxWorkers: Integer;
-    FShutdown: Boolean;
-    /// Loop do worker: devolve False quando o pool esta encerrando.
-    function Fetch(out AItem: TPipeWorkItem): Boolean;
-  public
-    /// AMaxWorkers = 0 usa o padrao: max(16, 4x nucleos). Callbacks de usuario
-    /// podem bloquear em IO por segundos (caso de uso alvo), entao o teto e'
-    /// generoso; limite o trabalho em voo na camada de cima, se preciso.
-    constructor Create(AMaxWorkers: Integer = 0);
-    destructor Destroy; override;
-    /// Enfileira e garante um worker para atender (cria um, se todos ocupados
-    /// e abaixo do teto). Assume a posse do item.
-    procedure Queue(AItem: TPipeWorkItem);
-    /// Itens na fila aguardando um worker livre (nao conta os em execucao).
-    /// Em pdmPool este pool e' GLOBAL e compartilhado por todo TPipeServer/
-    /// TPipeClient do processo — ver a ressalva em TPipeServerStats.PoolQueueDepth.
-    function QueueDepth: Integer;
-  end;
-
-/// Pool global compartilhado (criado sob demanda, liberado na finalizacao).
-function PipePool: TPipeThreadPool;
+{$IF PASCALCOMMON_VERSION < 10000}
+  {$MESSAGE FATAL 'pascal-named-pipes-faa precisa da pascal-common-faa 1.0.0 ou mais nova'}
+{$IFEND}
 
 // --- Despacho por chave (ordem preservada por chave, paralelo entre chaves) -
 
@@ -157,17 +51,23 @@ type
 
   { Work item que drena a mailbox de UMA chave ate esvaziar, um item por vez,
     e so' entao libera a chave (ver TPipeKeyedDispatcher). Roda como qualquer
-    outro TPipeWorkItem no pool que o dispatcher usa como motor. }
-  TPipeMailboxDrainWork = class(TPipeWorkItem)
+    outro TPcWorkItem no pool que o dispatcher usa como motor.
+
+    Vive do Enqueue que o cria ate o Free do pool: o Destroy desconta a
+    drenagem em FActiveDrains do dispatcher, e e' a ULTIMA coisa que toca o
+    dispatcher — rode ou seja descartado pelo pool (Queue depois do Destroy
+    do pool libera o item sem executar), o desconto acontece. }
+  TPipeMailboxDrainWork = class(TPcWorkItem)
   private
     FDispatcher: TPipeKeyedDispatcher;
     FKey: UInt64;
   public
     constructor Create(ADispatcher: TPipeKeyedDispatcher; AKey: UInt64);
+    destructor Destroy; override;
     procedure Execute; override;
   end;
 
-  { Roteamento por chave sobre um TPipeThreadPool: itens da MESMA chave nunca
+  { Roteamento por chave sobre um TPcThreadPool: itens da MESMA chave nunca
     executam ao mesmo tempo (ordem preservada, FIFO por chave); chaves
     diferentes correm em paralelo no MESMO pool. Mailbox por ator, dono
     cooperativo — nao ha' worker fixo por chave, nem teto de chaves para
@@ -187,33 +87,53 @@ type
     desiste ficaria orfao, sem ninguem para consumi-lo.
 
     Ciclo de vida: o dispatcher NAO E' DONO do pool (so' referencia, ver
-    Create) — destrua sempre o POOL primeiro. TPipeThreadPool.Destroy junta
-    (WaitFor) cada worker antes de retornar, o que drena qualquer
-    TPipeMailboxDrainWork em voo; so' depois disso e' seguro liberar o
-    dispatcher (nenhuma thread pode mais tocar FMailboxes). A ordem inversa
-    e' use-after-free. }
+    Create), e as duas ordens de destruicao sao seguras:
+    - pool primeiro: TPcThreadPool.Destroy executa a fila inteira e junta os
+      workers, entao toda drenagem ja terminou quando o dispatcher e'
+      liberado;
+    - dispatcher primeiro (a do PipeGroupDispatcher, cujo pool e' o PcPool,
+      liberado depois desta unit): Destroy recusa Enqueue novo (o item e'
+      liberado sem executar, mesmo contrato de TPcThreadPool.Queue depois do
+      Destroy), espera FActiveDrains zerar — cada drenagem ja enfileirada
+      ou em execucao termina a mailbox dela — e so' entao libera FMailboxes
+      e FLock.
+    A espera e' por polling de um contador atomico, nao por evento: o
+    decremento e' o ultimo acesso da drenagem ao dispatcher, entao nao sobra
+    um SetEvent/Leave sobre um objeto que quem espera ja pode ter liberado.
+    Nao chame Destroy de dentro de um item despachado por este mesmo
+    dispatcher: ele esperaria a propria drenagem. }
   TPipeKeyedDispatcher = class
   private
     FLock: TCriticalSection;
-    FMailboxes: TDictionary<UInt64, TQueue<TPipeWorkItem>>;
-    FPool: TPipeThreadPool;
+    FMailboxes: TDictionary<UInt64, TQueue<TPcWorkItem>>;
+    FPool: TPcThreadPool;
+    FShutdown: Boolean;       // sob FLock
+    FActiveDrains: Integer;   // atomico: TPipeMailboxDrainWork vivos
     // Chamado SO' pelo TPipeMailboxDrainWork da propria chave.
-    function Fetch(AKey: UInt64; out AItem: TPipeWorkItem): Boolean;
+    function Fetch(AKey: UInt64; out AItem: TPcWorkItem): Boolean;
   public
     /// APool nao e' possuido por este objeto (ver ciclo de vida no cabecalho
-    /// da classe) — normalmente PipePool (o global).
-    constructor Create(APool: TPipeThreadPool);
+    /// da classe) — normalmente PcPool (o global).
+    constructor Create(APool: TPcThreadPool);
+    /// Espera as drenagens em voo terminarem (cada uma esvazia a mailbox
+    /// dela) e libera o que sobrou. Ver o ciclo de vida no cabecalho.
     destructor Destroy; override;
     /// Enfileira; assume a posse do item. Se a chave nao esta sendo drenada
-    /// agora, dispara UM TPipeMailboxDrainWork no pool para drena-la.
-    procedure Enqueue(AKey: UInt64; AItem: TPipeWorkItem);
+    /// agora, dispara UM TPipeMailboxDrainWork no pool para drena-la. Depois
+    /// que Destroy comecou, libera o item sem executar.
+    procedure Enqueue(AKey: UInt64; AItem: TPcWorkItem);
+    /// Drenagens vivas (enfileiradas no pool ou executando). Para testes e
+    /// diagnostico; o valor ja pode ter mudado quando volta.
+    function ActiveDrains: Integer;
   end;
 
-/// Dispatcher de chave global (criado sob demanda, liberado na finalizacao),
-/// pareado com PipePool — mesma natureza compartilhada de pdmPool: chaves de
-/// componentes diferentes coexistem no mesmo dicionario (colisao de hash e'
-/// so' um hotspot raro e inofensivo, nunca incorretude — ver PipeGroupKeyHash
-/// em Pipes.Framing).
+/// Dispatcher de chave global sobre PcPool, criado na initialization desta
+/// unit (nunca sob demanda: double-checked locking sem barreira e' inseguro
+/// em CPU de ordenacao fraca, como ARM — Android e Linux ARM64 sao alvos) e
+/// liberado na finalization, enquanto PcPool ainda roda. Mesma natureza
+/// compartilhada de pdmPool: chaves de componentes diferentes coexistem no
+/// mesmo dicionario (colisao de hash e' so' um hotspot raro e inofensivo,
+/// nunca incorretude — ver PipeGroupKeyHash em Pipes.Framing).
 function PipeGroupDispatcher: TPipeKeyedDispatcher;
 
 // --- Heartbeat de aplicacao (ptTcp/ptTls; ver Pipes.Base.HeartbeatIntervalMs) -
@@ -247,294 +167,8 @@ type
 
 implementation
 
-{ --- Atomics --- }
-
-function PipeAtomicInc(var ATarget: Integer): Integer;
-begin
-  {$IFDEF FPC}
-  Result := InterLockedIncrement(ATarget);
-  {$ELSE}
-  Result := AtomicIncrement(ATarget);
-  {$ENDIF}
-end;
-
-function PipeAtomicDec(var ATarget: Integer): Integer;
-begin
-  {$IFDEF FPC}
-  Result := InterLockedDecrement(ATarget);
-  {$ELSE}
-  Result := AtomicDecrement(ATarget);
-  {$ENDIF}
-end;
-
-function PipeAtomicGet(var ATarget: Integer): Integer;
-begin
-  {$IFDEF FPC}
-  Result := InterlockedCompareExchange(ATarget, 0, 0);
-  {$ELSE}
-  Result := AtomicCmpExchange(ATarget, 0, 0);
-  {$ENDIF}
-end;
-
-function PipeAtomicSet(var ATarget: Integer; AValue: Integer): Integer;
-begin
-  {$IFDEF FPC}
-  Result := InterLockedExchange(ATarget, AValue);
-  {$ELSE}
-  Result := AtomicExchange(ATarget, AValue);
-  {$ENDIF}
-end;
-
-function PipeAtomicCompareExchange(var ATarget: Integer; ANew, AComparand: Integer): Integer;
-begin
-  {$IFDEF FPC}
-  Result := InterlockedCompareExchange(ATarget, ANew, AComparand);
-  {$ELSE}
-  Result := AtomicCmpExchange(ATarget, ANew, AComparand);
-  {$ENDIF}
-end;
-
-function PipeAtomicRead64(var ATarget: UInt64): UInt64;
-begin
-  {$IFDEF FPC}
-  Result := UInt64(InterlockedCompareExchange64(PInt64(@ATarget)^, 0, 0));
-  {$ELSE}
-  Result := UInt64(AtomicCmpExchange(PInt64(@ATarget)^, 0, 0));
-  {$ENDIF}
-end;
-
-procedure PipeAtomicWrite64(var ATarget: UInt64; AValue: UInt64);
-begin
-  {$IFDEF FPC}
-  InterlockedExchange64(PInt64(@ATarget)^, Int64(AValue));
-  {$ELSE}
-  AtomicExchange(PInt64(@ATarget)^, Int64(AValue));
-  {$ENDIF}
-end;
-
-function PipeAtomicCompareExchange64(var ATarget: UInt64;
-  ANew, AComparand: UInt64): UInt64;
-begin
-  {$IFDEF FPC}
-  Result := UInt64(InterlockedCompareExchange64(PInt64(@ATarget)^,
-    Int64(ANew), Int64(AComparand)));
-  {$ELSE}
-  Result := UInt64(AtomicCmpExchange(PInt64(@ATarget)^, Int64(ANew),
-    Int64(AComparand)));
-  {$ENDIF}
-end;
-
-function PipeAtomicAdd64(var ATarget: UInt64; ADelta: UInt64): UInt64;
-var
-  LOld: UInt64;
-begin
-  repeat
-    LOld := PipeAtomicRead64(ATarget);
-    Result := LOld + ADelta;
-  until PipeAtomicCompareExchange64(ATarget, Result, LOld) = LOld;
-end;
-
-function PipeTickMs: UInt64;
-begin
-  {$IFDEF FPC}
-  Result := GetTickCount64;
-  {$ELSE}
-  Result := TThread.GetTickCount64;
-  {$ENDIF}
-end;
-
-{ TPipeCondGen }
-
-constructor TPipeCondGen.Create;
-begin
-  inherited Create;
-  Event := TEvent.Create(nil, True, False, ''); // manual-reset
-  Refs := 1;
-end;
-
-destructor TPipeCondGen.Destroy;
-begin
-  Event.Free;
-  inherited;
-end;
-
-{ TPipeMonitor }
-
-constructor TPipeMonitor.Create;
-begin
-  inherited Create;
-  FLock := TCriticalSection.Create;
-  FGen := TPipeCondGen.Create; // Refs=1: a referencia do proprio monitor
-end;
-
-destructor TPipeMonitor.Destroy;
-begin
-  // Assume que nao ha waiters (os usos drenam antes de destruir o canal).
-  FGen.Free;
-  FLock.Free;
-  inherited;
-end;
-
-procedure TPipeMonitor.Enter;
-begin
-  FLock.Enter;
-end;
-
-procedure TPipeMonitor.Leave;
-begin
-  FLock.Leave;
-end;
-
-procedure TPipeMonitor.ReleaseGen(AGen: TPipeCondGen);
-begin
-  Dec(AGen.Refs);
-  if AGen.Refs = 0 then
-    AGen.Free; // so acontece com geracoes antigas (o monitor segura a corrente)
-end;
-
-procedure TPipeMonitor.Wait(ATimeoutMs: Cardinal);
-var
-  LGen: TPipeCondGen;
-begin
-  // Captura a geracao corrente ANTES de soltar o lock: um PulseAll que ocorra
-  // entre o Leave e o WaitFor sinaliza exatamente este evento (sem wakeup
-  // perdido; o evento manual-reset fica sinalizado).
-  LGen := FGen;
-  Inc(LGen.Refs);
-  FLock.Leave;
-  try
-    LGen.Event.WaitFor(ATimeoutMs);
-  finally
-    FLock.Enter;
-    ReleaseGen(LGen);
-  end;
-end;
-
-procedure TPipeMonitor.PulseAll;
-var
-  LOld: TPipeCondGen;
-begin
-  LOld := FGen;
-  LOld.Event.SetEvent;          // acorda quem capturou esta geracao
-  FGen := TPipeCondGen.Create;  // proximos waiters dormem na nova
-  ReleaseGen(LOld);             // solta a referencia do monitor na antiga
-end;
-
-{ TPipePoolWorker }
-
-constructor TPipePoolWorker.Create(APool: TPipeThreadPool);
-begin
-  FPool := APool;
-  FreeOnTerminate := False;
-  inherited Create(False);
-end;
-
-procedure TPipePoolWorker.Execute;
-var
-  LItem: TPipeWorkItem;
-begin
-  while FPool.Fetch(LItem) do
-  begin
-    try
-      LItem.Execute;
-    except
-      // Excecao em callback de usuario nao pode derrubar o worker (mesmo
-      // contrato do TTask: a excecao e' engolida).
-    end;
-    LItem.Free;
-  end;
-end;
-
-{ TPipeThreadPool }
-
-constructor TPipeThreadPool.Create(AMaxWorkers: Integer);
-begin
-  inherited Create;
-  if AMaxWorkers <= 0 then
-  begin
-    AMaxWorkers := TThread.ProcessorCount * 4;
-    if AMaxWorkers < 16 then
-      AMaxWorkers := 16;
-  end;
-  FMaxWorkers := AMaxWorkers;
-  FLock := TCriticalSection.Create;
-  FWork := TEvent.Create(nil, False, False, ''); // auto-reset
-  FQueue := TQueue<TPipeWorkItem>.Create;
-  FWorkers := TList<TPipePoolWorker>.Create;
-end;
-
-destructor TPipeThreadPool.Destroy;
-var
-  LWorker: TPipePoolWorker;
-begin
-  FLock.Enter;
-  try
-    FShutdown := True;
-  finally
-    FLock.Leave;
-  end;
-  FWork.SetEvent; // cada worker que acorda re-sinaliza (cascata) e encerra
-  for LWorker in FWorkers do
-  begin
-    LWorker.WaitFor;
-    LWorker.Free;
-  end;
-  FWorkers.Free;
-  // Itens que ninguem chegou a executar.
-  while FQueue.Count > 0 do
-    FQueue.Dequeue.Free;
-  FQueue.Free;
-  FWork.Free;
-  FLock.Free;
-  inherited;
-end;
-
-function TPipeThreadPool.Fetch(out AItem: TPipeWorkItem): Boolean;
-begin
-  AItem := nil;
-  FLock.Enter;
-  while True do
-  begin
-    if FQueue.Count > 0 then
-    begin
-      AItem := FQueue.Dequeue;
-      if FQueue.Count > 0 then
-        FWork.SetEvent; // "passa o bastao": ha mais trabalho, acorda outro
-      FLock.Leave;
-      Exit(True);
-    end;
-    if FShutdown then
-    begin
-      FWork.SetEvent;   // cascata: acorda o proximo para ele tambem encerrar
-      FLock.Leave;
-      Exit(False);
-    end;
-    Inc(FIdle);
-    FLock.Leave;
-    FWork.WaitFor(PIPES_WAIT_INFINITE);
-    FLock.Enter;
-    Dec(FIdle);
-  end;
-end;
-
-procedure TPipeThreadPool.Queue(AItem: TPipeWorkItem);
-begin
-  FLock.Enter;
-  try
-    if FShutdown then
-    begin
-      AItem.Free;
-      Exit;
-    end;
-    FQueue.Enqueue(AItem);
-    if (FIdle = 0) and (FWorkers.Count < FMaxWorkers) then
-      FWorkers.Add(TPipePoolWorker.Create(Self)) // atende sem depender do evento
-    else
-      FWork.SetEvent;
-  finally
-    FLock.Leave;
-  end;
-end;
+uses
+  PascalCommon.Threading;
 
 { TPipeHeartbeatThread }
 
@@ -567,37 +201,6 @@ begin
   end;
 end;
 
-function TPipeThreadPool.QueueDepth: Integer;
-begin
-  FLock.Enter;
-  try
-    Result := FQueue.Count;
-  finally
-    FLock.Leave;
-  end;
-end;
-
-{ --- Pool global --- }
-
-var
-  GPoolLock: TCriticalSection;
-  GPool: TPipeThreadPool;
-
-function PipePool: TPipeThreadPool;
-begin
-  if GPool = nil then
-  begin
-    GPoolLock.Enter;
-    try
-      if GPool = nil then
-        GPool := TPipeThreadPool.Create;
-    finally
-      GPoolLock.Leave;
-    end;
-  end;
-  Result := GPool;
-end;
-
 { TPipeMailboxDrainWork }
 
 constructor TPipeMailboxDrainWork.Create(ADispatcher: TPipeKeyedDispatcher;
@@ -608,17 +211,25 @@ begin
   FKey := AKey;
 end;
 
+destructor TPipeMailboxDrainWork.Destroy;
+begin
+  // Ultimo acesso ao dispatcher (ver o cabecalho da classe): depois disto
+  // TPipeKeyedDispatcher.Destroy pode liberar tudo.
+  PcAtomicDec(FDispatcher.FActiveDrains);
+  inherited;
+end;
+
 procedure TPipeMailboxDrainWork.Execute;
 var
-  LItem: TPipeWorkItem;
+  LItem: TPcWorkItem;
 begin
   while FDispatcher.Fetch(FKey, LItem) do
   begin
     try
       LItem.Execute;
     except
-      // Mesma regra do worker do pool (TPipePoolWorker.Execute): excecao de
-      // usuario nao pode derrubar quem drena as demais mensagens da chave.
+      // Mesma regra do worker do pool (TPcThreadPool): excecao de usuario
+      // nao pode derrubar quem drena as demais mensagens da chave.
     end;
     LItem.Free;
   end;
@@ -626,41 +237,49 @@ end;
 
 { TPipeKeyedDispatcher }
 
-constructor TPipeKeyedDispatcher.Create(APool: TPipeThreadPool);
+constructor TPipeKeyedDispatcher.Create(APool: TPcThreadPool);
 begin
   inherited Create;
   FLock := TCriticalSection.Create;
-  FMailboxes := TDictionary<UInt64, TQueue<TPipeWorkItem>>.Create;
+  FMailboxes := TDictionary<UInt64, TQueue<TPcWorkItem>>.Create;
   FPool := APool;
 end;
 
 destructor TPipeKeyedDispatcher.Destroy;
 var
-  LQueue: TQueue<TPipeWorkItem>;
+  LQueue: TQueue<TPcWorkItem>;
 begin
-  // Defensivo (ver o cabecalho da classe: no ciclo de vida normal, o pool ja
-  // foi destruido antes e drenou tudo — isto so' pega sobra de um shutdown
-  // fora do padrao documentado).
   FLock.Enter;
   try
-    for LQueue in FMailboxes.Values do
-    begin
-      while LQueue.Count > 0 do
-        LQueue.Dequeue.Free;
-      LQueue.Free;
-    end;
-    FMailboxes.Free;
+    FShutdown := True; // daqui em diante nenhuma drenagem nova nasce
   finally
     FLock.Leave;
   end;
+  // Cada drenagem viva esvazia a mailbox dela e so' entao se desconta.
+  while PcAtomicGet(FActiveDrains) > 0 do
+    Sleep(1);
+  // So' sobra mailbox se o pool descartou a drenagem dela sem executar (pool
+  // ja destruido quando o Enqueue foi feito).
+  for LQueue in FMailboxes.Values do
+  begin
+    while LQueue.Count > 0 do
+      LQueue.Dequeue.Free;
+    LQueue.Free;
+  end;
+  FMailboxes.Free;
   FLock.Free;
   inherited;
 end;
 
+function TPipeKeyedDispatcher.ActiveDrains: Integer;
+begin
+  Result := PcAtomicGet(FActiveDrains);
+end;
+
 function TPipeKeyedDispatcher.Fetch(AKey: UInt64;
-  out AItem: TPipeWorkItem): Boolean;
+  out AItem: TPcWorkItem): Boolean;
 var
-  LQueue: TQueue<TPipeWorkItem>;
+  LQueue: TQueue<TPcWorkItem>;
 begin
   AItem := nil;
   FLock.Enter;
@@ -680,13 +299,18 @@ begin
   end;
 end;
 
-procedure TPipeKeyedDispatcher.Enqueue(AKey: UInt64; AItem: TPipeWorkItem);
+procedure TPipeKeyedDispatcher.Enqueue(AKey: UInt64; AItem: TPcWorkItem);
 var
-  LQueue: TQueue<TPipeWorkItem>;
+  LQueue: TQueue<TPcWorkItem>;
   LMustSpawn: Boolean;
 begin
   FLock.Enter;
   try
+    if FShutdown then
+    begin
+      AItem.Free; // Destroy em curso: mesmo contrato de TPcThreadPool.Queue
+      Exit;
+    end;
     if FMailboxes.TryGetValue(AKey, LQueue) then
     begin
       LQueue.Enqueue(AItem); // ja' tem quem drena: ele vai ver este item
@@ -694,9 +318,12 @@ begin
     end
     else
     begin
-      LQueue := TQueue<TPipeWorkItem>.Create;
+      LQueue := TQueue<TPcWorkItem>.Create;
       LQueue.Enqueue(AItem);
       FMailboxes.Add(AKey, LQueue);
+      // Contado ainda sob FLock: um Destroy que ja viu FShutdown = False
+      // aqui vai ver esta drenagem no contador.
+      PcAtomicInc(FActiveDrains);
       LMustSpawn := True;
     end;
   finally
@@ -709,36 +336,21 @@ end;
 { --- Dispatcher de chave global --- }
 
 var
-  GGroupDispatcherLock: TCriticalSection;
   GGroupDispatcher: TPipeKeyedDispatcher;
 
 function PipeGroupDispatcher: TPipeKeyedDispatcher;
 begin
-  if GGroupDispatcher = nil then
-  begin
-    GGroupDispatcherLock.Enter;
-    try
-      if GGroupDispatcher = nil then
-        GGroupDispatcher := TPipeKeyedDispatcher.Create(PipePool);
-    finally
-      GGroupDispatcherLock.Leave;
-    end;
-  end;
   Result := GGroupDispatcher;
 end;
 
 initialization
-  GPoolLock := TCriticalSection.Create;
-  GGroupDispatcherLock := TCriticalSection.Create;
+  // Criado aqui, numa thread so', nunca sob demanda (ver PipeGroupDispatcher).
+  // PcPool ja existe: PascalCommon.ThreadPool e' inicializada antes desta.
+  GGroupDispatcher := TPipeKeyedDispatcher.Create(PcPool);
 
 finalization
-  // Ordem obrigatoria (ver o cabecalho de TPipeKeyedDispatcher): GPool.Free
-  // junta cada worker e so' retorna depois de drenar qualquer
-  // TPipeMailboxDrainWork em voo — so' DEPOIS disso e' seguro liberar o
-  // dispatcher, que pode estar em uso por uma dessas threads ate esse ponto.
-  GPool.Free;
-  GPoolLock.Free;
-  GGroupDispatcher.Free;
-  GGroupDispatcherLock.Free;
+  // Roda ANTES da finalizacao de PascalCommon.ThreadPool, com PcPool vivo:
+  // Destroy espera as drenagens em voo (ver o cabecalho desta unit).
+  FreeAndNil(GGroupDispatcher);
 
 end.

@@ -15,7 +15,7 @@ uses
   SysUtils,
   Classes,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Framing,
   Pipes.Transport,
   Pipes.Server,
@@ -92,8 +92,8 @@ var
 
 function UniquePipeName: string;
 begin
-  Result := 'pipes_faa_stress_' + IntToStr(Int64(PipeTickMs)) + '_' +
-    IntToStr(PipeAtomicInc(GNameSeq));
+  Result := 'pipes_faa_stress_' + IntToStr(Int64(PcTickMs)) + '_' +
+    IntToStr(PcAtomicInc(GNameSeq));
 end;
 
 // --- contagem de handles/fds do processo (detector de vazamento) ------------
@@ -155,7 +155,7 @@ begin
       on EPipeError do
         Break; // servidor parou no meio do flood: fim esperado
     end;
-    PipeAtomicInc(FSent);
+    PcAtomicInc(FSent);
   end;
 end;
 
@@ -211,28 +211,28 @@ function TPipeStressTests.WaitCount(var ACounter: Integer;
 var
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
-  while (PipeAtomicGet(ACounter) < AExpected) and (PipeTickMs < LDeadline) do
+  LDeadline := PcTickMs + ATimeoutMs;
+  while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
     Sleep(5);
-  Result := PipeAtomicGet(ACounter) >= AExpected;
+  Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
 procedure TPipeStressTests.OnSrvMessage(Sender: TObject;
   AConnId: TPipeConnectionId; const AData: TBytes);
 begin
-  PipeAtomicInc(FSrvMsgCount);
+  PcAtomicInc(FSrvMsgCount);
 end;
 
 procedure TPipeStressTests.OnSrvClientConnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FSrvConnCount);
+  PcAtomicInc(FSrvConnCount);
 end;
 
 procedure TPipeStressTests.OnSrvClientDisconnected(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
-  PipeAtomicInc(FSrvDiscCount);
+  PcAtomicInc(FSrvDiscCount);
 end;
 
 procedure TPipeStressTests.OnSrvRequestEcoTexto(Sender: TObject;
@@ -302,10 +302,10 @@ begin
     AssertTrue('flood nao gerou trafego suficiente',
       WaitCount(FSrvMsgCount, 200, 5000));
 
-    T0 := PipeTickMs;
+    T0 := PcTickMs;
     FServer.Stop;
     AssertTrue('Stop sob flood de 4 clientes demorou demais (deadlock?)',
-      PipeTickMs - T0 < 2000);
+      PcTickMs - T0 < 2000);
     AssertTrue('servidor devia estar inativo', not FServer.Active);
   finally
     for I := 0 to 3 do
@@ -344,9 +344,9 @@ begin
     WaitCount(FSrvMsgCount, 1 + CYCLES, 5000));
 
   // Espera o teardown assíncrono devolver os handles/fds ao patamar base.
-  LDeadline := PipeTickMs + 5000;
+  LDeadline := PcTickMs + 5000;
   LFinal := CurrentHandleCount;
-  while (LFinal > LBaseline + SLACK) and (PipeTickMs < LDeadline) do
+  while (LFinal > LBaseline + SLACK) and (PcTickMs < LDeadline) do
   begin
     Sleep(50);
     LFinal := CurrentHandleCount;
@@ -415,12 +415,12 @@ begin
     finally
       LClient.Free;
     end;
-    T0 := PipeTickMs;
+    T0 := PcTickMs;
     FServer.Stop;
     AssertTrue('ciclo ' + IntToStr(LCycle) + ': Stop lento (deadlock?)',
-      PipeTickMs - T0 < 2000);
+      PcTickMs - T0 < 2000);
   end;
-  AssertEquals(CYCLES, PipeAtomicGet(FSrvMsgCount));
+  AssertEquals(CYCLES, PcAtomicGet(FSrvMsgCount));
 end;
 
 procedure TPipeStressTests.CiclosConnectDisconnect_ClienteReutilizavel;
@@ -446,7 +446,7 @@ begin
   finally
     LClient.Free;
   end;
-  AssertEquals(CYCLES, PipeAtomicGet(FSrvConnCount));
+  AssertEquals(CYCLES, PcAtomicGet(FSrvConnCount));
   AssertEquals(0, FServer.ClientCount);
 end;
 

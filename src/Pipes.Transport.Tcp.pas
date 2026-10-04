@@ -48,7 +48,7 @@ interface
 uses
   SysUtils,
   Pipes.Types,
-  Pipes.Threading,
+  PascalCommon.Threading,
   Pipes.Transport
   {$IFDEF PIPES_WINDOWS}
   , Windows, WinSock2
@@ -369,7 +369,7 @@ end;
 
 procedure TPipeTcpWinEndpoint.CloseAbort;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit; // ja abortado
   if FStopEvent <> PIPE_WSA_INVALID_EVENT then
     WSASetEvent(FStopEvent);          // acorda esperas atuais e futuras
@@ -389,7 +389,7 @@ var
 begin
   AAddress := '';
   Result := False;
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     Exit;
   FillChar(LStorage, SizeOf(LStorage), 0);
   LLen := SizeOf(LStorage);
@@ -417,7 +417,7 @@ var
   LRc: DWORD;
   LWait: DWORD;
 begin
-  if PipeAtomicGet(FClosed) <> 0 then
+  if PcAtomicGet(FClosed) <> 0 then
     raise EPipeClosed.Create(AOp + ' em endpoint fechado');
   LEvents[0] := FSockEvent;
   LEvents[1] := FStopEvent;
@@ -433,7 +433,7 @@ begin
       [AOp, FIoTimeoutMs]);
   // Stop pode estar sinalizado junto com o socket; a checagem explicita evita
   // depender de qual indice o wait devolveu.
-  if (LRc = PIPE_WSA_WAIT_EVENT_0 + 1) or (PipeAtomicGet(FClosed) <> 0) then
+  if (LRc = PIPE_WSA_WAIT_EVENT_0 + 1) or (PcAtomicGet(FClosed) <> 0) then
     raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
   // Reseta FSockEvent e consome os eventos pendentes; sem isso o evento fica
   // sinalizado e a proxima espera nao bloquearia.
@@ -449,7 +449,7 @@ var
 begin
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       raise EPipeClosed.Create('leitura em endpoint fechado');
     LGot := recv(FSocket, ABuffer, ACount, 0);
     if LGot > 0 then
@@ -472,7 +472,7 @@ begin
   P := @ABuffer;
   while ACount > 0 do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       raise EPipeClosed.Create('escrita em endpoint fechado');
     LSent := send(FSocket, P^, ACount, 0);
     if LSent > 0 then
@@ -519,7 +519,7 @@ end;
 
 procedure TPipeTcpWinListener.Close;
 begin
-  if PipeAtomicSet(FClosed, 1) = 1 then
+  if PcAtomicSet(FClosed, 1) = 1 then
     Exit;
   if FStopEvent <> PIPE_WSA_INVALID_EVENT then
     WSASetEvent(FStopEvent); // desbloqueia o Accept pendente (devolve nil)
@@ -538,7 +538,7 @@ begin
   // devolver endpoint morto (mesma semantica dos listeners locais).
   while True do
   begin
-    if PipeAtomicGet(FClosed) <> 0 then
+    if PcAtomicGet(FClosed) <> 0 then
       Exit;
     LConn := WinSock2.accept(FSocket, nil, nil);
     if LConn <> INVALID_SOCKET then
@@ -556,7 +556,7 @@ begin
       False);
     if LRc = PIPE_WSA_WAIT_FAILED then
       RaiseWsaError('accept (wait)', WSAGetLastError);
-    if (LRc = PIPE_WSA_WAIT_EVENT_0 + 1) or (PipeAtomicGet(FClosed) <> 0) then
+    if (LRc = PIPE_WSA_WAIT_EVENT_0 + 1) or (PcAtomicGet(FClosed) <> 0) then
       Exit; // Close: devolve nil
     FillChar(LNet, SizeOf(LNet), 0);
     pipe_WSAEnumNetworkEvents(FSocket, FAcceptEvent, @LNet);
@@ -664,7 +664,7 @@ begin
       closesocket(LSock);
       Exit;
     end;
-    LRemaining := Int64(ADeadline) - Int64(PipeTickMs);
+    LRemaining := Int64(ADeadline) - Int64(PcTickMs);
     if LRemaining < 0 then
       LRemaining := 0;
     LRc := WSAWaitForMultipleEvents(1, @LEvent, True, DWORD(LRemaining), False);
@@ -703,7 +703,7 @@ var
   LErr: Integer;
 begin
   EnsureWinsock;
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   LInfo := ResolveAddress(AAddress, False);
   try
     while True do
@@ -721,7 +721,7 @@ begin
       // e' o que da a Connect(timeout) semantica igual a do transporte local.
       if (LErr <> WSAECONNREFUSED) and (LErr <> WSAETIMEDOUT) then
         RaiseWsaError(Format('conexao a %s', [AAddress]), LErr);
-      if Int64(LDeadline) - Int64(PipeTickMs) <= 0 then
+      if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
         raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando a %s',
           [ATimeoutMs, AAddress]);
       Sleep(25);
@@ -850,7 +850,7 @@ begin
       fpClose(LFd);
       Exit;
     end;
-    LRemaining := Int64(ADeadline) - Int64(PipeTickMs);
+    LRemaining := Int64(ADeadline) - Int64(PcTickMs);
     if LRemaining < 0 then
       LRemaining := 0;
     repeat
@@ -896,7 +896,7 @@ var
   LFd, LErr: cint;
   LDeadline: UInt64;
 begin
-  LDeadline := PipeTickMs + ATimeoutMs;
+  LDeadline := PcTickMs + ATimeoutMs;
   LInfo := ResolveAddress(AAddress, False);
   try
     while True do
@@ -916,7 +916,7 @@ begin
       end;
       if (LErr <> ESysECONNREFUSED) and (LErr <> ESysETIMEDOUT) then
         RaiseIoError(Format('conexao a %s', [AAddress]), LErr);
-      if Int64(LDeadline) - Int64(PipeTickMs) <= 0 then
+      if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
         raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando a %s',
           [ATimeoutMs, AAddress]);
       Sleep(25);
