@@ -697,6 +697,9 @@ errados — atualize os dois lados.
 
 ## Instalação
 
+Versão atual: **0.1.0**. Enquanto for 0.x, a API pode mudar entre versões minor; toda mudança
+está no [CHANGELOG](CHANGELOG.md).
+
 **Dependência de compilação: [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa)
 1.0.0 ou mais nova.** Atomics, ticks monotônicos, o monitor e o pool de threads (`PcPool`)
 vêm dela, compartilhados com as outras libs `*-faa` (amqp, redis, db). A **aplicação**

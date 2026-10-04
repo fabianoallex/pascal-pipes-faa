@@ -698,6 +698,9 @@ misreading bytes — update both sides.
 
 ## Installation
 
+Current version: **0.1.0**. While it is 0.x the API may change between minor versions; every
+change is listed in the [changelog](CHANGELOG.md) (in Portuguese).
+
 **Compile-time dependency: [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa)
 1.0.0 or later.** Atomics, monotonic ticks, the monitor and the thread pool (`PcPool`) come
 from it, shared with the other `*-faa` libraries (amqp, redis, db). The **application**
