@@ -6,6 +6,17 @@ uma versão minor pode mudar a API; toda mudança desse tipo aparece aqui.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-05
+
+### Alterado
+
+- Submódulo `external/pascal-common-faa` (só testes/samples/scripts) sobe da `v1.0.0` para a
+  `v1.2.0`. O mínimo exigido da aplicação continua sendo a 1.0.0 — o pipes não usa
+  `PcProcessorCount`. No FPC/Linux o `PcPool` agora cresce até 4 × núcleos em vez de 16
+  workers; nada aqui depende desse teto.
+- Os `.dproj` de teste e samples abrem em Win32 por padrão (eram Win64); Win64 continua
+  configurado em todos. O `EchoAndroid` e o `tests/Android` seguem em Android64.
+
 ## [0.1.0] - 2026-10-04
 
 Primeira versão publicada. Comunicação entre processos para Delphi 12+ (Win64, Win32, Android)
@@ -53,5 +64,6 @@ Domain Socket no Linux), `ptTcp` e `ptTls` (Schannel ou OpenSSL, mTLS opcional).
 - A documentação dizia que o `Destroy` do pool descartava os itens pendentes; ele sempre
   executou a fila inteira antes de retornar.
 
-[Unreleased]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fabianoallex/pascal-pipes-faa/releases/tag/v0.1.0

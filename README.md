@@ -697,7 +697,7 @@ errados — atualize os dois lados.
 
 ## Instalação
 
-Versão atual: **0.1.0**. Enquanto for 0.x, a API pode mudar entre versões minor; toda mudança
+Versão atual: **0.1.1**. Enquanto for 0.x, a API pode mudar entre versões minor; toda mudança
 está no [CHANGELOG](CHANGELOG.md).
 
 **Dependência de compilação: [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa)

@@ -698,7 +698,7 @@ misreading bytes — update both sides.
 
 ## Installation
 
-Current version: **0.1.0**. While it is 0.x the API may change between minor versions; every
+Current version: **0.1.1**. While it is 0.x the API may change between minor versions; every
 change is listed in the [changelog](CHANGELOG.md) (in Portuguese).
 
 **Compile-time dependency: [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa)
