@@ -30,7 +30,7 @@ implementar qualquer milestone novo.
   2026-10-04 — antes era uma cópia renomeada de `AMQP.Threading.pas`. `Pipes.Threading` ficou
   só com `TPipeKeyedDispatcher`/`TPipeMailboxDrainWork`/`PipeGroupDispatcher`/
   `TPipeHeartbeatThread` e com a checagem `{$IF PASCALCOMMON_VERSION < 10000}`. Submódulo em
-  `external/pascal-common-faa` (tag `v1.0.0`, sem `--recursive`) SÓ para testes/samples/
+  `external/pascal-common-faa` (tag `v1.2.0`, sem `--recursive`) SÓ para testes/samples/
   scripts; `pipes_faa.lpk` exige `pascal_common_faa` só pelo nome (`MinVersion Major="1"`, sem
   `DefaultFilename` — senão vira o diamante); todo `.lpi` de teste/sample lista
   `pascal_common_faa` PRIMEIRO com `DefaultFilename` em `external/` e `Prefer="True"`; todo
@@ -360,7 +360,7 @@ tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery + FinalizationCh
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
 samples/ (20 amostras — ver README.md)  docs/ARQUITETURA.md  docs/INTEROP.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
-external/pascal-common-faa (submódulo, tag v1.0.0 — só testes/samples/scripts)
+external/pascal-common-faa (submódulo, tag v1.2.0 — só testes/samples/scripts)
 tools/test_fpc.sh (FPC Windows: lazbuild + as duas suítes, heaptrc, checagem de finalização)
 tools/test_fpc_docker.sh (FPC Linux em Docker; FPCOPT=-dPIPES_OPENSSL liga ptTls, CPUS=1 e
   RUNS=N para caçar corrida com vários containers ao mesmo tempo)

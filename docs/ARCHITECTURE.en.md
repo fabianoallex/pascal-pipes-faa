@@ -2235,7 +2235,7 @@ compatibility alias, by that library's decision — the name table is in `README
 
 Arrangement, the same as `pascal-db-faa`'s (which migrated first):
 
-- **Submodule** `external/pascal-common-faa` at tag `v1.0.0`, checked out WITHOUT
+- **Submodule** `external/pascal-common-faa` at tag `v1.2.0` (`v1.0.0` at F8; the required minimum is still 1.0.0), checked out WITHOUT
   `--recursive` (pascal-common-faa's own submodule is only for its own tests). For this
   repository's tests, samples and scripts only: the application provides the single copy.
 - **`pipes_faa.lpk`** requires `pascal_common_faa` by name only, with `MinVersion Major="1"`. A

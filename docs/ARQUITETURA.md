@@ -2187,7 +2187,7 @@ alias de compatibilidade, por decisão daquela lib — a tabela de nomes está n
 
 Arranjo, igual ao do `pascal-db-faa` (que migrou primeiro):
 
-- **Submódulo** `external/pascal-common-faa` na tag `v1.0.0`, checkout SEM `--recursive` (o
+- **Submódulo** `external/pascal-common-faa` na tag `v1.2.0` (era `v1.0.0` na F8; o mínimo exigido segue 1.0.0), checkout SEM `--recursive` (o
   submódulo da própria pascal-common-faa só serve aos testes dela). Só para testes, samples e
   scripts deste repositório: a aplicação fornece a cópia única.
 - **`pipes_faa.lpk`** exige `pascal_common_faa` só pelo nome, com `MinVersion Major="1"`. Um
