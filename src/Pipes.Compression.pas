@@ -145,7 +145,7 @@ begin
           Inc(LTotal, UInt64(LRead));
           if LTotal > AMaxDecompressedSize then
             raise EPipeProtocol.CreateFmt(
-              'payload descomprimido excede o maximo configurado (%u)',
+              'decompressed payload exceeds the configured maximum (%u)',
               [AMaxDecompressedSize]);
           LOut.WriteBuffer(LBuf[0], LRead);
         end;
@@ -200,13 +200,13 @@ var
   LDeflated: TBytes;
 begin
   if AFrame.Kind <> pfkCompressed then
-    raise EArgumentException.Create('PipeUndoCompress exige um frame pfkCompressed');
+    raise EArgumentException.Create('PipeUndoCompress requires a pfkCompressed frame');
   if Length(AFrame.Payload) < 2 then
-    raise EPipeProtocol.Create('envelope pfkCompressed menor que o minimo (2 bytes)');
+    raise EPipeProtocol.Create('pfkCompressed envelope shorter than the minimum (2 bytes)');
   LOrigKind := AFrame.Payload[0];
   if LOrigKind > Ord(High(TPipeFrameKind)) then
     raise EPipeProtocol.CreateFmt(
-      'envelope pfkCompressed com kind original desconhecido (%d)', [LOrigKind]);
+      'pfkCompressed envelope with unknown original kind (%d)', [LOrigKind]);
   Result.Kind := TPipeFrameKind(LOrigKind);
   Result.Flags := AFrame.Payload[1];
   Result.CorrId := AFrame.CorrId;

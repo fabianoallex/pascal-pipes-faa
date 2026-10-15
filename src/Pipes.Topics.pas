@@ -209,7 +209,7 @@ begin
   LTopic := PipeUtf8Encode(ATopic);
   LLen := Length(LTopic);
   if LLen > PIPE_MAX_TOPIC_BYTES then
-    raise EPipeProtocol.CreateFmt('topico de %d bytes excede o maximo (%d)',
+    raise EPipeProtocol.CreateFmt('topic of %d bytes exceeds the maximum (%d)',
       [LLen, PIPE_MAX_TOPIC_BYTES]);
   Result := nil;
   SetLength(Result, 2 + LLen + Length(ABody));
@@ -230,11 +230,11 @@ begin
   ATopic := '';
   ABody := nil;
   if Length(APayload) < 2 then
-    raise EPipeProtocol.Create('frame de topico sem o cabecalho do envelope');
+    raise EPipeProtocol.Create('topic frame without the envelope header');
   LLen := APayload[0] or (Integer(APayload[1]) shl 8);
   if Length(APayload) < 2 + LLen then
     raise EPipeProtocol.CreateFmt(
-      'envelope anuncia topico de %d bytes mas o payload tem %d',
+      'envelope announces a %d-byte topic but the payload has %d',
       [LLen, Length(APayload) - 2]);
   SetLength(LTopic, LLen);
   if LLen > 0 then

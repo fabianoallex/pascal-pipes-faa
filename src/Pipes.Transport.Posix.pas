@@ -109,7 +109,7 @@ function pipe_getpeername(AFd: cint; AAddr: Pointer;
 
 procedure RaiseIoError(const AOp: string; AErr: cint);
 begin
-  raise EPipeError.CreateFmt('%s falhou (erro %d: %s)',
+  raise EPipeError.CreateFmt('%s failed (error %d: %s)',
     [AOp, AErr, SysErrorMessage(AErr)]);
 end;
 
@@ -132,7 +132,7 @@ procedure BuildUnixAddr(const APath: string; out AAddr: TUnixSockAddr;
 begin
   if Length(APath) >= SizeOf(AAddr.path) then
     raise EPipeError.CreateFmt(
-      'caminho de socket longo demais (%d chars; maximo %d): %s',
+      'socket path too long (%d chars; maximum %d): %s',
       [Length(APath), SizeOf(AAddr.path) - 1, APath]);
   FillChar(AAddr, SizeOf(AAddr), 0);
   AAddr.family := AF_UNIX;
@@ -214,7 +214,7 @@ var
   LWait: Int64;
 begin
   if PcAtomicGet(FClosed) <> 0 then
-    raise EPipeClosed.Create(AOp + ' em endpoint fechado');
+    raise EPipeClosed.Create(AOp + ' on a closed endpoint');
   LDeadline := 0;
   if FIoTimeoutMs <> 0 then
     LDeadline := PcTickMs + FIoTimeoutMs;
@@ -240,10 +240,10 @@ begin
   if LRc < 0 then
     RaiseIoError(AOp + ' (poll)', fpgeterrno);
   if (LRc = 0) and (FIoTimeoutMs <> 0) then
-    raise EPipeTimeout.CreateFmt('%s: o par nao respondeu em %u ms',
+    raise EPipeTimeout.CreateFmt('%s: the peer did not respond within %u ms',
       [AOp, FIoTimeoutMs]);
   if ((LFds[1].revents and POLLIN) <> 0) or (PcAtomicGet(FClosed) <> 0) then
-    raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
+    raise EPipeClosed.Create(AOp + ' aborted (CloseAbort)');
   // POLLERR/POLLHUP no fd da operacao: deixa o recv/send reportar — ainda
   // pode haver dados enfileirados para ler apos o HUP.
 end;
@@ -255,20 +255,20 @@ var
 begin
   while True do
   begin
-    WaitReadyOrStop(POLLIN, 'leitura');
+    WaitReadyOrStop(POLLIN, 'read');
     LGot := NativeInt(fpRecv(FFd, @ABuffer, ACount, 0));
     if LGot > 0 then
       Exit(Integer(LGot));
     if LGot = 0 then
-      raise EPipeClosed.Create('conexao encerrada pelo par');
+      raise EPipeClosed.Create('connection closed by the peer');
     LErr := fpgeterrno;
     case LErr of
       ESysEINTR, ESysEAGAIN:
         ; // re-tenta (volta ao poll)
       ESysECONNRESET, ESysEPIPE:
-        raise EPipeClosed.CreateFmt('leitura: conexao encerrada (erro %d)', [LErr]);
+        raise EPipeClosed.CreateFmt('read: connection closed (error %d)', [LErr]);
     else
-      RaiseIoError('leitura', LErr);
+      RaiseIoError('read', LErr);
     end;
   end;
 end;
@@ -282,7 +282,7 @@ begin
   P := @ABuffer;
   while ACount > 0 do
   begin
-    WaitReadyOrStop(POLLOUT, 'escrita');
+    WaitReadyOrStop(POLLOUT, 'write');
     LWrote := NativeInt(fpSend(FFd, P, ACount, PIPE_MSG_NOSIGNAL));
     if LWrote > 0 then
     begin
@@ -295,9 +295,9 @@ begin
       ESysEINTR, ESysEAGAIN:
         ; // re-tenta (volta ao poll)
       ESysEPIPE, ESysECONNRESET:
-        raise EPipeClosed.CreateFmt('escrita: conexao encerrada (erro %d)', [LErr]);
+        raise EPipeClosed.CreateFmt('write: connection closed (error %d)', [LErr]);
     else
-      RaiseIoError('escrita', LErr);
+      RaiseIoError('write', LErr);
     end;
   end;
 end;
@@ -432,9 +432,9 @@ begin
     // Ambos re-tentam ate o prazo — e' o que da semantica uniforme de
     // Connect(timeout) nas duas plataformas.
     if (LErr <> ESysENOENT) and (LErr <> ESysECONNREFUSED) then
-      RaiseIoError(Format('conexao ao socket %s', [LNative]), LErr);
+      RaiseIoError(Format('connect to socket %s', [LNative]), LErr);
     if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
-      raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando ao socket %s',
+      raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to socket %s',
         [ATimeoutMs, LNative]);
     Sleep(25); // servidor ausente/ocupado: polling curto
   end;

@@ -2402,3 +2402,56 @@ Seven new tests in `Pipes.EndToEndTests` (both frameworks): server `OnMessage` r
 three modes and with `AGroupKey`, client `OnMessage`, `OnClientConnected` (with the event name
 in the message) and an exception inside `OnError` itself (a single call, no recursion). All of
 them also check that the connection still delivers the next message.
+
+## 25. Runtime messages in English (0.3.0)
+
+Closes what §24.3 left for later. The ~250 exception and `OnError` strings in `src/` were
+translated to English, the convention of the other `*-faa` libraries. Comments stay in
+Portuguese.
+
+### 25.1 What goes over the wire
+
+Surveyed before the change. Almost everything is local (an exception or `OnError` of the same
+process). Only two channels carry library text to the peer, and in both the text is free-form
+UTF-8 inside a `Reply` with the ERROR bit — `docs/INTEROP.md` never specified wording:
+
+- the `Request` error reply (`TPipeServer.ExecuteRequest`): `'server has no OnRequest
+  handler'` or the message of any `OnRequest` exception — including the library's own when the
+  app uses `Pipes.Commands.HandleRequest` (unknown command, payload out of range, invalid
+  envelope) or `Pipes.Json` inside the handler;
+- the asynchronous refusal with corrId 0 (`RejectControl`): invalid subscription filter,
+  subscription limit, invalid publish topic.
+
+The `'server replied with error: '` prefix is built by the CLIENT around the text received.
+
+### 25.2 Compatibility
+
+- Protocol untouched: ≤ 0.2.0 and 0.3.0 peers talk normally, with mixed language in remote error
+  text. Nothing to negotiate.
+- No code in `src/` or `samples/` compares message text. The tests compared it in seven places
+  (EndToEnd, ConnectAsync, Failover, Tls and three in `tests/Android`), updated.
+- For third-party apps, the recommendation recorded in the CHANGELOG is to decide on the
+  exception class. Stable numeric codes (`EPipeError.Code`) were considered and left out: new
+  API with no concrete demand.
+
+### 25.3 Trap: a negative test on text
+
+`tests/Android` has a `Pos('certificado do servidor', LErro) = 0` that ensures the SERVER is the
+one that refused (§13.10). A negative test on text silently passes when the text changes — had
+the translation not updated it, it would stay green while proving nothing. The comment there
+now asks to update it together.
+
+### 25.4 Bonus
+
+`Pipes.Discovery.pas` has no BOM and carried an em dash (—) in three messages; Delphi reads a
+BOM-less source in the system code page, so the character could come out garbled. The messages
+are now ASCII.
+
+### 25.5 Verification
+
+| Where | Result |
+|---|---|
+| FPC 3.2.2 Windows x64 (`tools/test_fpc.sh`) | unit 137/137, integration 146/146, 0 leaks |
+| FPC 3.2.2 Linux x86_64 (`tools/test_fpc_docker.sh`, `-dPIPES_OPENSSL`) | unit 137/137, integration 146/146, 0 leaks |
+| Delphi 12 Win32 and Win64 (IDE build, exes run from the command line) | unit 137/137, integration 146/146, 0 leaks/failures/errors |
+| `tests/Android` on a device | **pending** — not run in this round; the three text-based cases (OpenSSL guard, refused `ptLocal`, negative mTLS test) were updated but not executed |

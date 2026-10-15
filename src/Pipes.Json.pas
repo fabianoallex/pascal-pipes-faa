@@ -74,7 +74,7 @@ begin
   // (nem sempre levantam/devolvem nil de forma confiavel) - checado aqui na
   // fronteira em vez de depender do comportamento de cada lib nesse caso.
   if LText = '' then
-    raise EPipeJSONError.Create('JSON vazio');
+    raise EPipeJSONError.Create('empty JSON');
   {$IFDEF FPC}
   // GetJSON (jsonparser) levanta em texto invalido; normalizamos para
   // EPipeJSONError em vez de deixar a excecao nativa (EJSONParser/
@@ -83,14 +83,14 @@ begin
     Result := GetJSON(LText);
   except
     on E: Exception do
-      raise EPipeJSONError.CreateFmt('JSON invalido: %s', [E.Message]);
+      raise EPipeJSONError.CreateFmt('invalid JSON: %s', [E.Message]);
   end;
   {$ELSE}
   // ParseJSONValue (System.JSON) devolve nil em vez de levantar - mesma
   // normalizacao, no sentido oposto.
   Result := TJSONObject.ParseJSONValue(LText);
   if Result = nil then
-    raise EPipeJSONError.Create('JSON invalido');
+    raise EPipeJSONError.Create('invalid JSON');
   {$ENDIF}
 end;
 

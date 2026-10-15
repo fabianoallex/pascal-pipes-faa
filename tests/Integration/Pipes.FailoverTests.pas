@@ -270,7 +270,7 @@ begin
   Sleep(2000);
   FLock.Enter;
   try
-    Assert.IsTrue(Pos('tentativas', FLastError) > 0,
+    Assert.IsTrue(Pos('attempts', FLastError) > 0,
       'esperava o erro de reconexao esgotada, veio: ' + FLastError);
   finally
     FLock.Leave;

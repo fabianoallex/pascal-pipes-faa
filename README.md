@@ -404,8 +404,8 @@ Client.ConnectAsync;              // volta na hora; segue tentando em segundo pl
   `ReconnectDelayMs`, as properties que já existiam — com `MaxReconnectAttempts = 0` (padrão)
   tenta para sempre. É um teto APROXIMADO de tempo de parede; quem precisa de prazo exato
   chama `Disconnect` de um timer.
-- **Sucesso em `OnConnected`, desistência em `OnError`** (`'conexao inicial esgotada apos N
-  tentativas'`) — não há exceção a levantar, o chamador já voltou.
+- **Sucesso em `OnConnected`, desistência em `OnError`** (`'initial connection gave up after N
+  attempts'`) — não há exceção a levantar, o chamador já voltou.
 - **`Connecting`** diz se ainda está tentando. É só sobre `ConnectAsync`: `Connect` síncrono e
   reconexão automática nunca o ligam.
 - **`Disconnect` cancela** (e chamar `ConnectAsync` de novo também: cancela a tentativa
@@ -704,14 +704,17 @@ errados — atualize os dois lados.
   `OnClientDisconnected`, `OnPublish`, `OnSubscribe`/`OnUnsubscribe`, `OnDelivered`/
   `OnDeliveryFailed`, `OnConnectAttemptFailed` — e em todo `DispatchMode`. Detalhes:
   - `AConnId` é o da conexão do evento (0 no cliente e em `OnConnectAttemptFailed`);
-  - a mensagem é `'<Evento> levantou <ClasseDaExceção>: <mensagem>'`, por exemplo
-    `'OnMessage levantou EConvertError: $.quantity: ...'`;
+  - a mensagem é `'<Evento> raised <ClasseDaExceção>: <mensagem>'`, por exemplo
+    `'OnMessage raised EConvertError: $.quantity: ...'`;
   - o `OnError` roda **na mesma thread e logo depois** do handler que falhou (worker do
     pool, ou main thread em `pdmMainThread`), não num despacho novo;
   - a **conexão continua aberta** e as mensagens seguintes chegam normalmente — fechar ou
     não é decisão do app (`DisconnectClient(AConnId)` dentro do `OnError` do servidor);
   - exceção levantada dentro do próprio `OnError` é engolida (sem recursão);
   - `OnRequest` é a exceção à regra: lá a exceção vira reply de erro para o cliente.
+- **Mensagens de runtime (exceções e `OnError`) são em inglês** desde a 0.3.0. Decida pela
+  CLASSE da exceção (`EPipeClosed`, `EPipeTimeout`, `EPipeTls`, `EPipeProtocol`…), não pelo
+  texto: a tabela do que mudou está no [CHANGELOG](CHANGELOG.md).
 - Detalhe de semântica: um cliente que conecta e morre **antes de o servidor aceitar** a
   conexão é invisível (nenhum evento) — a instância/backlog é reciclada.
 

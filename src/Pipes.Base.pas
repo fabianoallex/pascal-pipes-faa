@@ -734,7 +734,7 @@ end;
 procedure TPipeBase.EnsureInactive(const AWhat: string);
 begin
   if GetLifecycleLocked then
-    raise EPipeError.CreateFmt('%s nao pode mudar com o componente ativo', [AWhat]);
+    raise EPipeError.CreateFmt('%s cannot change while the component is active', [AWhat]);
 end;
 
 procedure TPipeBase.SetAddress(const AValue: string);
@@ -771,7 +771,7 @@ procedure TPipeBase.SetMaxMessageSize(AValue: Cardinal);
 begin
   EnsureInactive('MaxMessageSize');
   if AValue = 0 then
-    raise EPipeError.Create('MaxMessageSize deve ser maior que zero');
+    raise EPipeError.Create('MaxMessageSize must be greater than zero');
   FMaxMessageSize := AValue;
 end;
 
@@ -825,7 +825,7 @@ begin
   if not Assigned(LCallback) then
     Exit; // sem OnError, mesmo destino de antes: descartada
   try
-    LCallback(Self, AConnId, Format('%s levantou %s: %s',
+    LCallback(Self, AConnId, Format('%s raised %s: %s',
       [AEventName, E.ClassName, E.Message]));
   except
     // excecao dentro do OnError: sem recursao, engolida

@@ -346,7 +346,7 @@ begin
   begin
     LRead := AStream.Read(P^, ACount);
     if LRead <= 0 then
-      raise EPipeClosed.Create('stream encerrado durante a leitura de um frame');
+      raise EPipeClosed.Create('stream closed while reading a frame');
     Inc(P, LRead);
     Dec(ACount, LRead);
   end;
@@ -361,18 +361,18 @@ begin
   ReadExactly(AStream, LHeader, PIPE_FRAME_HEADER_SIZE);
   if (LHeader[0] <> MAGIC0) or (LHeader[1] <> MAGIC1) or
      (LHeader[2] <> MAGIC2) or (LHeader[3] <> MAGIC3) then
-    raise EPipeProtocol.Create('magic invalido (stream fora de sincronia ou protocolo estranho)');
+    raise EPipeProtocol.Create('invalid magic (stream out of sync or foreign protocol)');
   LKind := LHeader[4];
   if LKind > Ord(High(TPipeFrameKind)) then
     // Magic certo e kind alto normalmente significa peer falando uma versao
     // MAIS NOVA do protocolo (foi assim que os kinds 4-6 do pub/sub entraram),
     // e nao lixo na linha: vale dizer isso na mensagem, porque o diagnostico
     // e' outro — atualizar um dos lados, em vez de procurar corrupcao de stream.
-    raise EPipeProtocol.CreateFmt('kind de frame desconhecido (%d): o peer ' +
-      'provavelmente fala uma versao mais nova do protocolo', [LKind]);
+    raise EPipeProtocol.CreateFmt('unknown frame kind (%d): the peer ' +
+      'probably speaks a newer version of the protocol', [LKind]);
   LLen := GetU32LE(LHeader, 16);
   if LLen > AMaxPayload then
-    raise EPipeProtocol.CreateFmt('payload de %u bytes excede o maximo configurado (%u)',
+    raise EPipeProtocol.CreateFmt('payload of %u bytes exceeds the configured maximum (%u)',
       [LLen, AMaxPayload]);
   Result.Kind := TPipeFrameKind(LKind);
   Result.Flags := LHeader[5];
@@ -385,7 +385,7 @@ end;
 procedure PipeValidateMaxPayload(APayloadLen: Integer; AMaxPayload: Cardinal);
 begin
   if Cardinal(APayloadLen) > AMaxPayload then
-    raise EPipeProtocol.CreateFmt('payload de %d bytes excede o maximo configurado (%u)',
+    raise EPipeProtocol.CreateFmt('payload of %d bytes exceeds the configured maximum (%u)',
       [APayloadLen, AMaxPayload]);
 end;
 

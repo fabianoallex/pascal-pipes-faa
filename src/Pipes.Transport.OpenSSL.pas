@@ -360,7 +360,7 @@ function SslMustGet(AHandle: TSslLibHandle; const AName, ALib: string): Pointer;
 begin
   Result := SslGetProc(AHandle, AName);
   if Result = nil then
-    raise EPipeTls.CreateFmt('símbolo %s não encontrado em %s (OpenSSL incompatível?)',
+    raise EPipeTls.CreateFmt('symbol %s not found in %s (incompatible OpenSSL?)',
       [AName, ALib]);
 end;
 
@@ -405,8 +405,8 @@ begin
     end;
     if LSslName = '' then
       raise EPipeTls.CreateFmt(
-        'OpenSSL não encontrado (tentados: %s). Instale libssl/libcrypto, ' +
-        'ou use um transporte sem TLS (ptTcp/ptLocal).',
+        'OpenSSL not found (tried: %s). Install libssl/libcrypto, ' +
+        'or use a transport without TLS (ptTcp/ptLocal).',
         [LTried]);
 
     try
@@ -625,7 +625,7 @@ var
 begin
   FCtx := p_SSL_CTX_new(p_TLS_client_method());
   if FCtx = nil then
-    raise EPipeTls.CreateFmt('SSL_CTX_new falhou (%s)', [LastSslErrorText]);
+    raise EPipeTls.CreateFmt('SSL_CTX_new failed (%s)', [LastSslErrorText]);
 
   // Mínimo TLS 1.2, como no caminho SChannel (defaults modernos do sistema).
   p_SSL_CTX_ctrl(FCtx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, nil);
@@ -639,13 +639,13 @@ begin
       // esta no trust store do sistema, e nem deveria estar.
       LTmp := AnsiString(FOptions.CaFile);
       if p_SSL_CTX_load_verify_locations(FCtx, PAnsiChar(LTmp), nil) <> 1 then
-        raise EPipeTls.CreateFmt('nao foi possivel carregar a CA %s (%s)',
+        raise EPipeTls.CreateFmt('could not load CA %s (%s)',
           [FOptions.CaFile, LastSslErrorText]);
     end
     // Trust store do sistema (ex.: /etc/ssl/certs no Linux).
     else if not ApplyDefaultTrustStore(FCtx) then
-      raise EPipeTls.CreateFmt('nao foi possivel abrir o trust store do ' +
-        'sistema (%s)', [LastSslErrorText]);
+      raise EPipeTls.CreateFmt('could not open the system trust ' +
+        'store (%s)', [LastSslErrorText]);
   end
   else
     p_SSL_CTX_set_verify(FCtx, SSL_VERIFY_NONE, nil);
@@ -660,10 +660,10 @@ begin
   FBioIn := p_BIO_new(p_BIO_s_mem());
   FBioOut := p_BIO_new(p_BIO_s_mem());
   if (FBioIn = nil) or (FBioOut = nil) then
-    raise EPipeTls.Create('BIO_new(BIO_s_mem) falhou');
+    raise EPipeTls.Create('BIO_new(BIO_s_mem) failed');
   FSsl := p_SSL_new(FCtx);
   if FSsl = nil then
-    raise EPipeTls.CreateFmt('SSL_new falhou (%s)', [LastSslErrorText]);
+    raise EPipeTls.CreateFmt('SSL_new failed (%s)', [LastSslErrorText]);
   p_SSL_set_bio(FSsl, FBioIn, FBioOut);
 
   if FTargetName <> '' then
@@ -691,7 +691,7 @@ begin
         and (p_X509_VERIFY_PARAM_set1_ip_asc(LParam, PAnsiChar(FTargetName)) = 1);
       if not LIsIp then
         if p_SSL_set1_host(FSsl, PAnsiChar(FTargetName)) <> 1 then
-          raise EPipeTls.Create('SSL_set1_host falhou');
+          raise EPipeTls.Create('SSL_set1_host failed');
     end;
   end;
 
@@ -731,7 +731,7 @@ begin
   begin
     LNow := FUnderlying.Write(AData[LWritten], Length(AData) - LWritten);
     if LNow <= 0 then
-      raise EPipeTls.Create('falha ao enviar dados TLS');
+      raise EPipeTls.Create('failed to send TLS data');
     Inc(LWritten, LNow);
   end;
 end;
@@ -788,7 +788,7 @@ begin
   try
     // BIO de memória cresce sob demanda: aceita o bloco inteiro.
     if p_BIO_write(FBioIn, @LBuf[0], LRead) <> LRead then
-      raise EPipeTls.Create('BIO_write falhou');
+      raise EPipeTls.Create('BIO_write failed');
   finally
     FLock.Leave;
   end;
@@ -812,7 +812,7 @@ begin
     case LErr of
       SSL_ERROR_WANT_READ:
         if not ReadRawIntoBio then
-          raise EPipeTls.Create('conexão fechada durante o handshake TLS');
+          raise EPipeTls.Create('connection closed during the TLS handshake');
       SSL_ERROR_WANT_WRITE:
         ; // já drenado pelo FlushBioOut acima
     else
@@ -821,9 +821,9 @@ begin
         LVerify := p_SSL_get_verify_result(FSsl);
         if FVerifyPeer and (LVerify <> X509_V_OK) then
           raise EPipeTls.CreateFmt(
-            'validação do certificado do servidor falhou (X509 err %d; %s)',
+            'server certificate validation failed (X509 err %d; %s)',
             [Integer(LVerify), SslFailureText(LErr)]);
-        raise EPipeTls.CreateFmt('handshake TLS falhou (%s)', [SslFailureText(LErr)]);
+        raise EPipeTls.CreateFmt('TLS handshake failed (%s)', [SslFailureText(LErr)]);
       end;
     end;
   end;
@@ -920,12 +920,12 @@ begin
           Sleep(5);
           Inc(LWaitedMs, 5);
           if LWaitedMs > 10000 then
-            raise EPipeTls.Create('timeout aguardando dados do servidor durante escrita TLS');
+            raise EPipeTls.Create('timeout waiting for server data during a TLS write');
         end;
         SSL_ERROR_WANT_WRITE:
           ; // saída já drenada; re-tenta
       else
-        raise EPipeTls.CreateFmt('falha ao enviar dados TLS (%s)', [SslFailureText(LErr)]);
+        raise EPipeTls.CreateFmt('failed to send TLS data (%s)', [SslFailureText(LErr)]);
       end;
     until False;
 
@@ -938,7 +938,7 @@ end;
 function TPipeOpenSslStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
 begin
   Result := 0; // silencia W5093; a excecao abaixo e que vale
-  raise EPipeTls.Create('TPipeOpenSslStream não suporta Seek');
+  raise EPipeTls.Create('TPipeOpenSslStream does not support Seek');
 end;
 
 procedure TPipeOpenSslStream.ShutdownTls;
@@ -973,16 +973,16 @@ begin
   LCert := AnsiString(AOptions.CertFile);
   LKey := AnsiString(AOptions.KeyFile);
   if p_SSL_CTX_use_certificate_chain_file(ACtx, PAnsiChar(LCert)) <> 1 then
-    raise EPipeTls.CreateFmt('nao foi possivel carregar o certificado %s (%s)',
+    raise EPipeTls.CreateFmt('could not load certificate %s (%s)',
       [AOptions.CertFile, LastSslErrorText]);
   if p_SSL_CTX_use_PrivateKey_file(ACtx, PAnsiChar(LKey),
        SSL_FILETYPE_PEM) <> 1 then
-    raise EPipeTls.CreateFmt('nao foi possivel carregar a chave %s (%s)',
+    raise EPipeTls.CreateFmt('could not load key %s (%s)',
       [AOptions.KeyFile, LastSslErrorText]);
   // Detecta cedo o par cert/chave trocado: sem esta checagem o erro so
   // apareceria no handshake, longe da causa.
   if p_SSL_CTX_check_private_key(ACtx) <> 1 then
-    raise EPipeTls.CreateFmt('a chave %s nao corresponde ao certificado %s (%s)',
+    raise EPipeTls.CreateFmt('key %s does not match certificate %s (%s)',
       [AOptions.KeyFile, AOptions.CertFile, LastSslErrorText]);
 end;
 
@@ -993,7 +993,7 @@ constructor TPipeOpenSslServerStream.Create(AUnderlying: TStream;
 begin
   CreateDeferred(AUnderlying);
   if (AOptions.CertFile = '') or (AOptions.KeyFile = '') then
-    raise EPipeTls.Create('servidor TLS exige certificado e chave');
+    raise EPipeTls.Create('TLS server requires a certificate and key');
   FOptions := AOptions;
   // No servidor, "verificar o par" significa exigir certificado de cliente, e
   // isso e' ligado por ter uma CA de clientes configurada.
@@ -1069,7 +1069,7 @@ var
 begin
   FCtx := p_SSL_CTX_new(p_TLS_server_method());
   if FCtx = nil then
-    raise EPipeTls.CreateFmt('SSL_CTX_new(server) falhou (%s)',
+    raise EPipeTls.CreateFmt('SSL_CTX_new(server) failed (%s)',
       [LastSslErrorText]);
 
   // Mesmo piso do lado cliente e do SChannel.
@@ -1082,7 +1082,7 @@ begin
     // mTLS: so entra quem apresentar certificado assinado por esta CA.
     LCa := AnsiString(FOptions.CaFile);
     if p_SSL_CTX_load_verify_locations(FCtx, PAnsiChar(LCa), nil) <> 1 then
-      raise EPipeTls.CreateFmt('nao foi possivel carregar a CA de clientes %s (%s)',
+      raise EPipeTls.CreateFmt('could not load client CA %s (%s)',
         [FOptions.CaFile, LastSslErrorText]);
     p_SSL_CTX_set_verify(FCtx,
       SSL_VERIFY_PEER or SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nil);
@@ -1094,10 +1094,10 @@ begin
   FBioIn := p_BIO_new(p_BIO_s_mem());
   FBioOut := p_BIO_new(p_BIO_s_mem());
   if (FBioIn = nil) or (FBioOut = nil) then
-    raise EPipeTls.Create('BIO_new(BIO_s_mem) falhou');
+    raise EPipeTls.Create('BIO_new(BIO_s_mem) failed');
   FSsl := p_SSL_new(FCtx);
   if FSsl = nil then
-    raise EPipeTls.CreateFmt('SSL_new falhou (%s)', [LastSslErrorText]);
+    raise EPipeTls.CreateFmt('SSL_new failed (%s)', [LastSslErrorText]);
   p_SSL_set_bio(FSsl, FBioIn, FBioOut);
 
   // A unica diferenca de direcao no handshake.

@@ -823,7 +823,7 @@ end;
 procedure TPipeServer.Listen;
 begin
   if FActive then
-    raise EPipeError.Create('servidor ja esta ativo');
+    raise EPipeError.Create('server is already active');
   SetupDispatch;
   try
     // TlsOptions so' e' consultado em ptTls; nos demais a sobrecarga delega
@@ -913,7 +913,7 @@ begin
   begin
     AEndpoint.CloseAbort;
     AEndpoint.Free;
-    DispatchError(0, 'conexao recusada: MaxClients atingido');
+    DispatchError(0, 'connection refused: MaxClients reached');
     Exit;
   end;
   // OnClientConnected NAO e' despachado aqui: quem faz isso e' a reader thread,
@@ -933,7 +933,7 @@ begin
   // servidor para de aceitar novos clientes, mas os conectados seguem; o
   // usuario decide (Stop/Listen de novo) a partir do OnError.
   if (AError <> '') and (PcAtomicGet(FStopping) = 0) then
-    DispatchError(0, 'acceptor encerrado: ' + AError);
+    DispatchError(0, 'acceptor stopped: ' + AError);
 end;
 
 procedure TPipeServer.ReaderFinished(AConn: TPipeServerConnection;
@@ -998,7 +998,7 @@ begin
           LErr := E.Message; // excecao do handler vira reply de erro
       end
     else
-      LErr := 'servidor sem handler OnRequest';
+      LErr := 'server has no OnRequest handler';
     try
       if LErr <> '' then
         AConn.SendFrame(TPipeFrame.ErrorReply(ACorrId, LErr))
@@ -1056,7 +1056,7 @@ begin
   PipeDecodeTopicPayload(AFrame.Payload, LFilter, LBody);
   if not PipeIsValidTopicFilter(LFilter) then
   begin
-    RejectControl(AConn, 'filtro de assinatura invalido: ' + LFilter);
+    RejectControl(AConn, 'invalid subscription filter: ' + LFilter);
     Exit;
   end;
   LAdded := False;
@@ -1078,7 +1078,7 @@ begin
   end;
   if LFull then
   begin
-    RejectControl(AConn, Format('teto de %d assinaturas por cliente atingido',
+    RejectControl(AConn, Format('limit of %d subscriptions per client reached',
       [FMaxSubscriptionsPerClient]));
     Exit;
   end;
@@ -1128,7 +1128,7 @@ begin
   PipeDecodeTopicPayload(AFrame.Payload, LTopic, LBody);
   if not PipeIsValidTopic(LTopic) then
   begin
-    RejectControl(AConn, 'topico de publicacao invalido: ' + LTopic);
+    RejectControl(AConn, 'invalid publish topic: ' + LTopic);
     Exit;
   end;
   // Reter e' efeito de escrita no servidor: so' acontece se o relay estiver
@@ -1303,7 +1303,7 @@ begin
   // errada. (Do lado do cliente o mesmo nome invalido vira OnError: la e' um
   // par remoto, e derrubar o servidor por causa dele nao seria correto.)
   if not PipeIsValidTopic(ATopic) then
-    raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [ATopic]);
+    raise EPipeError.CreateFmt('invalid topic for publishing: %s', [ATopic]);
   if ARetain then
     StoreRetained(ATopic, AData);
   FanOut(ATopic, AData);
@@ -1329,7 +1329,7 @@ begin
     Exit;
   for I := 0 to High(AItems) do
     if not PipeIsValidTopic(AItems[I].Topic) then
-      raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [AItems[I].Topic]);
+      raise EPipeError.CreateFmt('invalid topic for publishing: %s', [AItems[I].Topic]);
   SetLength(LFrames, Length(AItems));
   for I := 0 to High(AItems) do
   begin
@@ -1510,8 +1510,8 @@ begin
     FConnLock.Leave;
   end;
   if LConn = nil then
-    raise EPipeError.Create('cliente ' + IntToStr(Int64(AConnId)) +
-      ' nao esta conectado');
+    raise EPipeError.Create('client ' + IntToStr(Int64(AConnId)) +
+      ' is not connected');
   try
     LConn.SendFrame(TPipeFrame.Msg(AData, PipeGroupKeyHash(AGroupKey)));
   finally
@@ -1545,8 +1545,8 @@ begin
     FConnLock.Leave;
   end;
   if LConn = nil then
-    raise EPipeError.Create('cliente ' + IntToStr(Int64(AConnId)) +
-      ' nao esta conectado');
+    raise EPipeError.Create('client ' + IntToStr(Int64(AConnId)) +
+      ' is not connected');
   try
     SetLength(LFrames, Length(AItems));
     for I := 0 to High(AItems) do

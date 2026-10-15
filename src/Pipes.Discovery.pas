@@ -198,8 +198,8 @@ function TokenToBytes(const AToken: string): TBytes;
 begin
   Result := PipeUtf8Encode(AToken);
   if Length(Result) > PIPES_DISCOVERY_MAX_TOKEN_BYTES then
-    raise EPipeError.CreateFmt('token de descoberta longo demais ' +
-      '(%d bytes UTF-8; maximo %d)',
+    raise EPipeError.CreateFmt('discovery token too long ' +
+      '(%d UTF-8 bytes; maximum %d)',
       [Length(Result), PIPES_DISCOVERY_MAX_TOKEN_BYTES]);
 end;
 
@@ -278,12 +278,12 @@ var
 begin
   Result := nil; // warning 5093 do FPC (Result gerenciado)
   if AServicePort = 0 then
-    raise EPipeError.Create('porta de servico 0 nao e anunciavel');
+    raise EPipeError.Create('service port 0 cannot be announced');
   LTok := TokenToBytes(AToken);
   LName := PipeUtf8Encode(AName);
   if Length(LName) > PIPES_DISCOVERY_MAX_NAME_BYTES then
-    raise EPipeError.CreateFmt('nome anunciado longo demais ' +
-      '(%d bytes UTF-8; maximo %d)',
+    raise EPipeError.CreateFmt('announced name too long ' +
+      '(%d UTF-8 bytes; maximum %d)',
       [Length(LName), PIPES_DISCOVERY_MAX_NAME_BYTES]);
   SetLength(Result, DISC_HEADER_BYTES + Length(LTok) + 4 + Length(LName));
   LOfs := BuildHeader(Result, DISC_KIND_RESPONSE, LTok);
@@ -472,7 +472,7 @@ begin
   if GDiscWinsockReady then
     Exit;
   if WSAStartup($0202, LData) <> 0 then
-    raise EPipeError.CreateFmt('WSAStartup falhou (WSA %d)', [WSAGetLastError]);
+    raise EPipeError.CreateFmt('WSAStartup failed (WSA %d)', [WSAGetLastError]);
   GDiscWinsockReady := True;
 end;
 
@@ -507,7 +507,7 @@ begin
   FStopEvent := DISC_WSA_INVALID_EVENT;
   FSocket := WinSock2.socket(DISC_AF_INET, DISC_SOCK_DGRAM, DISC_IPPROTO_UDP);
   if FSocket = INVALID_SOCKET then
-    raise EPipeError.CreateFmt('socket UDP falhou (WSA %d)', [WSAGetLastError]);
+    raise EPipeError.CreateFmt('UDP socket failed (WSA %d)', [WSAGetLastError]);
   if ABroadcast then
   begin
     LOn := 1;
@@ -516,7 +516,7 @@ begin
     begin
       LErr := WSAGetLastError;
       closesocket(FSocket);
-      raise EPipeError.CreateFmt('SO_BROADCAST falhou (WSA %d)', [LErr]);
+      raise EPipeError.CreateFmt('SO_BROADCAST failed (WSA %d)', [LErr]);
     end;
   end;
   // Melhor esforco: sem isto a coleta ainda funciona, so fica sujeita ao
@@ -532,8 +532,8 @@ begin
     begin
       LErr := WSAGetLastError;
       closesocket(FSocket);
-      raise EPipeError.CreateFmt('porta de descoberta %d indisponivel — ja ' +
-        'ha outro responder nela? (WSA %d)', [ABindPort, LErr]);
+      raise EPipeError.CreateFmt('discovery port %d unavailable - is another ' +
+        'responder already on it? (WSA %d)', [ABindPort, LErr]);
     end;
   end;
   // Associar ao evento torna o socket nao-blocante (cliente: o bind implicito
@@ -551,7 +551,7 @@ begin
       WSACloseEvent(FRecvEvent);
     if FStopEvent <> DISC_WSA_INVALID_EVENT then
       WSACloseEvent(FStopEvent);
-    raise EPipeError.CreateFmt('WSAEventSelect(FD_READ) falhou (WSA %d)',
+    raise EPipeError.CreateFmt('WSAEventSelect(FD_READ) failed (WSA %d)',
       [LErr]);
   end;
 end;
@@ -593,7 +593,7 @@ begin
     LWait := Cardinal(ATimeoutMs);
   LRc := WSAWaitForMultipleEvents(2, @LEvents[0], False, LWait, False);
   if LRc = DISC_WSA_WAIT_FAILED then
-    raise EPipeError.CreateFmt('espera de descoberta falhou (WSA %d)',
+    raise EPipeError.CreateFmt('discovery wait failed (WSA %d)',
       [WSAGetLastError]);
   if LRc = DISC_WSA_WAIT_TIMEOUT then
     Exit(uwTimeout);
@@ -640,7 +640,7 @@ begin
       WSAECONNRESET, WSAENETRESET, WSAEMSGSIZE:
         Continue;    // eco de ICMP ou datagrama gigante: descarta e segue
     else
-      raise EPipeError.CreateFmt('recvfrom de descoberta falhou (WSA %d)',
+      raise EPipeError.CreateFmt('discovery recvfrom failed (WSA %d)',
         [LErr]);
     end;
   end;
@@ -659,7 +659,7 @@ begin
   LErr := WSAGetLastError;
   if LErr = WSAEWOULDBLOCK then
     Exit; // buffer de saida cheio: para UDP equivale a perda na rede
-  raise EPipeError.CreateFmt('sendto de descoberta falhou (WSA %d)', [LErr]);
+  raise EPipeError.CreateFmt('discovery sendto failed (WSA %d)', [LErr]);
 end;
 
 {$ELSE}
@@ -723,7 +723,7 @@ begin
   FStopW := -1;
   FFd := socket(DISC_AF_INET, DISC_SOCK_DGRAM, 0);
   if FFd < 0 then
-    raise EPipeError.CreateFmt('socket UDP falhou (erro %d)', [errno]);
+    raise EPipeError.CreateFmt('UDP socket failed (error %d)', [errno]);
   fcntl(FFd, F_SETFL, fcntl(FFd, F_GETFL) or O_NONBLOCK);
   if ABroadcast then
   begin
@@ -732,7 +732,7 @@ begin
     begin
       LErr := errno;
       __close(FFd);
-      raise EPipeError.CreateFmt('SO_BROADCAST falhou (erro %d)', [LErr]);
+      raise EPipeError.CreateFmt('SO_BROADCAST failed (error %d)', [LErr]);
     end;
   end;
   if ABindPort <> 0 then
@@ -742,15 +742,15 @@ begin
     begin
       LErr := errno;
       __close(FFd);
-      raise EPipeError.CreateFmt('porta de descoberta %d indisponivel — ja ' +
-        'ha outro responder nela? (erro %d)', [ABindPort, LErr]);
+      raise EPipeError.CreateFmt('discovery port %d unavailable - is another ' +
+        'responder already on it? (error %d)', [ABindPort, LErr]);
     end;
   end;
   if pipe(LFds) <> 0 then
   begin
     LErr := errno;
     __close(FFd);
-    raise EPipeError.CreateFmt('pipe falhou (erro %d)', [LErr]);
+    raise EPipeError.CreateFmt('pipe failed (error %d)', [LErr]);
   end;
   FStopR := LFds.ReadDes;
   FStopW := LFds.WriteDes;
@@ -810,7 +810,7 @@ begin
     LRc := disc_poll(@LFds[0], 2, Integer(LWait));
   until (LRc >= 0) or (errno <> EINTR);
   if LRc < 0 then
-    raise EPipeError.CreateFmt('poll de descoberta falhou (erro %d)', [errno]);
+    raise EPipeError.CreateFmt('discovery poll failed (error %d)', [errno]);
   if ((LFds[1].revents and DISC_POLLIN) <> 0) or
      (PcAtomicGet(FClosed) <> 0) then
     Exit(uwStop);
@@ -852,7 +852,7 @@ begin
       Exit(False); // fila vazia: volta ao poll
     if (LErr = EINTR) or (LErr = ECONNREFUSED) then
       Continue;    // sinal ou eco de ICMP: descarta e segue
-    raise EPipeError.CreateFmt('recvfrom de descoberta falhou (erro %d)',
+    raise EPipeError.CreateFmt('discovery recvfrom failed (error %d)',
       [LErr]);
   end;
 end;
@@ -870,7 +870,7 @@ begin
   LErr := errno;
   if (LErr = EAGAIN) or (LErr = EWOULDBLOCK) then
     Exit; // buffer de saida cheio: para UDP equivale a perda na rede
-  raise EPipeError.CreateFmt('sendto de descoberta falhou (erro %d)', [LErr]);
+  raise EPipeError.CreateFmt('discovery sendto failed (error %d)', [LErr]);
 end;
 
 {$ELSE}
@@ -912,7 +912,7 @@ begin
   FStopW := -1;
   FFd := fpSocket(DISC_AF_INET, SOCK_DGRAM, 0);
   if FFd < 0 then
-    raise EPipeError.CreateFmt('socket UDP falhou (erro %d)', [fpgeterrno]);
+    raise EPipeError.CreateFmt('UDP socket failed (error %d)', [fpgeterrno]);
   fpFcntl(FFd, F_SetFl, fpFcntl(FFd, F_GetFl, 0) or O_NONBLOCK);
   if ABroadcast then
   begin
@@ -922,7 +922,7 @@ begin
     begin
       LErr := fpgeterrno;
       fpClose(FFd);
-      raise EPipeError.CreateFmt('SO_BROADCAST falhou (erro %d)', [LErr]);
+      raise EPipeError.CreateFmt('SO_BROADCAST failed (error %d)', [LErr]);
     end;
   end;
   if ABindPort <> 0 then
@@ -932,15 +932,15 @@ begin
     begin
       LErr := fpgeterrno;
       fpClose(FFd);
-      raise EPipeError.CreateFmt('porta de descoberta %d indisponivel — ja ' +
-        'ha outro responder nela? (erro %d)', [ABindPort, LErr]);
+      raise EPipeError.CreateFmt('discovery port %d unavailable - is another ' +
+        'responder already on it? (error %d)', [ABindPort, LErr]);
     end;
   end;
   if fpPipe(LFds) <> 0 then
   begin
     LErr := fpgeterrno;
     fpClose(FFd);
-    raise EPipeError.CreateFmt('fppipe falhou (erro %d)', [LErr]);
+    raise EPipeError.CreateFmt('fppipe failed (error %d)', [LErr]);
   end;
   FStopR := LFds[0];
   FStopW := LFds[1];
@@ -1000,7 +1000,7 @@ begin
     LRc := fpPoll(@LFds[0], 2, LWait);
   until (LRc >= 0) or (fpgeterrno <> ESysEINTR);
   if LRc < 0 then
-    raise EPipeError.CreateFmt('poll de descoberta falhou (erro %d)',
+    raise EPipeError.CreateFmt('discovery poll failed (error %d)',
       [fpgeterrno]);
   if ((LFds[1].revents and POLLIN) <> 0) or
      (PcAtomicGet(FClosed) <> 0) then
@@ -1046,7 +1046,7 @@ begin
       Exit(False); // fila vazia: volta ao poll
     if (LErr = ESysEINTR) or (LErr = ESysECONNREFUSED) then
       Continue;    // sinal ou eco de ICMP: descarta e segue
-    raise EPipeError.CreateFmt('recvfrom de descoberta falhou (erro %d)',
+    raise EPipeError.CreateFmt('discovery recvfrom failed (error %d)',
       [LErr]);
   end;
 end;
@@ -1064,7 +1064,7 @@ begin
   LErr := fpgeterrno;
   if LErr = ESysEAGAIN then // = EWOULDBLOCK no Linux (ver TryRecvFrom)
     Exit; // buffer de saida cheio: para UDP equivale a perda na rede
-  raise EPipeError.CreateFmt('sendto de descoberta falhou (erro %d)', [LErr]);
+  raise EPipeError.CreateFmt('discovery sendto failed (error %d)', [LErr]);
 end;
 
 {$ENDIF}
@@ -1289,8 +1289,8 @@ var
   LIp: LongWord;
 begin
   if not PipeTryStringToIPv4(ATargetHost, LIp) then
-    raise EPipeError.CreateFmt('"%s" nao e um literal IPv4; a forma dirigida ' +
-      'de PipeDiscoverServers nao resolve nomes de host', [ATargetHost]);
+    raise EPipeError.CreateFmt('"%s" is not an IPv4 literal; the directed form ' +
+      'of PipeDiscoverServers does not resolve host names', [ATargetHost]);
   Result := DoDiscover(LIp, ATimeoutMs, ADiscoveryPort, AToken);
 end;
 

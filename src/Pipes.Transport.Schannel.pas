@@ -551,12 +551,12 @@ begin
   LStatus := AcquireCredentialsHandleW(nil, UNISP_NAME, SECPKG_CRED_OUTBOUND,
     nil, @LCred, nil, nil, @FCred, nil);
   if StatusFailed(LStatus) then
-    raise EPipeTls.CreateFmt('AcquireCredentialsHandle falhou (0x%.8x)', [Cardinal(LStatus)]);
+    raise EPipeTls.CreateFmt('AcquireCredentialsHandle failed (0x%.8x)', [Cardinal(LStatus)]);
   FCredValid := True;
   // Para PipeTlsBackendInfo: no Windows nao ha DLL nem versao a descobrir (o
   // SChannel e' do SO), mas saber QUAL backend esta ativo ja e' o essencial —
   // uma build com PIPES_OPENSSL usaria o outro.
-  PipeSetTlsBackendDetail('SChannel (SSPI, nativo do Windows)');
+  PipeSetTlsBackendDetail('SChannel (SSPI, native to Windows)');
 end;
 
 // Lê um bloco do socket e acrescenta ao fim de FCipher (crescendo o array se
@@ -569,7 +569,7 @@ begin
     SetLength(FCipher, FCipherLen + RAW_CHUNK);
   LRead := FUnderlying.Read(FCipher[FCipherLen], RAW_CHUNK);
   if LRead <= 0 then
-    raise EPipeTls.Create('conexão fechada durante TLS');
+    raise EPipeTls.Create('connection closed during TLS');
   Inc(FCipherLen, LRead);
 end;
 
@@ -584,7 +584,7 @@ begin
   begin
     LNow := FUnderlying.Write(P[LWritten], ALen - LWritten);
     if LNow <= 0 then
-      raise EPipeTls.Create('falha ao enviar dados TLS');
+      raise EPipeTls.Create('failed to send TLS data');
     Inc(LWritten, LNow);
   end;
 end;
@@ -620,7 +620,7 @@ begin
     // para não vazar o buffer do SSPI no caminho de falha.
     if LOutBuf[0].pvBuffer <> nil then
       FreeContextBuffer(LOutBuf[0].pvBuffer);
-    raise EPipeTls.CreateFmt('InitializeSecurityContext inicial falhou (0x%.8x)', [Cardinal(LStatus)]);
+    raise EPipeTls.CreateFmt('initial InitializeSecurityContext failed (0x%.8x)', [Cardinal(LStatus)]);
   end;
   FCtxtValid := True; // contexto criado
   if (LOutBuf[0].cbBuffer > 0) and (LOutBuf[0].pvBuffer <> nil) then
@@ -693,13 +693,13 @@ begin
       Continue;
     end;
 
-    raise EPipeTls.CreateFmt('handshake TLS falhou (0x%.8x)', [Cardinal(LStatus)]);
+    raise EPipeTls.CreateFmt('TLS handshake failed (0x%.8x)', [Cardinal(LStatus)]);
   end;
 
   // Tamanhos para cifrar/decifrar (header/trailer/máx por record).
   LStatus := QueryContextAttributesW(@FCtxt, SECPKG_ATTR_STREAM_SIZES, @FStreamSizes);
   if StatusFailed(LStatus) then
-    raise EPipeTls.CreateFmt('QueryContextAttributes(STREAM_SIZES) falhou (0x%.8x)', [Cardinal(LStatus)]);
+    raise EPipeTls.CreateFmt('QueryContextAttributes(STREAM_SIZES) failed (0x%.8x)', [Cardinal(LStatus)]);
 end;
 
 // Decifra do FCipher até haver plaintext em FPlain (ou sinaliza EOF via exceção
@@ -748,10 +748,10 @@ begin
 
     if StatusIs(LStatus, SEC_I_RENEGOTIATE) then
       // RabbitMQ não renegocia; não suportado nesta versão.
-      raise EPipeTls.Create('renegociação TLS solicitada pelo servidor não suportada');
+      raise EPipeTls.Create('TLS renegotiation requested by the server is not supported');
 
     if not StatusIs(LStatus, SEC_E_OK) then
-      raise EPipeTls.CreateFmt('DecryptMessage falhou (0x%.8x)', [Cardinal(LStatus)]);
+      raise EPipeTls.CreateFmt('DecryptMessage failed (0x%.8x)', [Cardinal(LStatus)]);
 
     // Encontra o buffer de dados decifrados e eventual sobra (próximo record).
     LData := nil;
@@ -856,7 +856,7 @@ begin
 
     LStatus := EncryptMessage(@FCtxt, 0, @LDesc, 0);
     if StatusFailed(LStatus) then
-      raise EPipeTls.CreateFmt('EncryptMessage falhou (0x%.8x)', [Cardinal(LStatus)]);
+      raise EPipeTls.CreateFmt('EncryptMessage failed (0x%.8x)', [Cardinal(LStatus)]);
 
     // EncryptMessage ajusta os cbBuffer; envia os três contíguos.
     LTotal := Integer(LBuf[0].cbBuffer) + Integer(LBuf[1].cbBuffer) +
@@ -871,7 +871,7 @@ end;
 function TPipeSchannelStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
 begin
   Result := 0; // silencia W5093; a excecao abaixo e que vale
-  raise EPipeTls.Create('TPipeSchannelStream nao suporta Seek');
+  raise EPipeTls.Create('TPipeSchannelStream does not support Seek');
 end;
 
 procedure TPipeSchannelStream.ShutdownTls;
@@ -935,12 +935,12 @@ var
 begin
   Result := nil;
   if not FileExists(AFileName) then
-    raise EPipeTls.CreateFmt('certificado nao encontrado: %s', [AFileName]);
+    raise EPipeTls.CreateFmt('certificate not found: %s', [AFileName]);
   LStream := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
   try
     SetLength(LData, LStream.Size);
     if Length(LData) = 0 then
-      raise EPipeTls.CreateFmt('certificado vazio: %s', [AFileName]);
+      raise EPipeTls.CreateFmt('empty certificate: %s', [AFileName]);
     LStream.ReadBuffer(LData[0], Length(LData));
   finally
     LStream.Free;
@@ -953,8 +953,8 @@ begin
   LStore := PFXImportCertStore(@LBlob, PWideChar(LPwd), CRYPT_EXPORTABLE);
   if LStore = 0 then
     raise EPipeTls.CreateFmt(
-      'PFXImportCertStore falhou em %s (erro %d) — senha errada ou arquivo ' +
-      'corrompido', [AFileName, GetLastError]);
+      'PFXImportCertStore failed on %s (error %d) - wrong password or ' +
+      'corrupted file', [AFileName, GetLastError]);
   try
     // Um PFX costuma trazer a cadeia inteira; o que serve ao servidor e' o
     // unico com CHAVE PRIVADA. Pegar "o primeiro" pegaria a CA e o handshake
@@ -974,7 +974,7 @@ begin
     end;
     if LFound = nil then
       raise EPipeTls.CreateFmt(
-        '%s nao contem certificado com chave privada', [AFileName]);
+        '%s contains no certificate with a private key', [AFileName]);
     // Duplica: o contexto precisa sobreviver ao fechamento do store.
     Result := CertDuplicateCertificateContext(LFound);
   finally
@@ -998,7 +998,7 @@ var
 begin
   Result := 0;
   if not FileExists(AFileName) then
-    raise EPipeTls.CreateFmt('CA nao encontrada: %s', [AFileName]);
+    raise EPipeTls.CreateFmt('CA not found: %s', [AFileName]);
   LStream := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyWrite);
   try
     SetLength(LPem, LStream.Size);
@@ -1014,30 +1014,30 @@ begin
   LDerLen := 0;
   if not CryptStringToBinaryA(PAnsiChar(LPem), Length(LPem),
        CRYPT_STRING_BASE64HEADER, nil, LDerLen, nil, nil) then
-    raise EPipeTls.CreateFmt('%s nao parece PEM valido (erro %d)',
+    raise EPipeTls.CreateFmt('%s does not look like valid PEM (error %d)',
       [AFileName, GetLastError]);
   SetLength(LDer, LDerLen);
   if not CryptStringToBinaryA(PAnsiChar(LPem), Length(LPem),
        CRYPT_STRING_BASE64HEADER, @LDer[0], LDerLen, nil, nil) then
-    raise EPipeTls.CreateFmt('falha decodificando %s (erro %d)',
+    raise EPipeTls.CreateFmt('failed to decode %s (error %d)',
       [AFileName, GetLastError]);
 
   LCert := CertCreateCertificateContext(
     X509_ASN_ENCODING or PKCS_7_ASN_ENCODING, @LDer[0], LDerLen);
   if LCert = nil then
-    raise EPipeTls.CreateFmt('%s nao e um certificado valido (erro %d)',
+    raise EPipeTls.CreateFmt('%s is not a valid certificate (error %d)',
       [AFileName, GetLastError]);
   try
     Result := CertOpenStore(PAnsiChar(CERT_STORE_PROV_MEMORY), 0, 0, 0, nil);
     if Result = 0 then
-      raise EPipeTls.CreateFmt('CertOpenStore(memory) falhou (erro %d)',
+      raise EPipeTls.CreateFmt('CertOpenStore(memory) failed (error %d)',
         [GetLastError]);
     if not CertAddCertificateContextToStore(Result, LCert,
          CERT_STORE_ADD_ALWAYS, nil) then
     begin
       CertCloseStore(Result, 0);
       Result := 0;
-      raise EPipeTls.CreateFmt('nao foi possivel adicionar %s ao store (erro %d)',
+      raise EPipeTls.CreateFmt('could not add %s to the store (error %d)',
         [AFileName, GetLastError]);
     end;
   finally
@@ -1084,7 +1084,7 @@ constructor TPipeSchannelServerStream.Create(AUnderlying: TStream;
 begin
   CreateDeferred(AUnderlying);
   if ACertContext = nil then
-    raise EPipeTls.Create('servidor TLS exige certificado');
+    raise EPipeTls.Create('TLS server requires a certificate');
   FCertContext := ACertContext;
   FCaStore := ACaStore;
   FVerifyPeer := ACaStore <> 0; // mTLS ligado quando ha CA de clientes
@@ -1142,10 +1142,10 @@ begin
   LStatus := QueryContextAttributesW(@FCtxt, SECPKG_ATTR_REMOTE_CERT_CONTEXT,
     @LRemote);
   if (Cardinal(LStatus) = SEC_E_NO_CREDENTIALS) or (LRemote = nil) then
-    raise EPipeTls.Create('mTLS: o cliente nao apresentou certificado')
+    raise EPipeTls.Create('mTLS: the client presented no certificate')
   else if StatusFailed(LStatus) then
     raise EPipeTls.CreateFmt(
-      'mTLS: nao foi possivel obter o certificado do cliente (0x%.8x)',
+      'mTLS: could not get the client certificate (0x%.8x)',
       [Cardinal(LStatus)]);
   try
     // 1. Construir a cadeia. FCaStore entra como store ADICIONAL: fornece o
@@ -1162,7 +1162,7 @@ begin
     LChain := nil;
     if not CertGetCertificateChain(0, LRemote, nil, FCaStore, @LPara, 0, nil,
          LChain) then
-      raise EPipeTls.CreateFmt('mTLS: CertGetCertificateChain falhou (erro %d)',
+      raise EPipeTls.CreateFmt('mTLS: CertGetCertificateChain failed (error %d)',
         [GetLastError]);
     try
       LCtx := PCertChainContext(LChain);
@@ -1174,7 +1174,7 @@ begin
         (not DWORD(CERT_TRUST_IS_UNTRUSTED_ROOT));
       if LErrors <> 0 then
         raise EPipeTls.CreateFmt(
-          'mTLS: cadeia do cliente invalida (dwErrorStatus 0x%.8x)', [LErrors]);
+          'mTLS: invalid client chain (dwErrorStatus 0x%.8x)', [LErrors]);
 
       // 3. O passo que de fato autentica: a RAIZ da cadeia construida tem de
       // ser um certificado do nosso store de CAs. Sem isto, um cliente que
@@ -1189,10 +1189,10 @@ begin
       // CertCompareCertificate), o que aqui seria um bypass. Sob Wine, trocar
       // por comparacao explicita de pbCertEncoded/cbCertEncoded.
       if LCtx^.cChain < 1 then
-        raise EPipeTls.Create('mTLS: cadeia do cliente vazia');
+        raise EPipeTls.Create('mTLS: empty client chain');
       LSimple := PCertSimpleChain(PPointer(LCtx^.rgpChain)^);
       if LSimple^.cElement < 1 then
-        raise EPipeTls.Create('mTLS: cadeia do cliente sem elementos');
+        raise EPipeTls.Create('mTLS: client chain without elements');
       LElem := PCertChainElement(PPointer(PByte(LSimple^.rgpElement) +
         (LSimple^.cElement - 1) * SizeOf(Pointer))^);
 
@@ -1200,8 +1200,8 @@ begin
         X509_ASN_ENCODING or PKCS_7_ASN_ENCODING, 0, CERT_FIND_EXISTING,
         LElem^.pCertContext, nil);
       if LFound = nil then
-        raise EPipeTls.Create('mTLS: certificado de cliente nao encadeia ate ' +
-          'a CA configurada');
+        raise EPipeTls.Create('mTLS: client certificate does not chain up to ' +
+          'the configured CA');
       CertFreeCertificateContext(LFound);
 
       // 4. Politica SSL para cliente (validade, EKU, formato). ALLOW_UNKNOWN_CA
@@ -1219,11 +1219,11 @@ begin
            Pointer(NativeUInt(CERT_CHAIN_POLICY_SSL)), LChain, @LPolicyPara,
            @LPolicyStatus) then
         raise EPipeTls.CreateFmt(
-          'mTLS: CertVerifyCertificateChainPolicy falhou (erro %d)',
+          'mTLS: CertVerifyCertificateChainPolicy failed (error %d)',
           [GetLastError]);
       if LPolicyStatus.dwError <> 0 then
         raise EPipeTls.CreateFmt(
-          'mTLS: certificado de cliente recusado pela politica SSL (0x%.8x)',
+          'mTLS: client certificate rejected by the SSL policy (0x%.8x)',
           [LPolicyStatus.dwError]);
 
       // Aqui, e SO aqui, a identidade passa a ser confiavel: a cadeia fechou
@@ -1267,9 +1267,9 @@ begin
     nil, @LCred, nil, nil, @FCred, nil);
   if StatusFailed(LStatus) then
     raise EPipeTls.CreateFmt(
-      'AcquireCredentialsHandle(INBOUND) falhou (0x%.8x)', [Cardinal(LStatus)]);
+      'AcquireCredentialsHandle(INBOUND) failed (0x%.8x)', [Cardinal(LStatus)]);
   FCredValid := True;
-  PipeSetTlsBackendDetail('SChannel (SSPI, nativo do Windows)');
+  PipeSetTlsBackendDetail('SChannel (SSPI, native to Windows)');
 end;
 
 procedure TPipeSchannelServerStream.DoServerHandshake;
@@ -1358,7 +1358,7 @@ begin
       Continue;
     end;
 
-    raise EPipeTls.CreateFmt('handshake TLS (servidor) falhou (0x%.8x)',
+    raise EPipeTls.CreateFmt('TLS handshake (server) failed (0x%.8x)',
       [Cardinal(LStatus)]);
   end;
 
@@ -1366,7 +1366,7 @@ begin
     @FStreamSizes);
   if StatusFailed(LStatus) then
     raise EPipeTls.CreateFmt(
-      'QueryContextAttributes(STREAM_SIZES) falhou (0x%.8x)', [Cardinal(LStatus)]);
+      'QueryContextAttributes(STREAM_SIZES) failed (0x%.8x)', [Cardinal(LStatus)]);
 end;
 
 {$ENDIF PIPES_WINDOWS}

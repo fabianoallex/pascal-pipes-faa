@@ -400,8 +400,8 @@ Client.ConnectAsync;              // returns at once; keeps trying in the backgr
   `ReconnectDelayMs`, the properties that already existed — with `MaxReconnectAttempts = 0`
   (the default) it tries forever. It is an APPROXIMATE wall-clock ceiling; anyone needing an
   exact deadline calls `Disconnect` from a timer.
-- **Success in `OnConnected`, giving up in `OnError`** (`'conexao inicial esgotada apos N
-  tentativas'`) — there is no exception to raise, the caller already returned.
+- **Success in `OnConnected`, giving up in `OnError`** (`'initial connection gave up after N
+  attempts'`) — there is no exception to raise, the caller already returned.
 - **`Connecting`** says whether it is still trying. It is only about `ConnectAsync`:
   synchronous `Connect` and automatic reconnection never set it.
 - **`Disconnect` cancels** (and calling `ConnectAsync` again does too: it cancels the
@@ -703,14 +703,18 @@ misreading bytes — update both sides.
   `OnClientDisconnected`, `OnPublish`, `OnSubscribe`/`OnUnsubscribe`, `OnDelivered`/
   `OnDeliveryFailed`, `OnConnectAttemptFailed` — and in every `DispatchMode`. Details:
   - `AConnId` is the event's connection (0 on the client and in `OnConnectAttemptFailed`);
-  - the message is `'<Event> levantou <ExceptionClass>: <message>'` (runtime messages are
-    still in Portuguese), e.g. `'OnMessage levantou EConvertError: $.quantity: ...'`;
+  - the message is `'<Event> raised <ExceptionClass>: <message>'`, e.g.
+    `'OnMessage raised EConvertError: $.quantity: ...'`;
   - `OnError` runs **on the same thread, right after** the failed handler (pool worker, or
     the main thread under `pdmMainThread`), not through a new dispatch;
   - the **connection stays open** and the following messages arrive normally — closing it
     is the app's call (`DisconnectClient(AConnId)` inside the server's `OnError`);
   - an exception raised inside `OnError` itself is swallowed (no recursion);
   - `OnRequest` is the exception to the rule: there the exception becomes an error reply.
+- **Runtime messages (exceptions and `OnError`) are in English** since 0.3.0 (up to 0.2.0 they
+  were in Portuguese). Decide on the exception CLASS (`EPipeClosed`, `EPipeTimeout`,
+  `EPipeTls`, `EPipeProtocol`…), not on the text: the table of what changed is in the
+  [changelog](CHANGELOG.md).
 - Semantic detail: a client that connects and dies **before the server accepts** the
   connection is invisible (no events) — the instance/backlog is recycled.
 

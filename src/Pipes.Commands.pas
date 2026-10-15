@@ -225,7 +225,7 @@ begin
   LLen := Length(LCommand);
   if LLen > PIPE_MAX_COMMAND_BYTES then
     raise EPipeProtocol.CreateFmt(
-      'nome de comando de %d bytes excede o maximo (%d)',
+      'command name of %d bytes exceeds the maximum (%d)',
       [LLen, PIPE_MAX_COMMAND_BYTES]);
   Result := nil;
   SetLength(Result, 2 + LLen + Length(ABody));
@@ -246,11 +246,11 @@ begin
   ACommand := '';
   ABody := nil;
   if Length(APayload) < 2 then
-    raise EPipeProtocol.Create('frame de comando sem o cabecalho do envelope');
+    raise EPipeProtocol.Create('command frame without the envelope header');
   LLen := APayload[0] or (Integer(APayload[1]) shl 8);
   if Length(APayload) < 2 + LLen then
     raise EPipeProtocol.CreateFmt(
-      'envelope anuncia comando de %d bytes mas o payload tem %d',
+      'envelope announces a %d-byte command but the payload has %d',
       [LLen, Length(APayload) - 2]);
   SetLength(LCommand, LLen);
   if LLen > 0 then
@@ -286,27 +286,27 @@ procedure TPipeCommandRouter.ValidateRegistration(const ACommand: string;
   AHandlerAssigned, AAlreadyRegistered: Boolean; AMinSize, AMaxSize: Integer);
 begin
   if ACommand = '' then
-    raise EPipeCommandError.Create('nome de comando vazio');
+    raise EPipeCommandError.Create('empty command name');
   if Length(PipeUtf8Encode(ACommand)) > PIPE_MAX_COMMAND_BYTES then
     raise EPipeCommandError.CreateFmt(
-      'nome de comando "%s" excede o maximo de %d bytes',
+      'command name "%s" exceeds the maximum of %d bytes',
       [ACommand, PIPE_MAX_COMMAND_BYTES]);
   if not AHandlerAssigned then
     raise EPipeCommandError.CreateFmt(
-      'comando "%s" registrado sem handler', [ACommand]);
+      'command "%s" registered without a handler', [ACommand]);
   if (AMinSize <> PIPE_COMMAND_NO_LIMIT) and (AMinSize < 0) then
     raise EPipeCommandError.CreateFmt(
-      'AMinSize invalido (%d) para o comando "%s"', [AMinSize, ACommand]);
+      'invalid AMinSize (%d) for command "%s"', [AMinSize, ACommand]);
   if (AMaxSize <> PIPE_COMMAND_NO_LIMIT) and (AMaxSize < 0) then
     raise EPipeCommandError.CreateFmt(
-      'AMaxSize invalido (%d) para o comando "%s"', [AMaxSize, ACommand]);
+      'invalid AMaxSize (%d) for command "%s"', [AMaxSize, ACommand]);
   if (AMinSize <> PIPE_COMMAND_NO_LIMIT) and (AMaxSize <> PIPE_COMMAND_NO_LIMIT)
      and (AMaxSize < AMinSize) then
     raise EPipeCommandError.CreateFmt(
-      'AMaxSize (%d) menor que AMinSize (%d) para o comando "%s"',
+      'AMaxSize (%d) is less than AMinSize (%d) for command "%s"',
       [AMaxSize, AMinSize, ACommand]);
   if AAlreadyRegistered then
-    raise EPipeCommandError.CreateFmt('comando "%s" ja registrado', [ACommand]);
+    raise EPipeCommandError.CreateFmt('command "%s" is already registered', [ACommand]);
 end;
 
 procedure TPipeCommandRouter.RegisterCommand(const ACommand: string;
@@ -386,14 +386,14 @@ begin
   PipeDecodeCommandPayload(ARequest, LCommand, LBody);
 
   if not FRequestCommands.TryGetValue(LCommand, LEntry) then
-    raise EPipeProtocol.CreateFmt('comando desconhecido: "%s"', [LCommand]);
+    raise EPipeProtocol.CreateFmt('unknown command: "%s"', [LCommand]);
 
   if ((LEntry.MinSize <> PIPE_COMMAND_NO_LIMIT) and
       (Length(LBody) < LEntry.MinSize)) or
      ((LEntry.MaxSize <> PIPE_COMMAND_NO_LIMIT) and
       (Length(LBody) > LEntry.MaxSize)) then
     raise EPipeProtocol.CreateFmt(
-      'payload de %d byte(s) fora da faixa aceita pelo comando "%s"',
+      'payload of %d byte(s) outside the range accepted by command "%s"',
       [Length(LBody), LCommand]);
 
   LEntry.Handler(Sender, AConnId, LCommand, LBody, AReply);

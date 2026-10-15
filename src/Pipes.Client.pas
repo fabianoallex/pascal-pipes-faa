@@ -680,10 +680,10 @@ begin
   until PcTickMs >= LDeadline;
   if LLastWasTimeout then
     raise EPipeTimeout.CreateFmt(
-      'nenhum dos %d enderecos respondeu em %u ms (ultimo erro: %s)',
+      'none of the %d addresses replied within %u ms (last error: %s)',
       [LCount, ATimeoutMs, LLastErr])
   else
-    raise EPipeError.CreateFmt('nenhum dos %d enderecos conectou (ultimo erro: %s)',
+    raise EPipeError.CreateFmt('none of the %d addresses connected (last error: %s)',
       [LCount, LLastErr]);
 end;
 
@@ -863,11 +863,11 @@ begin
     // "reconexao esgotada" soaria estranho para quem nunca chegou a
     // conectar: com ConnectAsync em voo, este teto e' o da PRIMEIRA conexao.
     if PcAtomicGet(FConnectingAsync) <> 0 then
-      DispatchError(0, 'conexao inicial esgotada apos ' +
-        IntToStr(FMaxReconnectAttempts) + ' tentativas')
+      DispatchError(0, 'initial connection gave up after ' +
+        IntToStr(FMaxReconnectAttempts) + ' attempts')
     else
-      DispatchError(0, 'reconexao esgotada apos ' +
-        IntToStr(FMaxReconnectAttempts) + ' tentativas');
+      DispatchError(0, 'reconnection gave up after ' +
+        IntToStr(FMaxReconnectAttempts) + ' attempts');
     Exit;
   end;
   FLastAttemptTick := PcTickMs;
@@ -1140,7 +1140,7 @@ var
   LNovo: Boolean;
 begin
   if not PipeIsValidTopicFilter(AFilter) then
-    raise EPipeError.CreateFmt('filtro de assinatura invalido: %s', [AFilter]);
+    raise EPipeError.CreateFmt('invalid subscription filter: %s', [AFilter]);
   FSubLock.Enter;
   try
     LNovo := IndexOfFilter(FSubs, AFilter) < 0;
@@ -1189,14 +1189,14 @@ var
   LFrame, LWire: TPipeFrame;
 begin
   if not PipeIsValidTopic(ATopic) then
-    raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [ATopic]);
+    raise EPipeError.CreateFmt('invalid topic for publishing: %s', [ATopic]);
   LFrame := PipePublishFrame(ATopic, AData, False);
   PipeValidateMaxPayload(Length(LFrame.Payload), MaxMessageSize);
   LWire := PipeMaybeCompress(LFrame, CompressionMinSize);
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
-      raise EPipeClosed.Create('cliente nao esta conectado');
+      raise EPipeClosed.Create('client is not connected');
     PipeWriteFrame(FStream, LWire, MaxMessageSize);
     PcAtomicWrite64(FLastWriteTick, PcTickMs);
     // Tamanho do payload JA CODIFICADO (topico em UTF-8 + envelope), nao um
@@ -1228,7 +1228,7 @@ begin
     Exit;
   for I := 0 to High(AItems) do
     if not PipeIsValidTopic(AItems[I].Topic) then
-      raise EPipeError.CreateFmt('topico invalido para publicacao: %s', [AItems[I].Topic]);
+      raise EPipeError.CreateFmt('invalid topic for publishing: %s', [AItems[I].Topic]);
   SetLength(LFrames, Length(AItems));
   SetLength(LWireFrames, Length(AItems));
   for I := 0 to High(AItems) do
@@ -1240,7 +1240,7 @@ begin
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
-      raise EPipeClosed.Create('cliente nao esta conectado');
+      raise EPipeClosed.Create('client is not connected');
     PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
     PcAtomicWrite64(FLastWriteTick, PcTickMs);
     LBytes := 0;
@@ -1324,7 +1324,7 @@ begin
       FWriteLock.Enter;
       try
         if (not FConnected) or (FStream = nil) then
-          raise EPipeClosed.Create('cliente nao esta conectado');
+          raise EPipeClosed.Create('client is not connected');
         PipeWriteFrame(FStream, LWire, MaxMessageSize);
         PcAtomicWrite64(FLastWriteTick, PcTickMs);
         PcAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
@@ -1352,7 +1352,7 @@ begin
       FRpcLock.Leave;
     end;
     if LSlot.IsError then
-      raise EPipeError.Create('servidor respondeu erro: ' + LSlot.ErrorMsg);
+      raise EPipeError.Create('server replied with error: ' + LSlot.ErrorMsg);
     if LSlot.Ok then
     begin
       // So' o caminho de sucesso entra na latencia — timeout e erro nao sao
@@ -1361,8 +1361,8 @@ begin
       Exit(LSlot.Data); // inclui reply que chegou entre o timeout e a remocao
     end;
     if LSlot.Closed then
-      raise EPipeClosed.Create('conexao encerrada durante o request');
-    raise EPipeTimeout.CreateFmt('request sem resposta em %u ms', [ATimeoutMs]);
+      raise EPipeClosed.Create('connection closed during the request');
+    raise EPipeTimeout.CreateFmt('request got no reply within %u ms', [ATimeoutMs]);
   finally
     LSlot.Free;
   end;
@@ -1412,7 +1412,7 @@ begin
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
-      raise EPipeClosed.Create('cliente nao esta conectado');
+      raise EPipeClosed.Create('client is not connected');
     PipeWriteFrame(FStream, LWire, MaxMessageSize);
     PcAtomicWrite64(FLastWriteTick, PcTickMs);
     PcAtomicAdd64(FBytesSent, PIPE_FRAME_HEADER_SIZE + UInt64(Length(AData)));
@@ -1448,7 +1448,7 @@ begin
   FWriteLock.Enter;
   try
     if (not FConnected) or (FStream = nil) then
-      raise EPipeClosed.Create('cliente nao esta conectado');
+      raise EPipeClosed.Create('client is not connected');
     PipeWriteFrames(FStream, LWireFrames, MaxMessageSize);
     PcAtomicWrite64(FLastWriteTick, PcTickMs);
     LBytes := 0;

@@ -427,9 +427,9 @@ begin
   // Este guarda transforma esse cenario em falha barulhenta. Um caso de TLS que
   // passa porque o TLS nao existe e' pior que um caso vermelho: ele mente sobre
   // a cobertura.
-  if (Pos('OpenSSL', AErro) > 0)
-    and ((Pos('encontrado', AErro) > 0) or (Pos('simbolo', AErro) > 0)
-         or (Pos('símbolo', AErro) > 0)) then
+  // Os dois textos do carregador (0.3.0+): 'OpenSSL not found (tried: ...)' e
+  // 'symbol X not found in Y (incompatible OpenSSL?)'.
+  if (Pos('OpenSSL', AErro) > 0) and (Pos('not found', AErro) > 0) then
     raise ETesteFalhou.Create(
       'backend TLS ausente, este caso nao provou nada — empacote ' +
       'libcrypto.so/libssl.so por ABI (ver samples/EchoAndroid/LEIA-ME.md). ' +
@@ -858,8 +858,10 @@ begin
     // mTLS). Se o CLIENTE recusar o servidor antes disso, o mTLS nunca foi
     // exercitado e o silencio da fila nao prova nada. Foi o que aconteceu
     // enquanto a validacao por IP estava quebrada na 1.1.1: o cliente abortava
-    // com "validacao do certificado do servidor falhou" e o caso passava.
-    Verdadeiro(Pos('certificado do servidor', LErro) = 0,
+    // com "validacao do certificado do servidor falhou" (desde a 0.3.0, "server
+    // certificate validation failed") e o caso passava. Este Pos e' NEGATIVO:
+    // se o texto da lib mudar de novo, ele passa calado — atualize junto.
+    Verdadeiro(Pos('server certificate', LErro) = 0,
       'quem recusou foi o CLIENTE, nao o servidor — o mTLS nao foi exercitado: '
       + LErro);
     Verdadeiro(not LG.Mensagens.Espera(1, 1500),

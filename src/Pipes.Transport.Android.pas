@@ -171,7 +171,7 @@ function android_connect(ASocket: Integer; AAddr: Pointer;
 
 procedure RaiseIoError(const AOp: string; AErr: Integer);
 begin
-  raise EPipeError.CreateFmt('%s falhou (erro %d: %s)',
+  raise EPipeError.CreateFmt('%s failed (error %d: %s)',
     [AOp, AErr, SysErrorMessage(AErr)]);
 end;
 
@@ -214,7 +214,7 @@ begin
   LRc := getaddrinfo(MarshaledAString(PAnsiChar(LHostA)),
     MarshaledAString(PAnsiChar(LPortA)), LHints, Result);
   if (LRc <> 0) or (Result = nil) then
-    raise EPipeError.CreateFmt('nao foi possivel resolver "%s" (getaddrinfo=%d)',
+    raise EPipeError.CreateFmt('could not resolve "%s" (getaddrinfo=%d)',
       [AAddress, LRc]);
 end;
 
@@ -294,7 +294,7 @@ var
   LWait: Int64;
 begin
   if PcAtomicGet(FClosed) <> 0 then
-    raise EPipeClosed.Create(AOp + ' em endpoint fechado');
+    raise EPipeClosed.Create(AOp + ' on a closed endpoint');
   LDeadline := 0;
   if FIoTimeoutMs <> 0 then
     LDeadline := PcTickMs + FIoTimeoutMs;
@@ -320,11 +320,11 @@ begin
   if LRc < 0 then
     RaiseIoError(AOp + ' (poll)', errno);
   if (LRc = 0) and (FIoTimeoutMs <> 0) then
-    raise EPipeTimeout.CreateFmt('%s: o par nao respondeu em %u ms',
+    raise EPipeTimeout.CreateFmt('%s: the peer did not respond within %u ms',
       [AOp, FIoTimeoutMs]);
   if ((LFds[1].revents and ANDROID_POLLIN) <> 0)
     or (PcAtomicGet(FClosed) <> 0) then
-    raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
+    raise EPipeClosed.Create(AOp + ' aborted (CloseAbort)');
   // POLLERR/POLLHUP no fd da operacao: deixa o recv/send reportar — ainda
   // pode haver dados enfileirados para ler apos o HUP.
 end;
@@ -336,20 +336,20 @@ var
 begin
   while True do
   begin
-    WaitReadyOrStop(ANDROID_POLLIN, 'leitura');
+    WaitReadyOrStop(ANDROID_POLLIN, 'read');
     LGot := recv(FFd, ABuffer, size_t(ACount), 0);
     if LGot > 0 then
       Exit(Integer(LGot));
     if LGot = 0 then
-      raise EPipeClosed.Create('conexao encerrada pelo par');
+      raise EPipeClosed.Create('connection closed by the peer');
     LErr := errno;
     case LErr of
       EINTR, EAGAIN:
         ; // re-tenta (volta ao poll)
       ECONNRESET, EPIPE:
-        raise EPipeClosed.CreateFmt('leitura: conexao encerrada (erro %d)', [LErr]);
+        raise EPipeClosed.CreateFmt('read: connection closed (error %d)', [LErr]);
     else
-      RaiseIoError('leitura', LErr);
+      RaiseIoError('read', LErr);
     end;
   end;
 end;
@@ -363,7 +363,7 @@ begin
   P := @ABuffer;
   while ACount > 0 do
   begin
-    WaitReadyOrStop(ANDROID_POLLOUT, 'escrita');
+    WaitReadyOrStop(ANDROID_POLLOUT, 'write');
     LWrote := send(FFd, P^, size_t(ACount), MSG_NOSIGNAL);
     if LWrote > 0 then
     begin
@@ -376,9 +376,9 @@ begin
       EINTR, EAGAIN:
         ; // re-tenta (volta ao poll)
       EPIPE, ECONNRESET:
-        raise EPipeClosed.CreateFmt('escrita: conexao encerrada (erro %d)', [LErr]);
+        raise EPipeClosed.CreateFmt('write: connection closed (error %d)', [LErr]);
     else
-      RaiseIoError('escrita', LErr);
+      RaiseIoError('write', LErr);
     end;
   end;
 end;
@@ -493,7 +493,7 @@ begin
   finally
     freeaddrinfo(LInfo^);
   end;
-  RaiseIoError(Format('escuta em %s', [AAddress]), LErr);
+  RaiseIoError(Format('listen on %s', [AAddress]), LErr);
   Result := nil; // inalcancavel (RaiseIoError sempre levanta)
 end;
 
@@ -598,9 +598,9 @@ begin
       // Servidor ainda nao subiu ou backlog cheio: re-tenta ate o prazo, que
       // e' o que da a Connect(timeout) a mesma semantica das outras plataformas.
       if (LErr <> ECONNREFUSED) and (LErr <> ETIMEDOUT) then
-        RaiseIoError(Format('conexao a %s', [AAddress]), LErr);
+        RaiseIoError(Format('connect to %s', [AAddress]), LErr);
       if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
-        raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando a %s',
+        raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to %s',
           [ATimeoutMs, AAddress]);
       Sleep(25);
     end;

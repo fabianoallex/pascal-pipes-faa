@@ -909,7 +909,7 @@ begin
   AssertTrue('mensagem seguinte nao chegou (conexao caiu?)', WaitCount(FSrvMsgCount, 1, 3000));
   FLock.Enter;
   try
-    AssertEquals('OnMessage levantou EConvertError: $.quantity: nao e numero', FErrText);
+    AssertEquals('OnMessage raised EConvertError: $.quantity: nao e numero', FErrText);
     AssertTrue('OnError devia trazer o ConnId da mensagem', FErrConnId = FLastConnId);
     AssertEquals('depois', FServerTexts[0]);
   finally
@@ -971,7 +971,7 @@ begin
   AssertTrue('mensagem seguinte nao chegou ao cliente', WaitCount(FCliMsgCount, 1, 3000));
   FLock.Enter;
   try
-    AssertEquals('OnMessage levantou EConvertError: cliente recusou', FErrText);
+    AssertEquals('OnMessage raised EConvertError: cliente recusou', FErrText);
     AssertTrue('no cliente o ConnId e'' sempre 0', FErrConnId = 0);
     AssertEquals('depois', FClientTexts[0]);
   finally
@@ -997,7 +997,7 @@ begin
   AssertTrue('excecao do OnClientConnected nao chegou ao OnError', WaitCount(FSrvErrCount, 1, 3000));
   FLock.Enter;
   try
-    AssertEquals('OnClientConnected levantou EInvalidOperation: falhou no connected', FErrText);
+    AssertEquals('OnClientConnected raised EInvalidOperation: falhou no connected', FErrText);
     AssertTrue('OnError devia trazer o ConnId da conexao', FErrConnId = FLastConnId);
   finally
     FLock.Leave;

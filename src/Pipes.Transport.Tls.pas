@@ -217,7 +217,7 @@ begin
   end;
   {$ENDIF}
   {$IFNDEF PIPES_TLS}
-  raise EPipeTls.Create('build sem backend TLS: compile com PIPES_OPENSSL');
+  raise EPipeTls.Create('build without a TLS backend: compile with PIPES_OPENSSL');
   {$ENDIF}
   // Handshake concluido: a sessao volta a esperar sem prazo (ver Handshake).
   FInner.SetIoDeadline(0);
@@ -244,7 +244,7 @@ begin
   {$ENDIF}
   {$IFNDEF PIPES_TLS}
   LRaw.Free;
-  raise EPipeTls.Create('build sem backend TLS: compile com PIPES_OPENSSL');
+  raise EPipeTls.Create('build without a TLS backend: compile with PIPES_OPENSSL');
   {$ENDIF}
 end;
 
@@ -324,7 +324,7 @@ begin
   Result := FTls.Read(ABuffer, ACount);
   // TStream sinaliza fim com 0; o contrato de TPipeEndpoint e' excecao.
   if Result <= 0 then
-    raise EPipeClosed.Create('conexao TLS encerrada pelo par');
+    raise EPipeClosed.Create('TLS connection closed by the peer');
 end;
 
 procedure TPipeTlsEndpoint.WriteExactly(const ABuffer; ACount: Integer);
@@ -332,7 +332,7 @@ begin
   // Os backends escrevem tudo ou levantam; o laco e' rede de seguranca para
   // uma eventual escrita parcial.
   if FTls.Write(ABuffer, ACount) <> ACount then
-    raise EPipeClosed.Create('escrita TLS incompleta');
+    raise EPipeClosed.Create('incomplete TLS write');
 end;
 
 { --- fabricas --- }
@@ -407,7 +407,7 @@ begin
   // OpenSSL le os arquivos PEM na hora da negociacao; nada a resolver aqui
   // alem de validar que foram informados.
   if (AOptions.CertFile = '') or (AOptions.KeyFile = '') then
-    raise EPipeTls.Create('servidor TLS exige certificado e chave PEM');
+    raise EPipeTls.Create('TLS server requires a PEM certificate and key');
   {$ENDIF}
   {$IFDEF PIPES_SCHANNEL}
   // Schannel resolve PFX e CA UMA vez: erro de senha/arquivo aparece agora, no
@@ -422,7 +422,7 @@ begin
   end;
   {$ENDIF}
   {$IFNDEF PIPES_TLS}
-  raise EPipeTls.Create('build sem backend TLS: compile com PIPES_OPENSSL');
+  raise EPipeTls.Create('build without a TLS backend: compile with PIPES_OPENSSL');
   {$ENDIF}
   try
     LTcp := TcpPipeCreateListener(AAddress, AKeepAliveSeconds);

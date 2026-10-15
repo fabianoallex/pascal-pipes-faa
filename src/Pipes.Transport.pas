@@ -291,15 +291,15 @@ end;
 // em compilacao ou de socket em runtime.
 procedure RaiseLocalUnsupported;
 begin
-  raise EPipeError.Create('ptLocal (Named Pipe/UDS) nao existe no Android; ' +
-    'use Transport := ptTcp ou ptTls com Address no formato "host:porta"');
+  raise EPipeError.Create('ptLocal (Named Pipe/UDS) does not exist on Android; ' +
+    'use Transport := ptTcp or ptTls with Address as "host:port"');
 end;
 {$ENDIF}
 
 function PipeNativeName(const AAddress: string): string;
 begin
   if AAddress = '' then
-    raise EPipeError.Create('nome do pipe vazio');
+    raise EPipeError.Create('empty pipe name');
   {$IFDEF PIPES_ANDROID}
   Result := '';
   RaiseLocalUnsupported;
@@ -327,17 +327,17 @@ begin
   AHost := '';
   APort := 0;
   if AAddress = '' then
-    raise EPipeError.Create('endereco vazio');
+    raise EPipeError.Create('empty address');
   if AAddress[1] = '[' then
   begin
     // IPv6 literal: o separador e' o ':' DEPOIS do ']', pois o proprio
     // endereco esta cheio de ':'.
     LSep := Pos(']', AAddress);
     if LSep = 0 then
-      raise EPipeError.CreateFmt('endereco IPv6 sem "]": %s', [AAddress]);
+      raise EPipeError.CreateFmt('IPv6 address without "]": %s', [AAddress]);
     AHost := Copy(AAddress, 2, LSep - 2);
     if (Length(AAddress) <= LSep) or (AAddress[LSep + 1] <> ':') then
-      raise EPipeError.CreateFmt('endereco sem porta: %s', [AAddress]);
+      raise EPipeError.CreateFmt('address without a port: %s', [AAddress]);
     LPortStr := Copy(AAddress, LSep + 2, MaxInt);
   end
   else
@@ -345,17 +345,17 @@ begin
     LSep := LastDelimiter(':', AAddress);
     if LSep = 0 then
       raise EPipeError.CreateFmt(
-        'endereco sem porta: %s (esperado "host:porta")', [AAddress]);
+        'address without a port: %s (expected "host:port")', [AAddress]);
     AHost := Copy(AAddress, 1, LSep - 1);
     LPortStr := Copy(AAddress, LSep + 1, MaxInt);
   end;
   if AHost = '' then
-    raise EPipeError.CreateFmt('endereco sem host: %s', [AAddress]);
+    raise EPipeError.CreateFmt('address without a host: %s', [AAddress]);
   if AHost = '*' then
     AHost := '0.0.0.0'; // atalho para "escutar em todas as interfaces"
   Val(LPortStr, LPortVal, LErr);
   if (LErr <> 0) or (LPortVal < 1) or (LPortVal > 65535) then
-    raise EPipeError.CreateFmt('porta invalida em %s: "%s" (1..65535)',
+    raise EPipeError.CreateFmt('invalid port in %s: "%s" (1..65535)',
       [AAddress, LPortStr]);
   APort := Word(LPortVal);
 end;
@@ -367,7 +367,7 @@ var
   LPort: Word;
 begin
   if AAddress = '' then
-    raise EPipeError.Create('Address vazio');
+    raise EPipeError.Create('empty Address');
   // Sem 'else': um transporte novo que esqueca de entrar aqui passaria sem
   // validacao nenhuma. O else torna esse esquecimento barulhento.
   case ATransport of
@@ -383,20 +383,20 @@ begin
         // ptTls e' TCP por baixo: mesmo Address, mesma validacao.
         if (Pos('\\', AAddress) = 1) or (AAddress[1] = '/') then
           raise EPipeError.CreateFmt(
-            'Address "%s" e um caminho local, incompativel com o transporte ' +
-            'escolhido (esperado "host:porta")', [AAddress]);
+            'Address "%s" is a local path, incompatible with the selected ' +
+            'transport (expected "host:port")', [AAddress]);
         PipeParseHostPort(AAddress, LHost, LPort); // valida o formato
       end;
   else
-    raise EPipeError.CreateFmt('transporte desconhecido (%d)', [Ord(ATransport)]);
+    raise EPipeError.CreateFmt('unknown transport (%d)', [Ord(ATransport)]);
   end;
 end;
 
 // Erro comum as duas fabricas sem opcoes TLS.
 procedure RaiseTlsNeedsOptions;
 begin
-  raise EPipeTls.Create('ptTls exige TlsOptions (certificado e politica de ' +
-    'validacao); use a forma que recebe TPipeTlsOptions');
+  raise EPipeTls.Create('ptTls requires TlsOptions (certificate and validation ' +
+    'policy); use the overload that takes TPipeTlsOptions');
 end;
 
 function PipeCreateListener(const AAddress: string;

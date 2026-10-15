@@ -162,12 +162,17 @@ implementar qualquer milestone novo.
 - **Exceção em handler de usuário vira `OnError` (0.2.0):** todo work item de evento (e o
   `TPipeQueuedEvent` do `pdmMainThread`) tem `except on E: Exception` que chama
   `TPipeBase.ReportHandlerException` INLINE — mesma thread, antes do `DecInFlight`, sem
-  despacho novo — com `'<Evento> levantou <Classe>: <msg>'` e o `AConnId` do evento. A
+  despacho novo — com `'<Evento> raised <Classe>: <msg>'` e o `AConnId` do evento. A
   conexão NÃO é fechada. Exceção do próprio `OnError` é engolida (sem recursão:
   `TPipeErrorWork`/`qeError` não reportam). `OnRequest` fica de fora (já vira reply de
   erro). Evento novo de usuário = passar o nome em `AEventName` do `Dispatch*` e envolver o
   callback no mesmo `except`. Até a 0.1.1 o worker da pascal-common-faa engolia tudo em
   silêncio. Racional e medição por `DispatchMode` em `docs/ARQUITETURA.md` §24.
+- **Mensagens de runtime em inglês (0.3.0):** toda string de exceção/`OnError` em `src/` é em
+  inglês (padrão das libs `*-faa`); comentários seguem em português. Mensagem NOVA = inglês.
+  Só dois canais levam texto da lib ao peer (reply de erro do `Request` e recusa corrId 0 do
+  `RejectControl`), ambos UTF-8 livre — o protocolo não depende do texto. Teste que compara
+  texto de mensagem (sobretudo o NEGATIVO, `Pos(...) = 0`) precisa mudar junto. Ver §25.
 
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 

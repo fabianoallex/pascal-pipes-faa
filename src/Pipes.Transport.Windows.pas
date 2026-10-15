@@ -96,9 +96,9 @@ begin
   case AErr of
     ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
     ERROR_OPERATION_ABORTED, ERROR_HANDLE_EOF:
-      raise EPipeClosed.CreateFmt('%s: conexao encerrada (erro %d)', [AOp, AErr]);
+      raise EPipeClosed.CreateFmt('%s: connection closed (error %d)', [AOp, AErr]);
   else
-    raise EPipeError.CreateFmt('%s falhou (erro %d: %s)',
+    raise EPipeError.CreateFmt('%s failed (error %d: %s)',
       [AOp, AErr, SysErrorMessage(AErr)]);
   end;
 end;
@@ -107,7 +107,7 @@ function NewManualResetEvent: THandle;
 begin
   Result := CreateEvent(nil, True, False, nil);
   if Result = 0 then
-    raise EPipeError.CreateFmt('CreateEvent falhou (erro %d)', [GetLastError]);
+    raise EPipeError.CreateFmt('CreateEvent failed (error %d)', [GetLastError]);
 end;
 
 { TPipeWinEndpoint }
@@ -159,7 +159,7 @@ begin
     CancelIoEx(FHandle, @AOv);
     LGot := 0;
     GetOverlappedResult(FHandle, AOv, LGot, True);
-    raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
+    raise EPipeClosed.Create(AOp + ' aborted (CloseAbort)');
   end;
   LGot := 0;
   if not GetOverlappedResult(FHandle, AOv, LGot, True) then
@@ -173,7 +173,7 @@ var
   LDummy, LGot, LErr: DWORD;
 begin
   if PcAtomicGet(FClosed) <> 0 then
-    raise EPipeClosed.Create('leitura em endpoint fechado');
+    raise EPipeClosed.Create('read on a closed endpoint');
   FillChar(LOv, SizeOf(LOv), 0);
   ResetEvent(FReadEvent);
   LOv.hEvent := FReadEvent;
@@ -182,11 +182,11 @@ begin
   begin
     LErr := GetLastError;
     if LErr <> ERROR_IO_PENDING then
-      RaiseIoErrorCode('leitura', LErr);
+      RaiseIoErrorCode('read', LErr);
   end;
-  LGot := WaitIo(LOv, 'leitura');
+  LGot := WaitIo(LOv, 'read');
   if LGot = 0 then
-    raise EPipeClosed.Create('conexao encerrada pelo par');
+    raise EPipeClosed.Create('connection closed by the peer');
   Result := Integer(LGot);
 end;
 
@@ -200,7 +200,7 @@ begin
   while ACount > 0 do
   begin
     if PcAtomicGet(FClosed) <> 0 then
-      raise EPipeClosed.Create('escrita em endpoint fechado');
+      raise EPipeClosed.Create('write on a closed endpoint');
     FillChar(LOv, SizeOf(LOv), 0);
     ResetEvent(FWriteEvent);
     LOv.hEvent := FWriteEvent;
@@ -209,11 +209,11 @@ begin
     begin
       LErr := GetLastError;
       if LErr <> ERROR_IO_PENDING then
-        RaiseIoErrorCode('escrita', LErr);
+        RaiseIoErrorCode('write', LErr);
     end;
-    LWrote := WaitIo(LOv, 'escrita');
+    LWrote := WaitIo(LOv, 'write');
     if LWrote = 0 then
-      raise EPipeClosed.Create('conexao encerrada pelo par durante a escrita');
+      raise EPipeClosed.Create('connection closed by the peer during a write');
     Inc(P, LWrote);
     Dec(ACount, Integer(LWrote));
   end;
@@ -252,7 +252,7 @@ begin
     PIPE_TYPE_BYTE or PIPE_READMODE_BYTE or PIPE_WAIT,
     PIPE_UNLIMITED_INSTANCES, PIPE_BUFFER_SIZE, PIPE_BUFFER_SIZE, 0, nil);
   if Result = INVALID_HANDLE_VALUE then
-    raise EPipeError.CreateFmt('CreateNamedPipe(%s) falhou (erro %d: %s)',
+    raise EPipeError.CreateFmt('CreateNamedPipe(%s) failed (error %d: %s)',
       [FNativeName, GetLastError, SysErrorMessage(GetLastError)]);
 end;
 
@@ -355,11 +355,11 @@ begin
     // ate o prazo — e' o que da semantica uniforme de Connect(timeout) nas
     // duas plataformas.
     if (LErr <> ERROR_PIPE_BUSY) and (LErr <> ERROR_FILE_NOT_FOUND) then
-      raise EPipeError.CreateFmt('conexao ao pipe %s falhou (erro %d: %s)',
+      raise EPipeError.CreateFmt('connecting to pipe %s failed (error %d: %s)',
         [LNative, LErr, SysErrorMessage(LErr)]);
     LRemaining := Int64(LDeadline) - Int64(PcTickMs);
     if LRemaining <= 0 then
-      raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando ao pipe %s',
+      raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to pipe %s',
         [ATimeoutMs, LNative]);
     if LRemaining > 100 then
       LWaitMs := 100

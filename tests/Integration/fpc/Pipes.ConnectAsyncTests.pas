@@ -298,7 +298,7 @@ begin
   // A mensagem muda com o contexto: "reconexao esgotada" soaria errado para
   // quem nunca chegou a ter uma sessao.
   AssertTrue('esperava a mensagem de conexao INICIAL, veio: ' + LastError,
-    Pos('conexao inicial', LastError) > 0);
+    Pos('initial connection', LastError) > 0);
   AssertTrue('Connecting deveria ter caido ao desistir', WaitNotConnecting(2000));
   AssertFalse(FClient.Connected);
   AssertEquals(0, FCliConnCount); // nunca conectou

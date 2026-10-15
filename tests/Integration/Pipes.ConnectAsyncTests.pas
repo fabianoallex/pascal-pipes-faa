@@ -299,7 +299,7 @@ begin
   Assert.IsTrue(WaitCount(FErrCount, 1, 5000), 'nao avisou o esgotamento');
   // A mensagem muda com o contexto: "reconexao esgotada" soaria errado para
   // quem nunca chegou a ter uma sessao.
-  Assert.IsTrue(Pos('conexao inicial', LastError) > 0,
+  Assert.IsTrue(Pos('initial connection', LastError) > 0,
     'esperava a mensagem de conexao INICIAL, veio: ' + LastError);
   Assert.IsTrue(WaitNotConnecting(2000), 'Connecting deveria ter caido ao desistir');
   Assert.IsFalse(FClient.Connected);

@@ -205,7 +205,7 @@ begin
   LPortA := AnsiString(IntToStr(LPort));
   LRc := pipe_getaddrinfo(PAnsiChar(LHostA), PAnsiChar(LPortA), @LHints, Result);
   if (LRc <> 0) or (Result = nil) then
-    raise EPipeError.CreateFmt('nao foi possivel resolver "%s" (getaddrinfo=%d)',
+    raise EPipeError.CreateFmt('could not resolve "%s" (getaddrinfo=%d)',
       [AAddress, LRc]);
 end;
 
@@ -269,9 +269,9 @@ procedure RaiseWsaError(const AOp: string; AErr: Integer);
 begin
   case AErr of
     WSAECONNRESET, WSAECONNABORTED, WSAESHUTDOWN, WSAENETRESET, WSAENOTCONN:
-      raise EPipeClosed.CreateFmt('%s: conexao encerrada (WSA %d)', [AOp, AErr]);
+      raise EPipeClosed.CreateFmt('%s: connection closed (WSA %d)', [AOp, AErr]);
   else
-    raise EPipeError.CreateFmt('%s falhou (WSA %d: %s)',
+    raise EPipeError.CreateFmt('%s failed (WSA %d: %s)',
       [AOp, AErr, SysErrorMessage(AErr)]);
   end;
 end;
@@ -280,7 +280,7 @@ function NewWsaEvent: WSAEVENT;
 begin
   Result := WSACreateEvent; // manual-reset, nao sinalizado
   if Result = PIPE_WSA_INVALID_EVENT then
-    raise EPipeError.CreateFmt('WSACreateEvent falhou (WSA %d)',
+    raise EPipeError.CreateFmt('WSACreateEvent failed (WSA %d)',
       [WSAGetLastError]);
 end;
 
@@ -349,7 +349,7 @@ begin
   // NAO-BLOCANTE. Tambem desfaz a associacao herdada do listener no accept.
   if WSAEventSelect(FSocket, FSockEvent,
        PIPE_FD_READ or PIPE_FD_WRITE or PIPE_FD_CLOSE) <> 0 then
-    raise EPipeError.CreateFmt('WSAEventSelect falhou (WSA %d)',
+    raise EPipeError.CreateFmt('WSAEventSelect failed (WSA %d)',
       [WSAGetLastError]);
   SetNoDelay(FSocket);
   SetKeepAlive(FSocket, AKeepAliveSeconds);
@@ -418,7 +418,7 @@ var
   LWait: DWORD;
 begin
   if PcAtomicGet(FClosed) <> 0 then
-    raise EPipeClosed.Create(AOp + ' em endpoint fechado');
+    raise EPipeClosed.Create(AOp + ' on a closed endpoint');
   LEvents[0] := FSockEvent;
   LEvents[1] := FStopEvent;
   if FIoTimeoutMs = 0 then
@@ -429,12 +429,12 @@ begin
   if LRc = PIPE_WSA_WAIT_FAILED then
     RaiseWsaError(AOp + ' (wait)', WSAGetLastError);
   if LRc = PIPE_WSA_WAIT_TIMEOUT then
-    raise EPipeTimeout.CreateFmt('%s: o par nao respondeu em %u ms',
+    raise EPipeTimeout.CreateFmt('%s: the peer did not respond within %u ms',
       [AOp, FIoTimeoutMs]);
   // Stop pode estar sinalizado junto com o socket; a checagem explicita evita
   // depender de qual indice o wait devolveu.
   if (LRc = PIPE_WSA_WAIT_EVENT_0 + 1) or (PcAtomicGet(FClosed) <> 0) then
-    raise EPipeClosed.Create(AOp + ' abortada (CloseAbort)');
+    raise EPipeClosed.Create(AOp + ' aborted (CloseAbort)');
   // Reseta FSockEvent e consome os eventos pendentes; sem isso o evento fica
   // sinalizado e a proxima espera nao bloquearia.
   FillChar(LNet, SizeOf(LNet), 0);
@@ -450,17 +450,17 @@ begin
   while True do
   begin
     if PcAtomicGet(FClosed) <> 0 then
-      raise EPipeClosed.Create('leitura em endpoint fechado');
+      raise EPipeClosed.Create('read on a closed endpoint');
     LGot := recv(FSocket, ABuffer, ACount, 0);
     if LGot > 0 then
       Exit(LGot);
     if LGot = 0 then
-      raise EPipeClosed.Create('conexao encerrada pelo par');
+      raise EPipeClosed.Create('connection closed by the peer');
     LErr := WSAGetLastError;
     if LErr = WSAEWOULDBLOCK then
-      WaitReadyOrStop('leitura') // sem dado ainda: espera o socket ou o stop
+      WaitReadyOrStop('read') // sem dado ainda: espera o socket ou o stop
     else
-      RaiseWsaError('leitura', LErr);
+      RaiseWsaError('read', LErr);
   end;
 end;
 
@@ -473,7 +473,7 @@ begin
   while ACount > 0 do
   begin
     if PcAtomicGet(FClosed) <> 0 then
-      raise EPipeClosed.Create('escrita em endpoint fechado');
+      raise EPipeClosed.Create('write on a closed endpoint');
     LSent := send(FSocket, P^, ACount, 0);
     if LSent > 0 then
     begin
@@ -483,9 +483,9 @@ begin
     end;
     LErr := WSAGetLastError;
     if LErr = WSAEWOULDBLOCK then
-      WaitReadyOrStop('escrita') // buffer de saida cheio: espera destravar
+      WaitReadyOrStop('write') // buffer de saida cheio: espera destravar
     else
-      RaiseWsaError('escrita', LErr);
+      RaiseWsaError('write', LErr);
   end;
 end;
 
@@ -500,7 +500,7 @@ begin
   FStopEvent := NewWsaEvent;
   FKeepAliveSeconds := AKeepAliveSeconds;
   if WSAEventSelect(FSocket, FAcceptEvent, PIPE_FD_ACCEPT) <> 0 then
-    raise EPipeError.CreateFmt('WSAEventSelect(accept) falhou (WSA %d)',
+    raise EPipeError.CreateFmt('WSAEventSelect(accept) failed (WSA %d)',
       [WSAGetLastError]);
 end;
 
@@ -572,7 +572,7 @@ begin
   if GWinsockReady then
     Exit;
   if WSAStartup($0202, LData) <> 0 then
-    raise EPipeError.CreateFmt('WSAStartup falhou (WSA %d)', [WSAGetLastError]);
+    raise EPipeError.CreateFmt('WSAStartup failed (WSA %d)', [WSAGetLastError]);
   GWinsockReady := True;
 end;
 
@@ -613,7 +613,7 @@ begin
   finally
     pipe_freeaddrinfo(LInfo);
   end;
-  RaiseWsaError(Format('escuta em %s', [AAddress]), LErr);
+  RaiseWsaError(Format('listen on %s', [AAddress]), LErr);
   Result := nil; // inalcancavel (RaiseWsaError sempre levanta)
 end;
 
@@ -720,9 +720,9 @@ begin
       // Servidor ainda nao subiu ou backlog cheio: re-tenta ate o prazo, que
       // e' o que da a Connect(timeout) semantica igual a do transporte local.
       if (LErr <> WSAECONNREFUSED) and (LErr <> WSAETIMEDOUT) then
-        RaiseWsaError(Format('conexao a %s', [AAddress]), LErr);
+        RaiseWsaError(Format('connect to %s', [AAddress]), LErr);
       if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
-        raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando a %s',
+        raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to %s',
           [ATimeoutMs, AAddress]);
       Sleep(25);
     end;
@@ -737,7 +737,7 @@ end;
 
 procedure RaiseIoError(const AOp: string; AErr: cint);
 begin
-  raise EPipeError.CreateFmt('%s falhou (erro %d: %s)',
+  raise EPipeError.CreateFmt('%s failed (error %d: %s)',
     [AOp, AErr, SysErrorMessage(AErr)]);
 end;
 
@@ -814,7 +814,7 @@ begin
   finally
     pipe_freeaddrinfo(LInfo);
   end;
-  RaiseIoError(Format('escuta em %s', [AAddress]), LErr);
+  RaiseIoError(Format('listen on %s', [AAddress]), LErr);
   Result := nil; // inalcancavel
 end;
 
@@ -915,9 +915,9 @@ begin
         LCur := LCur^.ai_next;
       end;
       if (LErr <> ESysECONNREFUSED) and (LErr <> ESysETIMEDOUT) then
-        RaiseIoError(Format('conexao a %s', [AAddress]), LErr);
+        RaiseIoError(Format('connect to %s', [AAddress]), LErr);
       if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
-        raise EPipeTimeout.CreateFmt('timeout (%u ms) conectando a %s',
+        raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to %s',
           [ATimeoutMs, AAddress]);
       Sleep(25);
     end;

@@ -968,8 +968,8 @@ begin
     // mas la' quem levanta e' a escrita num stream TLS ainda nao negociado.
     // Um teste que aceitasse qualquer EPipeError passaria com o filtro
     // removido, que foi exatamente o que aconteceu na primeira versao dele.
-    AssertTrue('SendBytes deveria recusar por "nao esta conectado", veio: "' +
-      LMsg + '"', Pos('nao esta conectado', LMsg) > 0);
+    AssertTrue('SendBytes deveria recusar por "is not connected", veio: "' +
+      LMsg + '"', Pos('is not connected', LMsg) > 0);
   finally
     LMudo.Free;
   end;
