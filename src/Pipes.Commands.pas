@@ -27,12 +27,12 @@ unit Pipes.Commands;
   fora da faixa caem no MESMO OnInvalidPayload (ACommand vem vazio no
   primeiro caso, que e' anterior a qualquer lookup); comando sem handler
   registrado cai em OnUnknownCommand. Os dois sao opcionais e silenciosos
-  por padrao (mesmo comportamento de um OnMessage sem assinante) — e nao por
-  acaso: uma excecao levantada dentro de HandleMessage seria engolida em
-  silencio pelo pool de qualquer jeito (o worker de TPcThreadPool, em
-  PascalCommon.ThreadPool, nao tem para onde relatar excecao de callback de
-  usuario), entao um evento proprio, e nao raise, e' o unico jeito do dev
-  enxergar o descarte.
+  por padrao (mesmo comportamento de um OnMessage sem assinante). Quando o
+  router nasceu, uma excecao levantada dentro de HandleMessage seria engolida
+  em silencio pelo pool; desde a 0.2.0 ela chegaria ao OnError (ver
+  Pipes.Base), mas os eventos continuam sendo o contrato: comando
+  desconhecido e' decisao de aplicacao, nao erro do componente, e o
+  OnUnknownCommand entrega o nome do comando ja separado.
 
   Registro (RegisterCommand) e' o oposto: nome invalido, handler nil,
   limites inconsistentes ou comando duplicado sao erro de PROGRAMACAO, nao

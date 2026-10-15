@@ -20,6 +20,12 @@ unit Pipes.Base;
     referenciam (padrao DrainInFlight do pascal-amqp-faa).
   - NAO chame Stop/Disconnect/Destroy de DENTRO de um callback do proprio
     componente: o drain esperaria o proprio callback (auto-espera).
+  - Excecao que escapa de um handler do usuario (qualquer evento exceto o
+    proprio OnError) vira OnError do MESMO componente, chamado inline no
+    except do work item — mesma thread, antes do DecInFlight, sem novo
+    despacho (ordem preservada, nada novo no pool). A conexao NAO e' fechada.
+    Ate a 0.1.1 o worker do pool engolia a excecao em silencio. Uma excecao
+    dentro do proprio OnError continua sendo engolida (sem recursao).
   - pdmMainThread: eventos vao para a main thread via TThread.Queue (LCL/VCL
     os drenam no loop de mensagens; apps console precisam de CheckSynchronize).
     Esses eventos NAO entram em FInFlight — drena-los a partir da main thread
@@ -147,6 +153,11 @@ type
     procedure DrainInFlight;
     procedure IncInFlight;
     procedure DecInFlight;
+    /// Excecao que escapou de um handler do usuario: chama OnError inline
+    /// (na thread que rodava o handler) com '<evento> levantou <classe>:
+    /// <mensagem>'. Nunca levanta. So' chamar de dentro de um except.
+    procedure ReportHandlerException(AConnId: TPipeConnectionId;
+      const AEventName: string; E: Exception);
     // Despacho (chamado pelas threads internas). Cada Dispatch* incrementa
     // FInFlight se ha handler; o work item decrementa no finally do Execute.
     /// AGroupKey = 0 (padrao) e' o despacho de sempre. != 0 (ver
@@ -157,21 +168,24 @@ type
     /// total, entao a chave e' ignorada (nao muda nada).
     procedure DispatchMessage(AConnId: TPipeConnectionId; const AData: TBytes;
       AGroupKey: UInt64 = 0);
+    /// AEventName ('OnConnected', 'OnClientDisconnected'...) so' serve para
+    /// a mensagem do OnError se o handler levantar (ReportHandlerException).
     procedure DispatchConnEvent(AEvent: TPipeConnectionEvent;
-      AConnId: TPipeConnectionId);
+      AConnId: TPipeConnectionId; const AEventName: string);
     procedure DispatchError(AConnId: TPipeConnectionId; const AMsg: string);
     /// Eventos de pub/sub (OnTopicMessage no cliente, OnPublish no servidor).
     /// O handler vem por parametro porque o campo vive no descendente.
     procedure DispatchTopicEvent(AEvent: TPipeTopicEvent;
       AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
-      ARetained: Boolean);
+      ARetained: Boolean; const AEventName: string);
     /// OnDeliveryFailed do servidor (TPipeServer.FanOut/SendRetained/
     /// PublishBatch) — mesmo desenho de DispatchTopicEvent, com AError extra.
     procedure DispatchDeliveryFailedEvent(AEvent: TPipeDeliveryFailedEvent;
       AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
       ARetained: Boolean; const AError: string);
     procedure DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
-      AConnId: TPipeConnectionId; const AFilter: string);
+      AConnId: TPipeConnectionId; const AFilter: string;
+      const AEventName: string);
     /// OnConnectAttemptFailed do cliente (TPipeClient.TryReopenSession) —
     /// diagnostico puro, sem AConnId porque nao ha conexao. Chamado da THREAD
     /// DE RECONEXAO, nao da de leitura; o mesmo lugar de onde o DispatchError
@@ -267,6 +281,7 @@ type
     // topico, e num log forense a confusao sairia cara.
     FAddress: string;
     FAttempt: Integer;
+    FEventName: string; // so' para ReportHandlerException
   public
     constructor Create(AOwner: TPipeBase; AKind: TPipeQueuedKind;
       AConnId: TPipeConnectionId);
@@ -292,9 +307,10 @@ type
     FOwner: TPipeBase;
     FCallback: TPipeConnectionEvent;
     FConnId: TPipeConnectionId;
+    FEventName: string;
   public
     constructor Create(AOwner: TPipeBase; ACallback: TPipeConnectionEvent;
-      AConnId: TPipeConnectionId);
+      AConnId: TPipeConnectionId; const AEventName: string);
     procedure Execute; override;
   end;
 
@@ -318,10 +334,11 @@ type
     FTopic: string;
     FData: TBytes;
     FRetained: Boolean;
+    FEventName: string;
   public
     constructor Create(AOwner: TPipeBase; ACallback: TPipeTopicEvent;
       AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
-      ARetained: Boolean);
+      ARetained: Boolean; const AEventName: string);
     procedure Execute; override;
   end;
 
@@ -331,9 +348,11 @@ type
     FCallback: TPipeSubscriptionEvent;
     FConnId: TPipeConnectionId;
     FFilter: string;
+    FEventName: string;
   public
     constructor Create(AOwner: TPipeBase; ACallback: TPipeSubscriptionEvent;
-      AConnId: TPipeConnectionId; const AFilter: string);
+      AConnId: TPipeConnectionId; const AFilter: string;
+      const AEventName: string);
     procedure Execute; override;
   end;
 
@@ -425,8 +444,12 @@ begin
           qeAttemptFailed: FAttemptCb(FOwner, FAddress, FAttempt, FMsg);
         end;
       except
-        // mesmo contrato do pool: excecao de callback nao derruba o chamador
-        // (aqui seria o CheckSynchronize/loop de mensagens da main thread)
+        // Excecao de callback nao derruba o chamador (aqui, o
+        // CheckSynchronize/loop de mensagens da main thread): vira OnError,
+        // exceto a do proprio OnError, engolida (sem recursao).
+        on E: Exception do
+          if FKind <> qeError then
+            FOwner.ReportHandlerException(FConnId, FEventName, E);
       end;
   finally
     FGuard.Release;
@@ -449,7 +472,12 @@ end;
 procedure TPipeMessageWork.Execute;
 begin
   try
-    FCallback(FOwner, FConnId, FData);
+    try
+      FCallback(FOwner, FConnId, FData);
+    except
+      on E: Exception do
+        FOwner.ReportHandlerException(FConnId, 'OnMessage', E);
+    end;
   finally
     FOwner.DecInFlight;
   end;
@@ -458,18 +486,25 @@ end;
 { TPipeConnEventWork }
 
 constructor TPipeConnEventWork.Create(AOwner: TPipeBase;
-  ACallback: TPipeConnectionEvent; AConnId: TPipeConnectionId);
+  ACallback: TPipeConnectionEvent; AConnId: TPipeConnectionId;
+  const AEventName: string);
 begin
   inherited Create;
   FOwner := AOwner;
   FCallback := ACallback;
   FConnId := AConnId;
+  FEventName := AEventName;
 end;
 
 procedure TPipeConnEventWork.Execute;
 begin
   try
-    FCallback(FOwner, FConnId);
+    try
+      FCallback(FOwner, FConnId);
+    except
+      on E: Exception do
+        FOwner.ReportHandlerException(FConnId, FEventName, E);
+    end;
   finally
     FOwner.DecInFlight;
   end;
@@ -489,6 +524,8 @@ end;
 
 procedure TPipeErrorWork.Execute;
 begin
+  // Sem ReportHandlerException: a excecao do proprio OnError nao tem para
+  // onde ir (recursao) e segue engolida pelo worker do pool.
   try
     FCallback(FOwner, FConnId, FMsg);
   finally
@@ -500,7 +537,7 @@ end;
 
 constructor TPipeTopicWork.Create(AOwner: TPipeBase;
   ACallback: TPipeTopicEvent; AConnId: TPipeConnectionId; const ATopic: string;
-  const AData: TBytes; ARetained: Boolean);
+  const AData: TBytes; ARetained: Boolean; const AEventName: string);
 begin
   inherited Create;
   FOwner := AOwner;
@@ -509,12 +546,18 @@ begin
   FTopic := ATopic;
   FData := AData;
   FRetained := ARetained;
+  FEventName := AEventName;
 end;
 
 procedure TPipeTopicWork.Execute;
 begin
   try
-    FCallback(FOwner, FConnId, FTopic, FData, FRetained);
+    try
+      FCallback(FOwner, FConnId, FTopic, FData, FRetained);
+    except
+      on E: Exception do
+        FOwner.ReportHandlerException(FConnId, FEventName, E);
+    end;
   finally
     FOwner.DecInFlight;
   end;
@@ -524,19 +567,25 @@ end;
 
 constructor TPipeSubscriptionWork.Create(AOwner: TPipeBase;
   ACallback: TPipeSubscriptionEvent; AConnId: TPipeConnectionId;
-  const AFilter: string);
+  const AFilter: string; const AEventName: string);
 begin
   inherited Create;
   FOwner := AOwner;
   FCallback := ACallback;
   FConnId := AConnId;
   FFilter := AFilter;
+  FEventName := AEventName;
 end;
 
 procedure TPipeSubscriptionWork.Execute;
 begin
   try
-    FCallback(FOwner, FConnId, FFilter);
+    try
+      FCallback(FOwner, FConnId, FFilter);
+    except
+      on E: Exception do
+        FOwner.ReportHandlerException(FConnId, FEventName, E);
+    end;
   finally
     FOwner.DecInFlight;
   end;
@@ -559,7 +608,12 @@ end;
 procedure TPipeAttemptFailedWork.Execute;
 begin
   try
-    FCallback(FOwner, FAddress, FAttempt, FError);
+    try
+      FCallback(FOwner, FAddress, FAttempt, FError);
+    except
+      on E: Exception do
+        FOwner.ReportHandlerException(0, 'OnConnectAttemptFailed', E);
+    end;
   finally
     FOwner.DecInFlight;
   end;
@@ -583,7 +637,12 @@ end;
 procedure TPipeDeliveryFailedWork.Execute;
 begin
   try
-    FCallback(FOwner, FConnId, FTopic, FData, FRetained, FError);
+    try
+      FCallback(FOwner, FConnId, FTopic, FData, FRetained, FError);
+    except
+      on E: Exception do
+        FOwner.ReportHandlerException(FConnId, 'OnDeliveryFailed', E);
+    end;
   finally
     FOwner.DecInFlight;
   end;
@@ -757,6 +816,22 @@ begin
   PcAtomicDec(FInFlight);
 end;
 
+procedure TPipeBase.ReportHandlerException(AConnId: TPipeConnectionId;
+  const AEventName: string; E: Exception);
+var
+  LCallback: TPipeErrorEvent;
+begin
+  LCallback := FOnError;
+  if not Assigned(LCallback) then
+    Exit; // sem OnError, mesmo destino de antes: descartada
+  try
+    LCallback(Self, AConnId, Format('%s levantou %s: %s',
+      [AEventName, E.ClassName, E.Message]));
+  except
+    // excecao dentro do OnError: sem recursao, engolida
+  end;
+end;
+
 procedure TPipeBase.DispatchMessage(AConnId: TPipeConnectionId;
   const AData: TBytes; AGroupKey: UInt64);
 var
@@ -771,6 +846,7 @@ begin
   begin
     LQueued := TPipeQueuedEvent.Create(Self, qeMessage, AConnId);
     LQueued.FMsgCb := LCallback;
+    LQueued.FEventName := 'OnMessage';
     LQueued.FData := AData;
     TThread.Queue(nil, LQueued.Run);
     Exit;
@@ -787,7 +863,7 @@ begin
 end;
 
 procedure TPipeBase.DispatchConnEvent(AEvent: TPipeConnectionEvent;
-  AConnId: TPipeConnectionId);
+  AConnId: TPipeConnectionId; const AEventName: string);
 var
   LQueued: TPipeQueuedEvent;
 begin
@@ -797,11 +873,13 @@ begin
   begin
     LQueued := TPipeQueuedEvent.Create(Self, qeConn, AConnId);
     LQueued.FConnCb := AEvent;
+    LQueued.FEventName := AEventName;
     TThread.Queue(nil, LQueued.Run);
     Exit;
   end;
   IncInFlight;
-  EventPool.Queue(TPipeConnEventWork.Create(Self, AEvent, AConnId));
+  EventPool.Queue(TPipeConnEventWork.Create(Self, AEvent, AConnId,
+    AEventName));
 end;
 
 procedure TPipeBase.DispatchError(AConnId: TPipeConnectionId;
@@ -827,7 +905,7 @@ end;
 
 procedure TPipeBase.DispatchTopicEvent(AEvent: TPipeTopicEvent;
   AConnId: TPipeConnectionId; const ATopic: string; const AData: TBytes;
-  ARetained: Boolean);
+  ARetained: Boolean; const AEventName: string);
 var
   LQueued: TPipeQueuedEvent;
 begin
@@ -837,6 +915,7 @@ begin
   begin
     LQueued := TPipeQueuedEvent.Create(Self, qeTopic, AConnId);
     LQueued.FTopicCb := AEvent;
+    LQueued.FEventName := AEventName;
     LQueued.FTopic := ATopic;
     LQueued.FData := AData;
     LQueued.FRetained := ARetained;
@@ -845,7 +924,7 @@ begin
   end;
   IncInFlight;
   EventPool.Queue(TPipeTopicWork.Create(Self, AEvent, AConnId, ATopic, AData,
-    ARetained));
+    ARetained, AEventName));
 end;
 
 procedure TPipeBase.DispatchDeliveryFailedEvent(AEvent: TPipeDeliveryFailedEvent;
@@ -860,6 +939,7 @@ begin
   begin
     LQueued := TPipeQueuedEvent.Create(Self, qeDeliveryFailed, AConnId);
     LQueued.FDeliveryFailedCb := AEvent;
+    LQueued.FEventName := 'OnDeliveryFailed';
     LQueued.FTopic := ATopic;
     LQueued.FData := AData;
     LQueued.FRetained := ARetained;
@@ -883,6 +963,7 @@ begin
   begin
     LQueued := TPipeQueuedEvent.Create(Self, qeAttemptFailed, 0);
     LQueued.FAttemptCb := AEvent;
+    LQueued.FEventName := 'OnConnectAttemptFailed';
     LQueued.FAddress := AAddress;
     LQueued.FAttempt := AAttempt;
     LQueued.FMsg := AError;
@@ -895,7 +976,7 @@ begin
 end;
 
 procedure TPipeBase.DispatchSubscriptionEvent(AEvent: TPipeSubscriptionEvent;
-  AConnId: TPipeConnectionId; const AFilter: string);
+  AConnId: TPipeConnectionId; const AFilter: string; const AEventName: string);
 var
   LQueued: TPipeQueuedEvent;
 begin
@@ -905,12 +986,14 @@ begin
   begin
     LQueued := TPipeQueuedEvent.Create(Self, qeSubscription, AConnId);
     LQueued.FSubCb := AEvent;
+    LQueued.FEventName := AEventName;
     LQueued.FTopic := AFilter;
     TThread.Queue(nil, LQueued.Run);
     Exit;
   end;
   IncInFlight;
-  EventPool.Queue(TPipeSubscriptionWork.Create(Self, AEvent, AConnId, AFilter));
+  EventPool.Queue(TPipeSubscriptionWork.Create(Self, AEvent, AConnId, AFilter,
+    AEventName));
 end;
 
 end.

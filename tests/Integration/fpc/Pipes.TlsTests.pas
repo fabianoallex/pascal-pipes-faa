@@ -810,6 +810,7 @@ var
   LCli: TPipeClient;
   LQuem: TPipePeerIdentity;
   I: Integer;
+  LDeadline: UInt64;
 begin
   // As identidades sobrevivem a saida da conexao, entao PRECISAM de teto,
   // senao um servidor de longa duracao acumularia uma entrada por cliente que
@@ -823,6 +824,16 @@ begin
       LCli.TlsOptions.SkipServerVerification := True;
       AplicaCredencial(LCli.TlsOptions, 'cli');
       LCli.Connect(5000);
+      // O Connect volta quando o CLIENTE termina o handshake; o servidor so'
+      // registra a identidade depois de terminar o lado dele. Desconectar
+      // antes disso deixa a conexao fora da janela, e uma unica falta entre
+      // as 257 basta para o id 1 nao ser despejado.
+      LDeadline := PcTickMs + 5000;
+      while not FHarness.Server.TryClientIdentity(I, LQuem) and
+        (PcTickMs < LDeadline) do
+        Sleep(5);
+      AssertTrue('servidor nao registrou a identidade da conexao ' + IntToStr(I),
+        FHarness.Server.TryClientIdentity(I, LQuem));
       LCli.Disconnect;
     finally
       LCli.Free;

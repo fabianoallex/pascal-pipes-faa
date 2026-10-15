@@ -64,7 +64,8 @@ corrompidos/maliciosos.
 - **TAMQPThreadPool**: pool com workers persistentes, crescimento sob demanda até
   `MaxWorkers`, itens de trabalho como objetos (`TAMQPWorkItem.Execute`) com posse
   transferida ao pool — substitui `TTask.Run`, inexistente no FPC. Exceção em callback de
-  usuário é engolida pelo worker (mesmo contrato do TTask).
+  usuário é engolida pelo worker (mesmo contrato do TTask) — até a 0.2.0, quando o pipes
+  passou a capturá-la antes e mandá-la ao `OnError` (§24).
 
 Decisão: **copiar a unit** para `src/Pipes.Threading.pas` renomeando prefixos
 (`TPipeThreadPool`, `TPipeMonitor`, `TPipeWorkItem`, `PipeAtomic*`, `PipePool`). Zero
@@ -2291,3 +2292,66 @@ compilado no IDE mas não executado em aparelho nesta rodada.
 Armadilha Delphi-only encontrada no caminho: uma unit com `finalization` e SEM
 `initialization` compila no FPC e dá `E2029 Declaration expected but 'FINALIZATION' found` no
 Delphi — `Pipes.FinalizationCheck` ganhou uma `initialization` vazia.
+
+## 24. Exceção em handler de usuário vira `OnError` (0.2.0)
+
+Encontrado de fora: o guia `docs/guide/dtos-json.md` do pascal-api-infra-faa desserializava um
+DTO dentro do `OnMessage` (`TJsonMapper.Shared.FromJson<IOrder>`), e um `"quantity":"x"`
+levantou exceção que não chegou a ninguém — nem ao `OnError` do servidor nem ao do cliente.
+
+### 24.1 Medição antes da mudança (0.1.1, FPC 3.2.2/Win64)
+
+`OnMessage` levantando `EConvertError` na primeira mensagem, seguida de uma segunda normal,
+nos dois sentidos:
+
+| Modo | `OnError` chamado | Conexão depois | Onde a exceção morria |
+|---|---|---|---|
+| `pdmPool` | não | viva | `TPcThreadPool.TWorker.Execute` (pascal-common-faa) |
+| `pdmPool` + `AGroupKey` | não | viva | `TPipeMailboxDrainWork.Execute` |
+| `pdmSerialized` | não | viva | `TPcThreadPool.TWorker.Execute` (pool privado) |
+| `pdmMainThread` | não | viva | `TPipeQueuedEvent.Run` |
+
+O buraco era de TODO evento de usuário, não só do `OnMessage`: todos passam pelos mesmos
+três caminhos. A única exceção era `OnRequest`, cujo `ExecuteRequest` já capturava e
+transformava em reply de erro.
+
+### 24.2 Decisão
+
+Opções avaliadas com o usuário: chamar o `OnError` do lado que recebeu, um evento próprio
+(`OnHandlerException` com o objeto da exceção), os dois com fallback, ou só documentar. Ficou
+o `OnError`, para todos os handlers:
+
+- `OnError` já é "o que o app precisa tratar" (§22), e um bug do próprio handler cabe nisso.
+  Um evento novo repetiria o problema de hoje para quem não o ligasse.
+- O relatório roda INLINE, no `except` do próprio work item (`ReportHandlerException` em
+  `Pipes.Base`), na mesma thread e antes do `DecInFlight`, sem despacho novo. Isso preserva
+  a ordem (o erro sai logo depois do handler que falhou, inclusive em `pdmSerialized`), não
+  põe trabalho novo no pool e mantém o objeto da exceção vivo durante a chamada.
+- A conexão NÃO é fechada: uma mensagem que o app não soube tratar não diz nada sobre o
+  transporte. Quem quiser derrubar o peer chama `DisconnectClient` no `OnError`.
+- Exceção dentro do próprio `OnError` é engolida, sem recursão (`TPipeErrorWork` e
+  `qeError` não reportam).
+- Nada muda na pascal-common-faa: o `except` vazio do worker dela continua lá como última
+  rede, mas não recebe mais exceção de handler do pipes.
+
+Os despachos genéricos (`DispatchConnEvent`, `DispatchTopicEvent`,
+`DispatchSubscriptionEvent`) ganharam `AEventName`, porque o mesmo work item serve a vários
+eventos (`OnConnected`/`OnClientDisconnected`, `OnTopicMessage`/`OnPublish`/`OnDelivered`...)
+e a mensagem precisa dizer qual falhou.
+
+§18.3 continua valendo: `HandleMessage` segue sem levantar, mas o motivo agora é só o
+contrato (comando desconhecido é decisão de aplicação), não mais "a exceção sumiria".
+
+### 24.3 Idioma
+
+O prefixo `'servidor respondeu erro: '` do `Request` e o novo `'<Evento> levantou ...'` estão em
+português como as outras ~160 mensagens de runtime da lib. A tradução para inglês (padrão das
+outras libs `*-faa`) fica para uma release própria, porque muda texto que algum app pode estar
+comparando.
+
+### 24.4 Testes
+
+Sete testes novos em `Pipes.EndToEndTests` (os dois frameworks): `OnMessage` do servidor
+levantando nos três modos e com `AGroupKey`, `OnMessage` do cliente, `OnClientConnected` (com
+o nome do evento na mensagem) e exceção dentro do próprio `OnError` (uma chamada só, sem
+recursão). Todos conferem também que a conexão segue entregando a mensagem seguinte.

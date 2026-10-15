@@ -544,7 +544,8 @@ begin
     // handler de OnClientConnected que consulte ClientIds/TryClientIdentity ja
     // enxergue a propria conexao que acabou de ser anunciada.
     FConn.FServer.PublishEstablished(FConn);
-    FConn.FServer.DispatchConnEvent(FConn.FServer.FOnClientConnected, FConn.Id);
+    FConn.FServer.DispatchConnEvent(FConn.FServer.FOnClientConnected, FConn.Id,
+      'OnClientConnected');
     FConn.StartHeartbeat;
     while True do
     begin
@@ -872,7 +873,8 @@ begin
     LConn.FReader.WaitFor;
     FreeAndNil(LConn.FReader);
     LConn.StopHeartbeat;
-    DispatchConnEvent(FOnClientDisconnected, LConn.FId);
+    DispatchConnEvent(FOnClientDisconnected, LConn.FId,
+      'OnClientDisconnected');
     LConn.Release; // referencia do registro
   end;
 
@@ -942,7 +944,8 @@ begin
   if AError <> '' then
     DispatchError(AConn.FId, AError);
   AConn.FEndpoint.CloseAbort; // erro de protocolo: transporte pode estar vivo
-  DispatchConnEvent(FOnClientDisconnected, AConn.FId);
+  DispatchConnEvent(FOnClientDisconnected, AConn.FId,
+    'OnClientDisconnected');
   QueueCleanup(AConn); // join deste proprio reader: precisa de outra thread
 end;
 
@@ -1089,7 +1092,8 @@ begin
   // topico. Quem publica estado com retain deve tratar a ultima mensagem de um
   // topico como a verdade, e nao acumular.
   SendRetained(AConn, LFilter);
-  DispatchSubscriptionEvent(FOnSubscribe, AConn.FId, LFilter);
+  DispatchSubscriptionEvent(FOnSubscribe, AConn.FId, LFilter,
+    'OnSubscribe');
 end;
 
 procedure TPipeServer.HandleUnsubscribe(AConn: TPipeServerConnection;
@@ -1111,7 +1115,8 @@ begin
   // Cancelar o que nao estava assinado e' no-op silencioso: o cliente pode
   // estar limpando estado que o servidor perdeu numa reconexao.
   if LIdx >= 0 then
-    DispatchSubscriptionEvent(FOnUnsubscribe, AConn.FId, LFilter);
+    DispatchSubscriptionEvent(FOnUnsubscribe, AConn.FId, LFilter,
+      'OnUnsubscribe');
 end;
 
 procedure TPipeServer.HandleClientPublish(AConn: TPipeServerConnection;
@@ -1138,7 +1143,8 @@ begin
   end;
   // ARetained aqui e' o PEDIDO do cliente (ver TPipeTopicEvent), nao "veio do
   // cache": deste lado a mensagem acabou de chegar do fio, por definicao.
-  DispatchTopicEvent(FOnPublish, AConn.FId, LTopic, LBody, AFrame.IsRetain);
+  DispatchTopicEvent(FOnPublish, AConn.FId, LTopic, LBody, AFrame.IsRetain,
+    'OnPublish');
 end;
 
 procedure TPipeServer.StoreRetained(const ATopic: string; const AData: TBytes);
@@ -1229,7 +1235,8 @@ begin
     // distinta pra quem loga observabilidade: um OnDelivered por topico
     // (todos com sucesso, ja que chegou ate aqui sem excecao).
     for I := 0 to High(LTopics) do
-      DispatchTopicEvent(FOnDelivered, AConn.FId, LTopics[I], LDatas[I], True);
+      DispatchTopicEvent(FOnDelivered, AConn.FId, LTopics[I], LDatas[I], True,
+        'OnDelivered');
   except
     on E: Exception do
       // conexao caindo: o reader dela notifica a queda; aqui e' so' a
@@ -1271,7 +1278,8 @@ begin
     try
       try
         LConn.SendFrame(LFrame);
-        DispatchTopicEvent(FOnDelivered, LConn.FId, ATopic, AData, False);
+        DispatchTopicEvent(FOnDelivered, LConn.FId, ATopic, AData, False,
+          'OnDelivered');
       except
         on E: Exception do
         begin
@@ -1382,7 +1390,8 @@ begin
         // GUARDADO, nao sobre esta entrega ser catch-up).
         for J := 0 to High(LBatches[I].Topics) do
           DispatchTopicEvent(FOnDelivered, LBatches[I].Conn.FId,
-            LBatches[I].Topics[J], LBatches[I].Payloads[J], False);
+            LBatches[I].Topics[J], LBatches[I].Payloads[J], False,
+            'OnDelivered');
       except
         on E: Exception do
           // conexao caindo: o reader dela notificara a queda; o lote segue
@@ -1606,7 +1615,8 @@ begin
     FConnLock.Leave;
   end;
   LConn.FEndpoint.CloseAbort; // o reader vai cair com EPipeClosed
-  DispatchConnEvent(FOnClientDisconnected, AConnId);
+  DispatchConnEvent(FOnClientDisconnected, AConnId,
+    'OnClientDisconnected');
   QueueCleanup(LConn);
 end;
 

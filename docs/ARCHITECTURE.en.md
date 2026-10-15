@@ -65,7 +65,8 @@ frames.
 - **TAMQPThreadPool**: pool with persistent workers, on-demand growth up to `MaxWorkers`,
   work items as objects (`TAMQPWorkItem.Execute`) with ownership transferred to the pool —
   replaces `TTask.Run`, nonexistent in FPC. An exception in a user callback is swallowed by
-  the worker (same contract as TTask).
+  the worker (same contract as TTask) — until 0.2.0, when pipes started catching it first and
+  sending it to `OnError` (§24).
 
 Decision: **copy the unit** to `src/Pipes.Threading.pas`, renaming the prefixes
 (`TPipeThreadPool`, `TPipeMonitor`, `TPipeWorkItem`, `PipeAtomic*`, `PipePool`). Zero
@@ -2337,3 +2338,67 @@ but not run on a device this round.
 Delphi-only pitfall found on the way: a unit with `finalization` and NO `initialization`
 compiles on FPC and fails on Delphi with `E2029 Declaration expected but 'FINALIZATION'
 found` — `Pipes.FinalizationCheck` got an empty `initialization`.
+
+## 24. An exception in a user handler becomes `OnError` (0.2.0)
+
+Found from outside: the `docs/guide/dtos-json.md` guide of pascal-api-infra-faa deserialized a
+DTO inside `OnMessage` (`TJsonMapper.Shared.FromJson<IOrder>`), and a `"quantity":"x"` raised
+an exception that reached nobody — neither the server's `OnError` nor the client's.
+
+### 24.1 Measured before the change (0.1.1, FPC 3.2.2/Win64)
+
+`OnMessage` raising `EConvertError` on the first message, followed by a normal one, in both
+directions:
+
+| Mode | `OnError` called | Connection afterwards | Where the exception died |
+|---|---|---|---|
+| `pdmPool` | no | alive | `TPcThreadPool.TWorker.Execute` (pascal-common-faa) |
+| `pdmPool` + `AGroupKey` | no | alive | `TPipeMailboxDrainWork.Execute` |
+| `pdmSerialized` | no | alive | `TPcThreadPool.TWorker.Execute` (private pool) |
+| `pdmMainThread` | no | alive | `TPipeQueuedEvent.Run` |
+
+Every user event had the hole, not just `OnMessage`: they all go through the same three paths.
+The only exception was `OnRequest`, whose `ExecuteRequest` already caught the exception and
+turned it into an error reply.
+
+### 24.2 Decision
+
+Options weighed with the user: call the receiving side's `OnError`, a dedicated event
+(`OnHandlerException` carrying the exception object), both with a fallback, or document only.
+The choice was `OnError`, for every handler:
+
+- `OnError` already means "what the app must handle" (§22), and a bug in the app's own handler
+  fits. A new event would repeat today's problem for whoever didn't hook it.
+- The report runs INLINE, in the work item's own `except` (`ReportHandlerException` in
+  `Pipes.Base`), on the same thread and before `DecInFlight`, with no new dispatch. This keeps
+  ordering (the error comes right after the failed handler, `pdmSerialized` included), adds no
+  work to the pool and keeps the exception object alive during the call.
+- The connection is NOT closed: a message the app couldn't handle says nothing about the
+  transport. To drop the peer, call `DisconnectClient` from `OnError`.
+- An exception inside `OnError` itself is swallowed, with no recursion (`TPipeErrorWork` and
+  `qeError` don't report).
+- Nothing changes in pascal-common-faa: its worker's empty `except` stays as the last safety
+  net, but no longer receives exceptions from pipes handlers.
+
+The generic dispatchers (`DispatchConnEvent`, `DispatchTopicEvent`,
+`DispatchSubscriptionEvent`) gained `AEventName`, because the same work item serves several
+events (`OnConnected`/`OnClientDisconnected`, `OnTopicMessage`/`OnPublish`/`OnDelivered`...)
+and the message must say which one failed.
+
+§18.3 still holds: `HandleMessage` still doesn't raise, but the reason is now only the
+contract (an unknown command is an application decision), no longer "the exception would
+vanish".
+
+### 24.3 Language
+
+The `Request` prefix `'servidor respondeu erro: '` and the new `'<Event> levantou ...'` are in
+Portuguese like the library's other ~160 runtime messages. Translating them to English (the
+convention of the other `*-faa` libraries) is left for a release of its own, because it changes
+text an app may be matching on.
+
+### 24.4 Tests
+
+Seven new tests in `Pipes.EndToEndTests` (both frameworks): server `OnMessage` raising in all
+three modes and with `AGroupKey`, client `OnMessage`, `OnClientConnected` (with the event name
+in the message) and an exception inside `OnError` itself (a single call, no recursion). All of
+them also check that the connection still delivers the next message.

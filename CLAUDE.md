@@ -4,8 +4,8 @@
 > único transporte — ver `Transport` abaixo e `README.md`, seção "Compatibilidade com a API
 > anterior".
 
-Biblioteca multiplataforma de comunicação entre processos para **Delphi 12+ (Win64 e
-Android)** e **FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**. API de alto nível (`TPipeServer`/
+Biblioteca multiplataforma de comunicação entre processos para **Delphi 12+ (Win32, Win64 e
+Android)** e **FPC 3.2.2 / Lazarus (Windows x64 e Linux x86_64; ARM64 não testado)**. API de alto nível (`TPipeServer`/
 `TPipeClient`) que abstrai totalmente as chamadas nativas do SO, com três alcances
 selecionados pela property `Transport`: `ptLocal` (Named Pipe/UDS, padrão), `ptTcp`
 (rede) e `ptTls` (rede não confiável, com mTLS opcional). Racional de design completo em
@@ -96,8 +96,8 @@ implementar qualquer milestone novo.
   hora (nome/limites inválidos, handler nil, comando duplicado — erro de programação);
   `HandleMessage` NUNCA levanta — comando desconhecido e payload fora da faixa
   `AMinSize`/`AMaxSize` caem em `OnUnknownCommand`/`OnInvalidPayload`, opcionais e
-  silenciosos, porque uma exceção ali seria engolida em silêncio pelo pool sem chegar a
-  `OnError` (mesmo contrato de qualquer bug dentro do `OnMessage` do próprio dev). O mesmo
+  silenciosos (na época uma exceção ali seria engolida pelo pool sem chegar a `OnError`;
+  desde a 0.2.0 chegaria — ver §24 —, mas o contrato por eventos continua). O mesmo
   router também cobre o lado request-reply (`RegisterRequestCommand`/`HandleRequest`,
   registro PRÓPRIO, independente do de mensagem — mesmo nome pode existir nos dois sem
   conflito, já que `OnMessage`/`OnRequest` chegam por kinds diferentes do NPF1) com contrato
@@ -159,6 +159,15 @@ implementar qualquer milestone novo.
   espaçamento de registros sem guardar estado. Infra de despacho espelha `TPipeDeliveryFailedWork`
   de §20, com campos próprios (`FAddress`/`FAttempt`) em `TPipeQueuedEvent` em vez de
   reaproveitar `FTopic` como slot genérico. Racional completo em `docs/ARQUITETURA.md` §22.
+- **Exceção em handler de usuário vira `OnError` (0.2.0):** todo work item de evento (e o
+  `TPipeQueuedEvent` do `pdmMainThread`) tem `except on E: Exception` que chama
+  `TPipeBase.ReportHandlerException` INLINE — mesma thread, antes do `DecInFlight`, sem
+  despacho novo — com `'<Evento> levantou <Classe>: <msg>'` e o `AConnId` do evento. A
+  conexão NÃO é fechada. Exceção do próprio `OnError` é engolida (sem recursão:
+  `TPipeErrorWork`/`qeError` não reportam). `OnRequest` fica de fora (já vira reply de
+  erro). Evento novo de usuário = passar o nome em `AEventName` do `Dispatch*` e envolver o
+  callback no mesmo `except`. Até a 0.1.1 o worker da pascal-common-faa engolia tudo em
+  silêncio. Racional e medição por `DispatchMode` em `docs/ARQUITETURA.md` §24.
 
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 

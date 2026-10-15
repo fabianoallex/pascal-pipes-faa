@@ -7,9 +7,14 @@
 > just one of the supported transports — the old API still works (see
 > [Compatibility](#compatibility-with-the-previous-api)).
 
-Cross-platform **inter-process communication** library for **Delphi 12+ (Win64 and
-Android)** and **FPC 3.2.2 / Lazarus (Linux x86_64 and ARM64)**, with a single codebase and
-a high-level API that completely abstracts the native operating system calls.
+Cross-platform **inter-process communication** library for **Delphi 12+ (Win32, Win64 and
+Android)** and **FPC 3.2.2 / Lazarus (Windows x64 and Linux x86_64)**, with a single codebase
+and a high-level API that completely abstracts the native operating system calls.
+
+The test suites run on these five combinations: Delphi Win32/Win64 and FPC Windows x64 on the
+development machine, FPC Linux x86_64 in Docker (`tools/test_fpc_docker.sh`) and Delphi
+Android on a real device (`tests/Android`). Linux ARM64 uses the same POSIX code but is **not
+tested**.
 
 The same API covers three reaches, switched by a single property:
 
@@ -691,8 +696,21 @@ misreading bytes — update both sides.
   releasing any object (verified by test: `Stop` under a 4-client flood finishes in < 2 s).
 - Abrupt peer death (killed process, closed handle) fires `OnClientDisconnected` /
   `OnDisconnected` without leaking handles/fds (verified by a handle-counting test).
-- Callbacks are always `procedure ... of object`; exceptions inside them are swallowed by
-  the pool (logging via `OnError` is your responsibility).
+- Callbacks are always `procedure ... of object`.
+- **An exception escaping a handler becomes `OnError` of the same component** (since 0.2.0;
+  up to 0.1.1 it was silently swallowed). This applies to every user event — `OnMessage`,
+  `OnTopicMessage`, `OnConnected`/`OnDisconnected`, `OnClientConnected`/
+  `OnClientDisconnected`, `OnPublish`, `OnSubscribe`/`OnUnsubscribe`, `OnDelivered`/
+  `OnDeliveryFailed`, `OnConnectAttemptFailed` — and in every `DispatchMode`. Details:
+  - `AConnId` is the event's connection (0 on the client and in `OnConnectAttemptFailed`);
+  - the message is `'<Event> levantou <ExceptionClass>: <message>'` (runtime messages are
+    still in Portuguese), e.g. `'OnMessage levantou EConvertError: $.quantity: ...'`;
+  - `OnError` runs **on the same thread, right after** the failed handler (pool worker, or
+    the main thread under `pdmMainThread`), not through a new dispatch;
+  - the **connection stays open** and the following messages arrive normally — closing it
+    is the app's call (`DisconnectClient(AConnId)` inside the server's `OnError`);
+  - an exception raised inside `OnError` itself is swallowed (no recursion);
+  - `OnRequest` is the exception to the rule: there the exception becomes an error reply.
 - Semantic detail: a client that connects and dies **before the server accepts** the
   connection is invisible (no events) — the instance/backlog is recycled.
 

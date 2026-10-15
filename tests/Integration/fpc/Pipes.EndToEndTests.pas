@@ -43,6 +43,13 @@ type
     // tempo mesmo em pdmPool.
     FGroupBusy: Integer;
     FGroupViolation: Integer;
+    // Excecao em handler -> OnError (0.2.0). FErrText/FErrConnId sob FLock.
+    FSrvErrCount: Integer;      // atomicos
+    FCliErrCount: Integer;
+    FErrText: string;
+    FErrConnId: TPipeConnectionId;
+    // True: WaitCount drena a fila da main thread (pdmMainThread no console).
+    FPumpMain: Boolean;
     // Handlers ('of object'):
     procedure OnSrvMessage(Sender: TObject; AConnId: TPipeConnectionId;
       const AData: TBytes);
@@ -56,6 +63,21 @@ type
     procedure OnSrvClientDisconnected(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnCliDisconnected(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnCliConnected(Sender: TObject; AConnId: TPipeConnectionId);
+    procedure OnSrvMessageBoom(Sender: TObject; AConnId: TPipeConnectionId;
+      const AData: TBytes);
+    procedure OnCliMessageBoom(Sender: TObject; AConnId: TPipeConnectionId;
+      const AData: TBytes);
+    procedure OnSrvClientConnectedBoom(Sender: TObject;
+      AConnId: TPipeConnectionId);
+    procedure OnSrvError(Sender: TObject; AConnId: TPipeConnectionId;
+      const AMsg: string);
+    procedure OnSrvErrorRaising(Sender: TObject; AConnId: TPipeConnectionId;
+      const AMsg: string);
+    procedure OnCliError(Sender: TObject; AConnId: TPipeConnectionId;
+      const AMsg: string);
+    // Excecao no OnMessage do servidor com o DispatchMode/chave dados.
+    procedure CheckOnMessageExceptionReachesOnError(AMode: TPipeDispatchMode;
+      const AGroupKey: string);
     procedure OnSrvRequestEco(Sender: TObject; AConnId: TPipeConnectionId;
       const ARequest: TBytes; out AReply: TBytes);
     procedure OnSrvRequestLento(Sender: TObject; AConnId: TPipeConnectionId;
@@ -93,6 +115,13 @@ type
     procedure SendBytesComGrupo_ChavesDiferentes_NaoBloqueiamEntreSi;
     procedure Compressao_ClienteParaServidor_ChegaIntegroEStatsLogicos;
     procedure Compressao_ServidorParaCliente_ChegaIntegro;
+    procedure ExcecaoNoOnMessage_Pool_ViraOnErrorEConexaoSegue;
+    procedure ExcecaoNoOnMessage_Serialized_ViraOnError;
+    procedure ExcecaoNoOnMessage_ComGrupo_ViraOnError;
+    procedure ExcecaoNoOnMessage_MainThread_ViraOnError;
+    procedure ExcecaoNoOnMessageDoCliente_ViraOnErrorDoCliente;
+    procedure ExcecaoNoOnClientConnected_ViraOnErrorComNomeDoEvento;
+    procedure ExcecaoNoProprioOnError_EngolidaSemRecursao;
   end;
 
 implementation
@@ -123,6 +152,11 @@ begin
   FCliDiscCount := 0;
   FGroupBusy := 0;
   FGroupViolation := 0;
+  FSrvErrCount := 0;
+  FCliErrCount := 0;
+  FErrText := '';
+  FErrConnId := 0;
+  FPumpMain := False;
 end;
 
 procedure TPipeEndToEndTests.TearDown;
@@ -142,7 +176,10 @@ var
 begin
   LDeadline := PcTickMs + ATimeoutMs;
   while (PcAtomicGet(ACounter) < AExpected) and (PcTickMs < LDeadline) do
-    Sleep(5);
+    if FPumpMain then
+      CheckSynchronize(5)
+    else
+      Sleep(5);
   Result := PcAtomicGet(ACounter) >= AExpected;
 end;
 
@@ -785,6 +822,202 @@ begin
   finally
     FLock.Leave;
   end;
+end;
+
+procedure TPipeEndToEndTests.OnSrvMessageBoom(Sender: TObject;
+  AConnId: TPipeConnectionId; const AData: TBytes);
+begin
+  // Simula o FromJson de um DTO recusando o payload.
+  if PipeUtf8Decode(AData) = 'boom' then
+    raise EConvertError.Create('$.quantity: nao e numero');
+  OnSrvMessage(Sender, AConnId, AData);
+end;
+
+procedure TPipeEndToEndTests.OnCliMessageBoom(Sender: TObject;
+  AConnId: TPipeConnectionId; const AData: TBytes);
+begin
+  if PipeUtf8Decode(AData) = 'boom' then
+    raise EConvertError.Create('cliente recusou');
+  OnCliMessage(Sender, AConnId, AData);
+end;
+
+procedure TPipeEndToEndTests.OnSrvClientConnectedBoom(Sender: TObject;
+  AConnId: TPipeConnectionId);
+begin
+  OnSrvClientConnected(Sender, AConnId);
+  raise EInvalidOperation.Create('falhou no connected');
+end;
+
+procedure TPipeEndToEndTests.OnSrvError(Sender: TObject;
+  AConnId: TPipeConnectionId; const AMsg: string);
+begin
+  FLock.Enter;
+  try
+    FErrText := AMsg;
+    FErrConnId := AConnId;
+  finally
+    FLock.Leave;
+  end;
+  PcAtomicInc(FSrvErrCount);
+end;
+
+procedure TPipeEndToEndTests.OnSrvErrorRaising(Sender: TObject;
+  AConnId: TPipeConnectionId; const AMsg: string);
+begin
+  OnSrvError(Sender, AConnId, AMsg);
+  raise Exception.Create('falhou dentro do OnError');
+end;
+
+procedure TPipeEndToEndTests.OnCliError(Sender: TObject;
+  AConnId: TPipeConnectionId; const AMsg: string);
+begin
+  FLock.Enter;
+  try
+    FErrText := AMsg;
+    FErrConnId := AConnId;
+  finally
+    FLock.Leave;
+  end;
+  PcAtomicInc(FCliErrCount);
+end;
+
+procedure TPipeEndToEndTests.CheckOnMessageExceptionReachesOnError(
+  AMode: TPipeDispatchMode; const AGroupKey: string);
+var
+  LName: string;
+  I: Integer;
+begin
+  // Ate a 0.1.1 a excecao era engolida pelo worker do pool (ou pelo
+  // TPipeQueuedEvent em pdmMainThread) e o OnError nunca disparava.
+  FPumpMain := AMode = pdmMainThread;
+  LName := UniquePipeName;
+  FServer := TNamedPipeServer.Create(LName);
+  FServer.DispatchMode := AMode;
+  FServer.OnMessage := OnSrvMessageBoom;
+  FServer.OnError := OnSrvError;
+  FServer.OnClientConnected := OnSrvClientConnected;
+  FServer.Listen;
+
+  FClient := TNamedPipeClient.Create(LName);
+  FClient.OnError := OnCliError;
+  FClient.Connect(3000);
+  AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
+
+  FClient.SendText('boom', AGroupKey);
+  FClient.SendText('depois', AGroupKey);
+  AssertTrue('excecao do OnMessage nao chegou ao OnError', WaitCount(FSrvErrCount, 1, 3000));
+  AssertTrue('mensagem seguinte nao chegou (conexao caiu?)', WaitCount(FSrvMsgCount, 1, 3000));
+  FLock.Enter;
+  try
+    AssertEquals('OnMessage levantou EConvertError: $.quantity: nao e numero', FErrText);
+    AssertTrue('OnError devia trazer o ConnId da mensagem', FErrConnId = FLastConnId);
+    AssertEquals('depois', FServerTexts[0]);
+  finally
+    FLock.Leave;
+  end;
+  AssertTrue('OnError devia disparar uma vez', PcAtomicGet(FSrvErrCount) = 1);
+  AssertTrue('o cliente nao devia receber erro', PcAtomicGet(FCliErrCount) = 0);
+  AssertTrue('a conexao devia continuar aberta', FServer.ClientCount = 1);
+  AssertTrue('o cliente devia continuar conectado', FClient.Connected);
+
+  if FPumpMain then
+  begin
+    // Mesmo cuidado de MainThread_EventosViaCheckSynchronize.
+    FreeAndNil(FClient);
+    FreeAndNil(FServer);
+    for I := 1 to 5 do
+      CheckSynchronize(10);
+  end;
+end;
+
+procedure TPipeEndToEndTests.ExcecaoNoOnMessage_Pool_ViraOnErrorEConexaoSegue;
+begin
+  CheckOnMessageExceptionReachesOnError(pdmPool, '');
+end;
+
+procedure TPipeEndToEndTests.ExcecaoNoOnMessage_Serialized_ViraOnError;
+begin
+  CheckOnMessageExceptionReachesOnError(pdmSerialized, '');
+end;
+
+procedure TPipeEndToEndTests.ExcecaoNoOnMessage_ComGrupo_ViraOnError;
+begin
+  // AGroupKey em pdmPool passa pelo TPipeMailboxDrainWork, outro except.
+  CheckOnMessageExceptionReachesOnError(pdmPool, 'caixa-1');
+end;
+
+procedure TPipeEndToEndTests.ExcecaoNoOnMessage_MainThread_ViraOnError;
+begin
+  CheckOnMessageExceptionReachesOnError(pdmMainThread, '');
+end;
+
+procedure TPipeEndToEndTests.ExcecaoNoOnMessageDoCliente_ViraOnErrorDoCliente;
+var
+  LConnId: TPipeConnectionId;
+begin
+  OpenPair;
+  FClient.OnMessage := OnCliMessageBoom;
+  FClient.OnError := OnCliError;
+  FServer.OnError := OnSrvError;
+  FLock.Enter;
+  try
+    LConnId := FLastConnId;
+  finally
+    FLock.Leave;
+  end;
+  FServer.SendText(LConnId, 'boom');
+  FServer.SendText(LConnId, 'depois');
+  AssertTrue('excecao do OnMessage do cliente nao chegou ao OnError', WaitCount(FCliErrCount, 1, 3000));
+  AssertTrue('mensagem seguinte nao chegou ao cliente', WaitCount(FCliMsgCount, 1, 3000));
+  FLock.Enter;
+  try
+    AssertEquals('OnMessage levantou EConvertError: cliente recusou', FErrText);
+    AssertTrue('no cliente o ConnId e'' sempre 0', FErrConnId = 0);
+    AssertEquals('depois', FClientTexts[0]);
+  finally
+    FLock.Leave;
+  end;
+  AssertTrue('o servidor nao devia receber erro', PcAtomicGet(FSrvErrCount) = 0);
+end;
+
+procedure TPipeEndToEndTests.ExcecaoNoOnClientConnected_ViraOnErrorComNomeDoEvento;
+var
+  LName: string;
+begin
+  // Nao so' OnMessage: todo handler do usuario segue a mesma regra.
+  LName := UniquePipeName;
+  FServer := TNamedPipeServer.Create(LName);
+  FServer.OnMessage := OnSrvMessage;
+  FServer.OnError := OnSrvError;
+  FServer.OnClientConnected := OnSrvClientConnectedBoom;
+  FServer.Listen;
+
+  FClient := TNamedPipeClient.Create(LName);
+  FClient.Connect(3000);
+  AssertTrue('excecao do OnClientConnected nao chegou ao OnError', WaitCount(FSrvErrCount, 1, 3000));
+  FLock.Enter;
+  try
+    AssertEquals('OnClientConnected levantou EInvalidOperation: falhou no connected', FErrText);
+    AssertTrue('OnError devia trazer o ConnId da conexao', FErrConnId = FLastConnId);
+  finally
+    FLock.Leave;
+  end;
+  FClient.SendText('segue');
+  AssertTrue('a conexao devia continuar funcionando', WaitCount(FSrvMsgCount, 1, 3000));
+end;
+
+procedure TPipeEndToEndTests.ExcecaoNoProprioOnError_EngolidaSemRecursao;
+begin
+  OpenPair;
+  FServer.OnMessage := OnSrvMessageBoom;
+  FServer.OnError := OnSrvErrorRaising;
+  FClient.SendText('boom');
+  FClient.SendText('depois');
+  AssertTrue('OnError nao disparou', WaitCount(FSrvErrCount, 1, 3000));
+  AssertTrue('mensagem seguinte nao chegou', WaitCount(FSrvMsgCount, 1, 3000));
+  Sleep(200); // uma recursao apareceria como um segundo OnError
+  AssertTrue('excecao do OnError nao pode realimentar o OnError', PcAtomicGet(FSrvErrCount) = 1);
+  AssertTrue('a conexao devia continuar aberta', FServer.ClientCount = 1);
 end;
 
 initialization

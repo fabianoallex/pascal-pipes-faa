@@ -6,9 +6,15 @@
 > apenas um dos transportes suportados — a API antiga segue funcionando (ver
 > [Compatibilidade](#compatibilidade-com-a-api-anterior)).
 
-Biblioteca multiplataforma de **comunicação entre processos** para **Delphi 12+ (Win64 e
-Android)** e **FPC 3.2.2 / Lazarus (Linux x86_64 e ARM64)**, com uma única base de código e
-uma API de alto nível que abstrai completamente as chamadas nativas do sistema operacional.
+Biblioteca multiplataforma de **comunicação entre processos** para **Delphi 12+ (Win32,
+Win64 e Android)** e **FPC 3.2.2 / Lazarus (Windows x64 e Linux x86_64)**, com uma única base
+de código e uma API de alto nível que abstrai completamente as chamadas nativas do sistema
+operacional.
+
+As suítes de teste rodam nessas cinco combinações: Delphi Win32/Win64 e FPC Windows x64 na
+máquina de desenvolvimento, FPC Linux x86_64 em Docker (`tools/test_fpc_docker.sh`) e Delphi
+Android em aparelho real (`tests/Android`). Linux ARM64 usa o mesmo código POSIX, mas **não
+é testado**.
 
 A mesma API atende três alcances, trocando uma property:
 
@@ -545,7 +551,8 @@ vivo?"). Detalhes e racional em `docs/ARQUITETURA.md` §16. Vitrine executável 
 - **Request-Reply síncrono** — `Request/RequestText(dados, timeout)` no cliente bloqueia o
   *chamador* (nunca a thread de leitura) até o reply correlacionado; no servidor, o handler
   `OnRequest` devolve o reply e a lib o envia com o correlation id certo. Exceção no
-  handler vira reply de erro (`EPipeError` no cliente, com a mensagem do servidor).
+  handler vira reply de erro (`EPipeError` no cliente, com a mensagem do servidor) — o
+  `OnError` do servidor NÃO dispara nesse caso, porque o erro já tem destino.
   Chamadas concorrentes de várias threads no mesmo cliente são suportadas.
 - **Pub/sub por tópico** — quem envia nomeia um **assunto**, não um destinatário:
   `Server.Publish('caixa.3.status', dados)` chega a todos os clientes cujo filtro alcança o
@@ -690,8 +697,21 @@ errados — atualize os dois lados.
   objeto (verificado por teste: `Stop` sob flood de 4 clientes conclui em < 2 s).
 - Queda abrupta do par (processo morto, handle fechado) dispara `OnClientDisconnected` /
   `OnDisconnected` sem vazar handles/fds (verificado por teste com contagem de handles).
-- Callbacks são sempre `procedure ... of object`; exceções dentro deles são engolidas pelo
-  pool (log via `OnError` é responsabilidade sua).
+- Callbacks são sempre `procedure ... of object`.
+- **Exceção que escapa de um handler vira `OnError` do mesmo componente** (desde a 0.2.0;
+  até a 0.1.1 era engolida em silêncio). Vale para todo evento do usuário — `OnMessage`,
+  `OnTopicMessage`, `OnConnected`/`OnDisconnected`, `OnClientConnected`/
+  `OnClientDisconnected`, `OnPublish`, `OnSubscribe`/`OnUnsubscribe`, `OnDelivered`/
+  `OnDeliveryFailed`, `OnConnectAttemptFailed` — e em todo `DispatchMode`. Detalhes:
+  - `AConnId` é o da conexão do evento (0 no cliente e em `OnConnectAttemptFailed`);
+  - a mensagem é `'<Evento> levantou <ClasseDaExceção>: <mensagem>'`, por exemplo
+    `'OnMessage levantou EConvertError: $.quantity: ...'`;
+  - o `OnError` roda **na mesma thread e logo depois** do handler que falhou (worker do
+    pool, ou main thread em `pdmMainThread`), não num despacho novo;
+  - a **conexão continua aberta** e as mensagens seguintes chegam normalmente — fechar ou
+    não é decisão do app (`DisconnectClient(AConnId)` dentro do `OnError` do servidor);
+  - exceção levantada dentro do próprio `OnError` é engolida (sem recursão);
+  - `OnRequest` é a exceção à regra: lá a exceção vira reply de erro para o cliente.
 - Detalhe de semântica: um cliente que conecta e morre **antes de o servidor aceitar** a
   conexão é invisível (nenhum evento) — a instância/backlog é reciclada.
 

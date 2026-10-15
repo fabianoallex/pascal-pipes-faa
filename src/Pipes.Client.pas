@@ -713,7 +713,7 @@ begin
   // Antes de OnConnected: quem assinou algo antes do Connect encontra as
   // assinaturas ja enviadas quando o proprio handler rodar.
   ReplaySubscriptions;
-  DispatchConnEvent(FOnConnected, 0);
+  DispatchConnEvent(FOnConnected, 0, 'OnConnected');
 end;
 
 procedure TPipeClient.ConnectAsync;
@@ -923,7 +923,7 @@ begin
   // que param de chegar depois de uma reconexao que o app nem viu) seria
   // atribuido a qualquer coisa menos a isto.
   ReplaySubscriptions;
-  DispatchConnEvent(FOnConnected, 0);
+  DispatchConnEvent(FOnConnected, 0, 'OnConnected');
   // So DEPOIS de a sessao estar completa (FReader atribuido): e' este flag
   // que libera o WaitReconnectDone do Disconnect — zera-lo antes deixaria o
   // Disconnect correr em paralelo com a montagem da sessao.
@@ -934,7 +934,7 @@ end;
 procedure TPipeClient.NotifyDisconnectedOnce;
 begin
   if PcAtomicCompareExchange(FDisconnectNotified, 1, 0) = 0 then
-    DispatchConnEvent(FOnDisconnected, 0);
+    DispatchConnEvent(FOnDisconnected, 0, 'OnDisconnected');
 end;
 
 procedure TPipeClient.ResetSessionStats;
@@ -1066,7 +1066,8 @@ begin
         PipeDecodeTopicPayload(AFrame.Payload, LTopic, LBody);
         // IsRetain aqui responde "isto e' historico?": so' o catch-up de
         // assinatura liga esse bit (ver TPipeServer.FanOut).
-        DispatchTopicEvent(FOnTopicMessage, 0, LTopic, LBody, AFrame.IsRetain);
+        DispatchTopicEvent(FOnTopicMessage, 0, LTopic, LBody, AFrame.IsRetain,
+          'OnTopicMessage');
       end;
     pfkPing, pfkRequest, pfkSubscribe, pfkUnsubscribe:
       ; // ping: reservado; os demais nao existem no sentido servidor -> cliente
