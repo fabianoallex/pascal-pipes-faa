@@ -6,6 +6,23 @@ uma versão minor pode mudar a API; toda mudança desse tipo aparece aqui.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-15
+
+### Alterado
+
+- **Exceção que escapa de um handler do usuário agora chega ao `OnError`** do mesmo
+  componente, em vez de ser engolida em silêncio pelo worker do pool. Vale para todos os
+  eventos (`OnMessage`, `OnTopicMessage`, `OnConnected`/`OnDisconnected`,
+  `OnClientConnected`/`OnClientDisconnected`, `OnPublish`, `OnSubscribe`/`OnUnsubscribe`,
+  `OnDelivered`/`OnDeliveryFailed`, `OnConnectAttemptFailed`) e para os três
+  `DispatchMode`, inclusive `pdmPool` com `AGroupKey`. `AConnId` é o da conexão do evento e
+  a mensagem é `'<Evento> levantou <Classe>: <mensagem>'`. O `OnError` roda inline, na mesma
+  thread do handler que falhou; a conexão não é fechada. Exceção dentro do próprio
+  `OnError` continua engolida. `OnRequest` não muda: a exceção segue virando reply de erro.
+  Quem usava `OnError` só para erros de transporte passa a receber também esses.
+- README: a lista de plataformas passa a ser a testada de fato (Delphi Win32/Win64/Android,
+  FPC Windows x64 e Linux x86_64); Linux ARM64 sai da lista por nunca ter sido testado.
+
 ## [0.1.1] - 2026-10-05
 
 ### Alterado
