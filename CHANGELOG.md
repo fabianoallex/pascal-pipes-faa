@@ -6,6 +6,51 @@ uma versão minor pode mudar a API; toda mudança desse tipo aparece aqui.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-15
+
+### Alterado
+
+- **Mensagens de runtime em inglês**, como nas outras bibliotecas `*-faa`: as ~250 strings de
+  exceção e de `OnError` de todas as units (`Pipes.Base`/`Client`/`Server`/`Commands`/`Json`/
+  `Topics`/`Compression`/`Framing`, os seis backends de transporte e TLS, e `Pipes.Discovery`).
+  Comentários do código seguem em português. **Classes de exceção e protocolo não mudam.**
+- Quem compara TEXTO de mensagem precisa atualizar. O recomendado é decidir pela classe
+  (`EPipeClosed`, `EPipeTimeout`, `EPipeTls`, `EPipeProtocol`, `EPipeCommandError`,
+  `EPipeJSONError`) e tratar o texto como diagnóstico. As que mais costumam ser comparadas:
+
+| Antes (≤ 0.2.0) | Agora (0.3.0) | Onde aparece |
+|---|---|---|
+| `servidor respondeu erro: X` | `server replied with error: X` | cliente (`Request`) |
+| `OnMessage levantou EConvertError: X` | `OnMessage raised EConvertError: X` | `OnError` (0.2.0) |
+| `servidor sem handler OnRequest` | `server has no OnRequest handler` | **fio** (reply de erro) |
+| `filtro de assinatura invalido: F` | `invalid subscription filter: F` | **fio** (corrId 0) e local |
+| `teto de N assinaturas por cliente atingido` | `limit of N subscriptions per client reached` | **fio** (corrId 0) |
+| `topico de publicacao invalido: T` | `invalid publish topic: T` | **fio** (corrId 0) |
+| `comando desconhecido: "C"` | `unknown command: "C"` | *fio* via `HandleRequest` |
+| `conexao inicial esgotada apos N tentativas` | `initial connection gave up after N attempts` | `OnError` |
+| `reconexao esgotada apos N tentativas` | `reconnection gave up after N attempts` | `OnError` |
+| `cliente nao esta conectado` | `client is not connected` | `EPipeClosed` |
+| `cliente N nao esta conectado` | `client N is not connected` | `EPipeError` (servidor) |
+| `request sem resposta em N ms` | `request got no reply within N ms` | `EPipeTimeout` |
+| `conexao encerrada pelo par` | `connection closed by the peer` | `EPipeClosed` |
+| `conexao recusada: MaxClients atingido` | `connection refused: MaxClients reached` | `OnError` |
+| `OpenSSL não encontrado (tentados: ...)` | `OpenSSL not found (tried: ...)` | `EPipeTls` |
+
+- **Peers de versões diferentes:** o fio não muda (o texto do reply de erro é UTF-8 livre), então
+  0.3.0 e ≤ 0.2.0 conversam normalmente. O único efeito é idioma misturado: um cliente 0.3.0
+  diante de um servidor 0.2.0 sem `OnRequest` levanta
+  `EPipeError: server replied with error: servidor sem handler OnRequest`.
+
+- Verificado em Delphi Win32/Win64, FPC Windows x64 e FPC Linux x86_64. **`tests/Android` não
+  foi executado em aparelho nesta versão** — os três casos que comparam texto foram atualizados
+  e seguem pendentes de rodada.
+
+### Corrigido
+
+- `Pipes.Discovery.pas` não tem BOM e trazia um travessão (—) dentro de três mensagens de
+  "porta de descoberta indisponível". O Delphi lê fonte sem BOM na codepage do sistema, então
+  essas mensagens podiam sair com o caractere corrompido. As mensagens agora são ASCII.
+
 ## [0.2.0] - 2026-10-15
 
 ### Alterado
