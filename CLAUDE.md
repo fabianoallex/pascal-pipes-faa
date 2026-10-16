@@ -13,6 +13,14 @@ selecionados pela property `Transport`: `ptLocal` (Named Pipe/UDS, padrão), `pt
 `README.md` (fonte de verdade para *o que existe hoje*) — leia os dois antes de
 implementar qualquer milestone novo.
 
+**A skill `dual-compiler-delphi-lazarus` não está neste repositório.** Fica no
+[pascal-skills-faa](https://github.com/fabianoallex/pascal-skills-faa), que é plugin e marketplace do Claude Code. Se ela
+não estiver carregada nesta sessão, peça ao usuário para instalá-la (escopo de usuário, para valer
+também numa aplicação que usa esta lib como submódulo):
+`/plugin marketplace add fabianoallex/pascal-skills-faa` e depois
+`/plugin install pascal-skills-faa@pascal-skills-faa`. O índice de todas as libs `*-faa` está em
+`dual-compiler-delphi-lazarus/references/faa-libraries.md` desse repositório.
+
 ## Decisões arquiteturais (fechadas — não rediscutir sem o usuário)
 
 - **Backend Windows (`ptLocal`):** Named Pipes reais (`CreateNamedPipe`/`ConnectNamedPipe`),
