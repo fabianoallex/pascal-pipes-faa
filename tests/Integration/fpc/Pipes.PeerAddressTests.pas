@@ -1,14 +1,18 @@
-unit Pipes.PeerAddressTests;
+﻿unit Pipes.PeerAddressTests;
 
 {$mode delphi}{$H+}
+
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Integration/Pipes.PeerAddressTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
 
 { Testes de integracao de TPipeServer.TryClientAddress (endereco IP:porta do
   par, ver docs/ARQUITETURA.md e o cabecalho de TryPeerAddress em
   Pipes.Transport.pas): so' existe endereco de rede em ptTcp/ptTls, nunca em
   ptLocal (Named Pipe/UDS), e o endereco sobrevive a saida do cliente do mesmo
   jeito que TryClientIdentity — mesmo motivo: responder "de onde veio quem
-  saiu?" dentro de OnClientDisconnected. Versao FPCUnit; espelha a versao
-  DUnitX em tests/Integration. }
+  saiu?" dentro de OnClientDisconnected. Mestre DUnitX; o espelho FPCUnit em
+  tests/Integration/fpc e' gerado por tools/gen_fpc_mirror.py. }
 
 interface
 
@@ -49,6 +53,8 @@ begin
     IntToStr(PcAtomicInc(GNameSeq));
 end;
 
+// Mesmo esquema de Pipes.TlsTests.UniqueAddr: faixa deslocada pelo tick para
+// reduzir colisao entre execucoes.
 function UniqueTcpAddress: string;
 begin
   Result := '127.0.0.1:' + IntToStr(25000 + (Int64(PcTickMs) mod 9000) +
@@ -74,7 +80,6 @@ end;
 
 procedure TPipePeerAddressTests.SetUp;
 begin
-  inherited;
   FDisconnected := 0;
 end;
 
@@ -82,7 +87,6 @@ procedure TPipePeerAddressTests.TearDown;
 begin
   FreeAndNil(FClient);
   FreeAndNil(FServer);
-  inherited;
 end;
 
 procedure TPipePeerAddressTests.OnSrvDisconnected(Sender: TObject;
@@ -113,18 +117,20 @@ begin
   FServer.Listen;
   FClient := TPipeClient.Create(FServer.Address, ptTcp);
   FClient.Connect(3000);
-  AssertTrue('servidor nao marcou a conexao como estabelecida a tempo',
+  TAssert.AssertTrue('servidor nao marcou a conexao como estabelecida a tempo',
     WaitClientCount(FServer, 1, 3000));
 
   LIds := FServer.ClientIds;
-  AssertEquals(1, Length(LIds));
-  AssertTrue('ptTcp devia ter endereco de rede',
+  TAssert.AssertEquals(1, Length(LIds));
+  TAssert.AssertTrue('ptTcp devia ter endereco de rede',
     FServer.TryClientAddress(LIds[0], LAddress));
-  AssertTrue('endereco devia comecar com o IP de loopback: ' + LAddress,
+  TAssert.AssertTrue('endereco devia comecar com o IP de loopback: ' + LAddress,
     Pos('127.0.0.1:', LAddress) = 1);
+  // A porta e' EFEMERA (o SO escolhe): so' confere que ha um numero > 0 apos
+  // o ':', nao um valor fixo.
   LColon := Pos(':', LAddress);
   LPort := StrToIntDef(Copy(LAddress, LColon + 1, MaxInt), -1);
-  AssertTrue('porta invalida em ' + LAddress, LPort > 0);
+  TAssert.AssertTrue('porta invalida em ' + LAddress, LPort > 0);
 end;
 
 procedure TPipePeerAddressTests.Local_SemEnderecoDeRede_DevolveFalse;
@@ -136,14 +142,14 @@ begin
   FServer.Listen;
   FClient := TPipeClient.Create(FServer.Address);
   FClient.Connect(3000);
-  AssertTrue('servidor nao marcou a conexao como estabelecida a tempo',
+  TAssert.AssertTrue('servidor nao marcou a conexao como estabelecida a tempo',
     WaitClientCount(FServer, 1, 3000));
 
   LIds := FServer.ClientIds;
-  AssertEquals(1, Length(LIds));
-  AssertFalse('ptLocal (Named Pipe/UDS) nao tem endereco IP',
+  TAssert.AssertEquals(1, Length(LIds));
+  TAssert.AssertFalse('ptLocal (Named Pipe/UDS) nao tem endereco IP',
     FServer.TryClientAddress(LIds[0], LAddress));
-  AssertEquals('', LAddress);
+  TAssert.AssertEquals('', LAddress);
 end;
 
 procedure TPipePeerAddressTests.ConexaoInexistente_DevolveFalse;
@@ -152,7 +158,7 @@ var
 begin
   FServer := TPipeServer.Create(UniquePipeName);
   FServer.Listen;
-  AssertFalse('conexao inexistente devia devolver False',
+  TAssert.AssertFalse('conexao inexistente devia devolver False',
     FServer.TryClientAddress(999999, LAddress));
 end;
 
@@ -167,21 +173,23 @@ begin
   FServer.Listen;
   FClient := TPipeClient.Create(FServer.Address, ptTcp);
   FClient.Connect(3000);
-  AssertTrue('servidor nao marcou a conexao como estabelecida a tempo',
+  TAssert.AssertTrue('servidor nao marcou a conexao como estabelecida a tempo',
     WaitClientCount(FServer, 1, 3000));
 
   LIds := FServer.ClientIds;
-  AssertEquals(1, Length(LIds));
+  TAssert.AssertEquals(1, Length(LIds));
   LId := LIds[0];
-  AssertTrue(FServer.TryClientAddress(LId, LAddress));
+  TAssert.AssertTrue(FServer.TryClientAddress(LId, LAddress));
 
   FClient.Disconnect;
-  AssertTrue('OnClientDisconnected nao disparou a tempo',
-    WaitFlag(FDisconnected, 3000));
+  TAssert.AssertTrue('OnClientDisconnected nao disparou a tempo', WaitFlag(FDisconnected, 3000));
 
-  AssertTrue('endereco devia sobreviver a saida do cliente',
+  // Mesmo criterio de TryClientIdentity: o endereco continua consultavel
+  // DEPOIS da saida, para responder "de onde veio quem saiu?" dentro do
+  // proprio handler de OnClientDisconnected.
+  TAssert.AssertTrue('endereco devia sobreviver a saida do cliente',
     FServer.TryClientAddress(LId, LAddress));
-  AssertTrue(Pos('127.0.0.1:', LAddress) = 1);
+  TAssert.AssertTrue(Pos('127.0.0.1:', LAddress) = 1);
 end;
 
 initialization

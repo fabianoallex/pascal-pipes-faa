@@ -1,3 +1,17 @@
+# tools/
+
+- `test_fpc.sh` / `test_fpc_docker.sh` — suítes FPCUnit no Windows e no Linux (Docker); ver
+  `README.md`, seção "Testes".
+- `gen_fpc_mirror.py` — gera os espelhos FPCUnit (`tests/*/fpc/*Tests.pas`) a partir dos
+  mestres DUnitX. É cópia SEM alteração de `scripts/gen_fpc_mirror.py` da skill
+  `dual-compiler-delphi-lazarus` (pascal-skills-faa), junto com o adaptador
+  `tests/Unit/Pipes.DUnitXCompat.pas` (template `assets/DUnitXCompat.pas.template`). Não
+  edite nenhum dos dois aqui: mude na skill e reinstale com
+  `python <skill>/scripts/check_test_kit.py . --install Pipes`. Uso:
+  `python tools/gen_fpc_mirror.py` (regera) e `--check` (só confere; os dois scripts de
+  teste rodam isso antes de compilar).
+- `gerar-pki.sh` — PKI própria para mTLS; guia abaixo.
+
 # tools/gerar-pki.sh — gerando sua própria PKI para mTLS
 
 Este guia é para quem vai usar `ptTls` com mTLS **de verdade** (não a PKI de

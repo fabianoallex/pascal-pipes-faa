@@ -1,9 +1,9 @@
-unit Pipes.JsonTests;
+﻿unit Pipes.JsonTests;
 
 { Testes do helper opcional Pipes.Json: fronteira bytes<->JSON (roundtrip,
   JSON invalido/vazio, UTF-8) e a fiacao de PipeSendJSON/PipeRequestJSON
-  sobre um par servidor/cliente REAL (ptLocal). Versao DUnitX; espelha a
-  versao FPCUnit em tests/Integration/fpc.
+  sobre um par servidor/cliente REAL (ptLocal). Mestre DUnitX; o espelho
+  FPCUnit em tests/Integration/fpc e' gerado por tools/gen_fpc_mirror.py.
 
   Fica em Integration, nao em Unit: Pipes.Json.pas depende de Pipes.Client/
   Pipes.Server (para PipeSendJSON/PipeRequestJSON), entao a unit inteira nao
@@ -15,9 +15,10 @@ interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   SyncObjs,
-  System.JSON,
+  {$IFDEF FPC}fpjson,{$ELSE}System.JSON,{$ENDIF}
   Pipes.Types,
   PascalCommon.Threading,
   Pipes.Framing,
@@ -46,7 +47,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     // --- fronteira bytes<->JSON (nao abre conexao) ---
     [Test] procedure RoundTrip_ObjetoSimples;
     [Test] procedure RoundTrip_Utf8PreservaAcentos;
@@ -67,6 +68,44 @@ function UniquePipeName: string;
 begin
   Result := 'pipes_faa_json_' + IntToStr(Int64(PcTickMs)) + '_' +
     IntToStr(PcAtomicInc(GNameSeq));
+end;
+
+// System.JSON (Delphi) e fpjson (FPC) nao tem a mesma API de objeto: estes
+// helpers deixam o corpo dos testes igual nos dois compiladores.
+procedure JsonAddStr(AObj: TJSONObject; const AName, AValue: string);
+begin
+  {$IFDEF FPC}
+  AObj.Add(AName, AValue);
+  {$ELSE}
+  AObj.AddPair(AName, AValue);
+  {$ENDIF}
+end;
+
+procedure JsonAddInt(AObj: TJSONObject; const AName: string; AValue: Integer);
+begin
+  {$IFDEF FPC}
+  AObj.Add(AName, AValue);
+  {$ELSE}
+  AObj.AddPair(AName, TJSONNumber.Create(AValue));
+  {$ENDIF}
+end;
+
+function JsonStr(AObj: TJSONObject; const AName: string): string;
+begin
+  {$IFDEF FPC}
+  Result := AObj.Get(AName, '');
+  {$ELSE}
+  Result := AObj.GetValue<string>(AName);
+  {$ENDIF}
+end;
+
+function JsonInt(AObj: TJSONObject; const AName: string): Integer;
+begin
+  {$IFDEF FPC}
+  Result := AObj.Get(AName, 0);
+  {$ELSE}
+  Result := AObj.GetValue<Integer>(AName);
+  {$ENDIF}
 end;
 
 function MakeBytes(const AValues: array of Byte): TBytes;
@@ -126,8 +165,7 @@ begin
   try
     LReply := TJSONObject.Create;
     try
-      LReply.AddPair('numero', TJSONNumber.Create(
-        2 * LReq.GetValue<Integer>('numero')));
+      JsonAddInt(LReply, 'numero', 2 * JsonInt(LReq, 'numero'));
       AReply := PipeJSONToBytes(LReply);
     finally
       LReply.Free;
@@ -168,8 +206,8 @@ var
 begin
   LObj := TJSONObject.Create;
   try
-    LObj.AddPair('nome', 'caixa-3');
-    LObj.AddPair('numero', TJSONNumber.Create(42));
+    JsonAddStr(LObj, 'nome', 'caixa-3');
+    JsonAddInt(LObj, 'numero', 42);
     LBytes := PipeJSONToBytes(LObj);
   finally
     LObj.Free;
@@ -177,8 +215,8 @@ begin
 
   LParsed := PipeBytesToJSON(LBytes) as TJSONObject;
   try
-    Assert.AreEqual('caixa-3', LParsed.GetValue<string>('nome'));
-    Assert.AreEqual(42, LParsed.GetValue<Integer>('numero'));
+    TAssert.AssertEquals('caixa-3', JsonStr(LParsed, 'nome'));
+    TAssert.AssertEquals(42, JsonInt(LParsed, 'numero'));
   finally
     LParsed.Free;
   end;
@@ -198,7 +236,7 @@ begin
 
   LObj := TJSONObject.Create;
   try
-    LObj.AddPair('descricao', LDescricao);
+    JsonAddStr(LObj, 'descricao', LDescricao);
     LBytes := PipeJSONToBytes(LObj);
   finally
     LObj.Free;
@@ -206,7 +244,7 @@ begin
 
   LParsed := PipeBytesToJSON(LBytes) as TJSONObject;
   try
-    Assert.AreEqual(LDescricao, LParsed.GetValue<string>('descricao'));
+    TAssert.AssertEquals(LDescricao, JsonStr(LParsed, 'descricao'));
   finally
     LParsed.Free;
   end;
@@ -215,13 +253,13 @@ end;
 procedure TPipeJsonTests.BytesToJSON_Invalido_Levanta;
 begin
   FPayload := PipeUtf8Encode('{"nome": ');
-  Assert.WillRaise(DoParse, EPipeJSONError);
+  TAssert.AssertException(EPipeJSONError, DoParse);
 end;
 
 procedure TPipeJsonTests.BytesToJSON_Vazio_Levanta;
 begin
   FPayload := nil;
-  Assert.WillRaise(DoParse, EPipeJSONError);
+  TAssert.AssertException(EPipeJSONError, DoParse);
 end;
 
 procedure TPipeJsonTests.JSONToBytes_NaoLiberaAValue;
@@ -232,9 +270,9 @@ begin
   // segundo acesso abaixo daria access violation / use-after-free.
   LObj := TJSONObject.Create;
   try
-    LObj.AddPair('x', '1');
+    JsonAddStr(LObj, 'x', '1');
     PipeJSONToBytes(LObj);
-    Assert.AreEqual('1', LObj.GetValue<string>('x'));
+    TAssert.AssertEquals('1', JsonStr(LObj, 'x'));
   finally
     LObj.Free;
   end;
@@ -250,14 +288,14 @@ begin
   OpenPair;
   LObj := TJSONObject.Create;
   try
-    LObj.AddPair('evento', 'abriu-caixa');
-    LObj.AddPair('caixa', TJSONNumber.Create(3));
+    JsonAddStr(LObj, 'evento', 'abriu-caixa');
+    JsonAddInt(LObj, 'caixa', 3);
     PipeSendJSON(FClient, LObj);
   finally
     LObj.Free;
   end;
 
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou ao servidor');
+  TAssert.AssertTrue('mensagem nao chegou ao servidor', WaitCount(FSrvMsgCount, 1, 3000));
   FLock.Enter;
   try
     LSnapshot := FReceived;
@@ -267,8 +305,8 @@ begin
 
   LParsed := PipeBytesToJSON(LSnapshot) as TJSONObject;
   try
-    Assert.AreEqual('abriu-caixa', LParsed.GetValue<string>('evento'));
-    Assert.AreEqual(3, LParsed.GetValue<Integer>('caixa'));
+    TAssert.AssertEquals('abriu-caixa', JsonStr(LParsed, 'evento'));
+    TAssert.AssertEquals(3, JsonInt(LParsed, 'caixa'));
   finally
     LParsed.Free;
   end;
@@ -281,10 +319,10 @@ begin
   OpenPair;
   LReq := TJSONObject.Create;
   try
-    LReq.AddPair('numero', TJSONNumber.Create(21));
+    JsonAddInt(LReq, 'numero', 21);
     LReply := PipeRequestJSON(FClient, LReq, 3000) as TJSONObject;
     try
-      Assert.AreEqual(42, LReply.GetValue<Integer>('numero'));
+      TAssert.AssertEquals(42, JsonInt(LReply, 'numero'));
     finally
       LReply.Free;
     end;

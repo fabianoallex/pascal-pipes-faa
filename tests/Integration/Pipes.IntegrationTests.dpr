@@ -8,6 +8,7 @@ uses
   DUnitX.Loggers.Console,
   DUnitX.Loggers.Xml.NUnit,
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat in '..\Unit\Pipes.DUnitXCompat.pas',
   Pipes.Threading in '..\..\src\Pipes.Threading.pas',
   Pipes.Types in '..\..\src\Pipes.Types.pas',
   Pipes.Framing in '..\..\src\Pipes.Framing.pas',

@@ -1,14 +1,16 @@
-unit Pipes.EndToEndTests;
+﻿unit Pipes.EndToEndTests;
 
 { Testes fim-a-fim da camada de alto nivel (TNamedPipeServer/TNamedPipeClient):
   mensagens nos dois sentidos, eventos de conexao/desconexao, ordem com
   pdmSerialized, multiplos clientes e encerramento sob trafego (detector de
-  deadlock). Versao DUnitX; espelha a versao FPCUnit em tests/Integration/fpc. }
+  deadlock). Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e'
+  gerado por tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Classes,
   SyncObjs,
@@ -91,7 +93,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     [Test] procedure MensagemDoClienteChegaAoServidor;
     [Test] procedure ServidorRespondeAoCliente;
     [Test] procedure OrdemPreservadaComSerialized;
@@ -124,12 +126,6 @@ type
   end;
 
 implementation
-
-// Comparacao nao-generica (evita E2532 com NativeInt no Win64).
-procedure EqualInt(AExpected, AActual: Integer);
-begin
-  Assert.AreEqual(AExpected, AActual);
-end;
 
 var
   GNameSeq: Integer;
@@ -319,18 +315,18 @@ begin
   FClient.OnDisconnected := OnCliDisconnected;
   FClient.OnConnected := OnCliConnected;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FConnectedCount, 1, 3000), 'OnClientConnected nao disparou');
+  TAssert.AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
 end;
 
 procedure TPipeEndToEndTests.MensagemDoClienteChegaAoServidor;
 begin
   OpenPair;
   FClient.SendText('ola servidor');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou ao servidor');
+  TAssert.AssertTrue('mensagem nao chegou ao servidor', WaitCount(FSrvMsgCount, 1, 3000));
   FLock.Enter;
   try
-    Assert.AreEqual('ola servidor', FServerTexts[0]);
-    Assert.IsTrue(FLastConnId > 0, 'connId devia ser > 0');
+    TAssert.AssertEquals('ola servidor', FServerTexts[0]);
+    TAssert.AssertTrue('connId devia ser > 0', FLastConnId > 0);
   finally
     FLock.Leave;
   end;
@@ -348,10 +344,10 @@ begin
     FLock.Leave;
   end;
   FServer.SendText(LConnId, 'bem-vindo');
-  Assert.IsTrue(WaitCount(FCliMsgCount, 1, 3000), 'resposta nao chegou ao cliente');
+  TAssert.AssertTrue('resposta nao chegou ao cliente', WaitCount(FCliMsgCount, 1, 3000));
   FLock.Enter;
   try
-    Assert.AreEqual('bem-vindo', FClientTexts[0]);
+    TAssert.AssertEquals('bem-vindo', FClientTexts[0]);
   finally
     FLock.Leave;
   end;
@@ -366,9 +362,9 @@ begin
   // nenhum outro teste percebesse.
   OpenPair(pdmSerialized);
   FClient.SendText('primeira');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou');
-  Assert.AreEqual(1, FConnCountAtFirstMsg,
-    'OnClientConnected devia ter disparado antes do primeiro OnMessage');
+  TAssert.AssertTrue('mensagem nao chegou', WaitCount(FSrvMsgCount, 1, 3000));
+  TAssert.AssertEquals('OnClientConnected devia ter disparado antes do primeiro OnMessage',
+    1, FConnCountAtFirstMsg);
 end;
 
 procedure TPipeEndToEndTests.OrdemPreservadaComSerialized;
@@ -378,12 +374,12 @@ begin
   OpenPair(pdmSerialized);
   for I := 1 to 30 do
     FClient.SendText('m' + IntToStr(I));
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 30, 5000), 'nem todas as mensagens chegaram');
+  TAssert.AssertTrue('nem todas as mensagens chegaram', WaitCount(FSrvMsgCount, 30, 5000));
   FLock.Enter;
   try
-    EqualInt(30, FServerTexts.Count);
+    TAssert.AssertEquals(30, FServerTexts.Count);
     for I := 1 to 30 do
-      Assert.AreEqual('m' + IntToStr(I), FServerTexts[I - 1]);
+      TAssert.AssertEquals('m' + IntToStr(I), FServerTexts[I - 1]);
   finally
     FLock.Leave;
   end;
@@ -404,9 +400,9 @@ begin
       LClients[I].Connect(3000);
       LClients[I].SendText('extra' + IntToStr(I + 1));
     end;
-    Assert.IsTrue(WaitCount(FSrvMsgCount, 3, 5000), 'mensagens dos 3 clientes nao chegaram');
-    Assert.IsTrue(WaitCount(FConnectedCount, 4, 3000), '4 conexoes esperadas');
-    EqualInt(4, FServer.ClientCount);
+    TAssert.AssertTrue('mensagens dos 3 clientes nao chegaram', WaitCount(FSrvMsgCount, 3, 5000));
+    TAssert.AssertTrue('4 conexoes esperadas', WaitCount(FConnectedCount, 4, 3000));
+    TAssert.AssertEquals(4, FServer.ClientCount);
     FLock.Enter;
     try
       FServerTexts.Sort;
@@ -414,7 +410,7 @@ begin
     finally
       FLock.Leave;
     end;
-    Assert.AreEqual('extra1,extra2,extra3', LAll);
+    TAssert.AssertEquals('extra1,extra2,extra3', LAll);
   finally
     for I := 0 to 2 do
       LClients[I].Free;
@@ -425,11 +421,10 @@ procedure TPipeEndToEndTests.DisconnectDoClienteDisparaEventoNoServidor;
 begin
   OpenPair;
   FClient.Disconnect;
-  Assert.IsTrue(WaitCount(FSrvDiscCount, 1, 3000),
-    'OnClientDisconnected nao disparou no servidor');
-  Assert.IsTrue(WaitCount(FCliDiscCount, 1, 3000),
-    'OnDisconnected nao disparou no cliente');
-  EqualInt(0, FServer.ClientCount);
+  TAssert.AssertTrue('OnClientDisconnected nao disparou no servidor',
+    WaitCount(FSrvDiscCount, 1, 3000));
+  TAssert.AssertTrue('OnDisconnected nao disparou no cliente', WaitCount(FCliDiscCount, 1, 3000));
+  TAssert.AssertEquals(0, FServer.ClientCount);
 end;
 
 procedure TPipeEndToEndTests.DisconnectClientDoServidorDerrubaCliente;
@@ -444,11 +439,10 @@ begin
     FLock.Leave;
   end;
   FServer.DisconnectClient(LConnId);
-  Assert.IsTrue(WaitCount(FSrvDiscCount, 1, 3000),
-    'OnClientDisconnected nao disparou no servidor');
-  Assert.IsTrue(WaitCount(FCliDiscCount, 1, 3000),
-    'cliente nao percebeu a desconexao');
-  Assert.IsFalse(FClient.Connected, 'cliente devia constar como desconectado');
+  TAssert.AssertTrue('OnClientDisconnected nao disparou no servidor',
+    WaitCount(FSrvDiscCount, 1, 3000));
+  TAssert.AssertTrue('cliente nao percebeu a desconexao', WaitCount(FCliDiscCount, 1, 3000));
+  TAssert.AssertFalse('cliente devia constar como desconectado', FClient.Connected);
 end;
 
 procedure TPipeEndToEndTests.StopComTrafego_TerminaRapido;
@@ -461,16 +455,15 @@ begin
     FClient.SendText('trafego' + IntToStr(I));
   T0 := PcTickMs;
   FServer.Stop;
-  Assert.IsTrue(PcTickMs - T0 < 2000, 'Stop sob trafego demorou demais (deadlock?)');
-  Assert.IsFalse(FServer.Active, 'servidor devia estar inativo');
-  Assert.IsTrue(WaitCount(FCliDiscCount, 1, 3000),
-    'cliente nao percebeu o Stop do servidor');
+  TAssert.AssertTrue('Stop sob trafego demorou demais (deadlock?)', PcTickMs - T0 < 2000);
+  TAssert.AssertFalse('servidor devia estar inativo', FServer.Active);
+  TAssert.AssertTrue('cliente nao percebeu o Stop do servidor', WaitCount(FCliDiscCount, 1, 3000));
 end;
 
 procedure TPipeEndToEndTests.SendParaConexaoInexistente_Levanta;
 begin
   OpenPair;
-  Assert.WillRaise(DoSendToInvalid, EPipeError);
+  TAssert.AssertException(EPipeError, DoSendToInvalid);
 end;
 
 procedure TPipeEndToEndTests.Broadcast_AtingeTodosOsClientes;
@@ -486,14 +479,14 @@ begin
     LC3.OnMessage := OnCliMessage;
     LC2.Connect(3000);
     LC3.Connect(3000);
-    Assert.IsTrue(WaitCount(FConnectedCount, 3, 3000), '3 conexoes esperadas');
+    TAssert.AssertTrue('3 conexoes esperadas', WaitCount(FConnectedCount, 3, 3000));
     FServer.BroadcastText('aviso geral');
-    Assert.IsTrue(WaitCount(FCliMsgCount, 3, 5000), 'broadcast nao atingiu os 3 clientes');
+    TAssert.AssertTrue('broadcast nao atingiu os 3 clientes', WaitCount(FCliMsgCount, 3, 5000));
     FLock.Enter;
     try
-      EqualInt(3, FClientTexts.Count);
+      TAssert.AssertEquals(3, FClientTexts.Count);
       for I := 0 to 2 do
-        Assert.AreEqual('aviso geral', FClientTexts[I]);
+        TAssert.AssertEquals('aviso geral', FClientTexts[I]);
     finally
       FLock.Leave;
     end;
@@ -507,8 +500,8 @@ procedure TPipeEndToEndTests.RequestReply_EcoaComCorrelacao;
 begin
   OpenPair;
   FServer.OnRequest := OnSrvRequestEco;
-  Assert.AreEqual('eco:abc', FClient.RequestText('abc', 3000));
-  Assert.AreEqual('eco:xyz', FClient.RequestText('xyz', 3000));
+  TAssert.AssertEquals('eco:abc', FClient.RequestText('abc', 3000));
+  TAssert.AssertEquals('eco:xyz', FClient.RequestText('xyz', 3000));
 end;
 
 procedure TPipeEndToEndTests.Request_SemHandler_LevantaEPipeError;
@@ -517,10 +510,9 @@ var
 begin
   OpenPair; // sem OnRequest atribuido
   T0 := PcTickMs;
-  Assert.WillRaise(DoRequestNoHandler, EPipeError);
+  TAssert.AssertException(EPipeError, DoRequestNoHandler);
   // Voltou pelo reply de erro do servidor, nao pelo timeout de 3000 ms.
-  Assert.IsTrue(PcTickMs - T0 < 2000,
-    'devia falhar rapido (reply de erro), nao por timeout');
+  TAssert.AssertTrue('devia falhar rapido (reply de erro), nao por timeout', PcTickMs - T0 < 2000);
 end;
 
 procedure TPipeEndToEndTests.Request_Timeout_LevantaEPipeTimeout;
@@ -530,9 +522,9 @@ begin
   OpenPair;
   FServer.OnRequest := OnSrvRequestLento; // dorme 800 ms; timeout = 200 ms
   T0 := PcTickMs;
-  Assert.WillRaise(DoRequestShortTimeout, EPipeTimeout);
-  Assert.IsTrue(PcTickMs - T0 >= 180, 'timeout retornou cedo demais');
-  Assert.IsTrue(PcTickMs - T0 < 3000, 'timeout demorou demais');
+  TAssert.AssertException(EPipeTimeout, DoRequestShortTimeout);
+  TAssert.AssertTrue('timeout retornou cedo demais', PcTickMs - T0 >= 180);
+  TAssert.AssertTrue('timeout demorou demais', PcTickMs - T0 < 3000);
 end;
 
 procedure TPipeEndToEndTests.AutoReconnect_ReconectaAposRestartDoServidor;
@@ -551,13 +543,13 @@ begin
   FClient.AutoReconnect := True;
   FClient.ReconnectDelayMs := 300;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 3000), 'primeira conexao nao confirmou');
+  TAssert.AssertTrue('primeira conexao nao confirmou', WaitCount(FCliConnCount, 1, 3000));
 
   FServer.Stop; // derruba o cliente
-  Assert.IsTrue(WaitCount(FCliDiscCount, 1, 5000), 'queda nao notificada');
+  TAssert.AssertTrue('queda nao notificada', WaitCount(FCliDiscCount, 1, 5000));
 
   FServer.Listen; // "restart" do servidor no mesmo nome
-  Assert.IsTrue(WaitCount(FCliConnCount, 2, 10000), 'cliente nao reconectou');
+  TAssert.AssertTrue('cliente nao reconectou', WaitCount(FCliConnCount, 2, 10000));
 
   // Contrato do AutoReconnect: um send pode pegar uma janela de churn
   // (EPipeClosed transitorio entre queda e re-reconexao) — o chamador
@@ -575,10 +567,10 @@ begin
     end;
     Sleep(50);
   end;
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 5000), 'mensagem pos-reconexao nao chegou');
+  TAssert.AssertTrue('mensagem pos-reconexao nao chegou', WaitCount(FSrvMsgCount, 1, 5000));
   FLock.Enter;
   try
-    Assert.AreEqual('depois da reconexao', FServerTexts[0]);
+    TAssert.AssertEquals('depois da reconexao', FServerTexts[0]);
   finally
     FLock.Leave;
   end;
@@ -605,10 +597,10 @@ begin
   LDeadline := PcTickMs + 5000;
   while (PcAtomicGet(FSrvMsgCount) < 1) and (PcTickMs < LDeadline) do
     CheckSynchronize(10);
-  EqualInt(1, PcAtomicGet(FSrvMsgCount));
+  TAssert.AssertEquals(1, PcAtomicGet(FSrvMsgCount));
   FLock.Enter;
   try
-    Assert.AreEqual('via main thread', FServerTexts[0]);
+    TAssert.AssertEquals('via main thread', FServerTexts[0]);
   finally
     FLock.Leave;
   end;
@@ -635,13 +627,13 @@ begin
   LItems[1] := PipeUtf8Encode('dois');
   LItems[2] := PipeUtf8Encode('tres');
   FClient.SendBytesBatch(LItems);
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 3, 3000), 'lote nao chegou completo ao servidor');
+  TAssert.AssertTrue('lote nao chegou completo ao servidor', WaitCount(FSrvMsgCount, 3, 3000));
   FLock.Enter;
   try
-    EqualInt(3, FServerTexts.Count);
-    Assert.AreEqual('um', FServerTexts[0]);
-    Assert.AreEqual('dois', FServerTexts[1]);
-    Assert.AreEqual('tres', FServerTexts[2]);
+    TAssert.AssertEquals(3, FServerTexts.Count);
+    TAssert.AssertEquals('um', FServerTexts[0]);
+    TAssert.AssertEquals('dois', FServerTexts[1]);
+    TAssert.AssertEquals('tres', FServerTexts[2]);
   finally
     FLock.Leave;
   end;
@@ -668,7 +660,7 @@ begin
   FClient.DispatchMode := pdmSerialized;
   FClient.OnMessage := OnCliMessage;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FConnectedCount, 1, 3000), 'OnClientConnected nao disparou');
+  TAssert.AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
 
   FLock.Enter;
   try
@@ -681,13 +673,13 @@ begin
   LItems[1] := PipeUtf8Encode('b');
   LItems[2] := PipeUtf8Encode('c');
   FServer.SendBytesBatch(LConnId, LItems);
-  Assert.IsTrue(WaitCount(FCliMsgCount, 3, 3000), 'lote nao chegou completo ao cliente');
+  TAssert.AssertTrue('lote nao chegou completo ao cliente', WaitCount(FCliMsgCount, 3, 3000));
   FLock.Enter;
   try
-    EqualInt(3, FClientTexts.Count);
-    Assert.AreEqual('a', FClientTexts[0]);
-    Assert.AreEqual('b', FClientTexts[1]);
-    Assert.AreEqual('c', FClientTexts[2]);
+    TAssert.AssertEquals(3, FClientTexts.Count);
+    TAssert.AssertEquals('a', FClientTexts[0]);
+    TAssert.AssertEquals('b', FClientTexts[1]);
+    TAssert.AssertEquals('c', FClientTexts[2]);
   finally
     FLock.Leave;
   end;
@@ -702,11 +694,11 @@ begin
   FClient.SendBytesBatch(LItems); // no-op
   // Se o no-op tivesse escrito algo, essa sentinela nao seria a mensagem [0].
   FClient.SendText('sentinela');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000));
+  TAssert.AssertTrue(WaitCount(FSrvMsgCount, 1, 3000));
   FLock.Enter;
   try
-    EqualInt(1, FServerTexts.Count);
-    Assert.AreEqual('sentinela', FServerTexts[0]);
+    TAssert.AssertEquals(1, FServerTexts.Count);
+    TAssert.AssertEquals('sentinela', FServerTexts[0]);
   finally
     FLock.Leave;
   end;
@@ -724,16 +716,15 @@ begin
   FServer.OnMessage := OnSrvMessageGrouped;
   for I := 1 to N do
     FClient.SendBytes(PipeUtf8Encode(IntToStr(I)), 'caixa-3');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, N, 5000),
-    'nem todas as mensagens do grupo chegaram');
-  Assert.AreEqual(0, PcAtomicGet(FGroupViolation),
-    'duas mensagens do MESMO grupo rodaram sobrepostas em pdmPool');
+  TAssert.AssertTrue('nem todas as mensagens do grupo chegaram', WaitCount(FSrvMsgCount, N, 5000));
+  TAssert.AssertEquals('duas mensagens do MESMO grupo rodaram sobrepostas em pdmPool',
+    0, PcAtomicGet(FGroupViolation));
   FLock.Enter;
   try
-    EqualInt(N, FServerTexts.Count);
+    TAssert.AssertEquals(N, FServerTexts.Count);
     for I := 1 to N do
-      Assert.AreEqual(IntToStr(I), FServerTexts[I - 1],
-        'ordem do grupo nao preservada na entrega (pdmPool)');
+      TAssert.AssertEquals('ordem do grupo nao preservada na entrega (pdmPool)',
+        IntToStr(I), FServerTexts[I - 1]);
   finally
     FLock.Leave;
   end;
@@ -748,10 +739,10 @@ begin
   T0 := PcTickMs;
   FClient.SendBytes(PipeUtf8Encode('a'), 'grupoA');
   FClient.SendBytes(PipeUtf8Encode('b'), 'grupoB');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 2, 3000), 'as duas mensagens nao chegaram');
+  TAssert.AssertTrue('as duas mensagens nao chegaram', WaitCount(FSrvMsgCount, 2, 3000));
   // Serializado (bug) levaria ~400ms; em paralelo, ~200ms — folga generosa.
-  Assert.IsTrue(PcTickMs - T0 < 350,
-    'chaves diferentes nao processaram em paralelo (parece serializado)');
+  TAssert.AssertTrue('chaves diferentes nao processaram em paralelo (parece serializado)',
+    PcTickMs - T0 < 350);
 end;
 
 procedure TPipeEndToEndTests.Compressao_ClienteParaServidor_ChegaIntegroEStatsLogicos;
@@ -768,17 +759,17 @@ begin
   FClient := TNamedPipeClient.Create(LName);
   FClient.CompressionMinSize := 256; // liga a PRODUCAO so' deste lado
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FConnectedCount, 1, 3000), 'OnClientConnected nao disparou');
+  TAssert.AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
 
   // Repetitivo e acima do minimo: o cliente vai mandar isto como
   // pfkCompressed de verdade, nao so' exercitar o caminho desligado.
   LTexto := StringOfChar('A', 20000);
   FClient.SendText(LTexto);
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou ao servidor');
+  TAssert.AssertTrue('mensagem nao chegou ao servidor', WaitCount(FSrvMsgCount, 1, 3000));
   FLock.Enter;
   try
-    Assert.AreEqual(LTexto, FServerTexts[0],
-      'payload deveria chegar integro depois de descomprimido no servidor');
+    TAssert.AssertEquals('payload deveria chegar integro depois de descomprimido no servidor',
+      LTexto, FServerTexts[0]);
   finally
     FLock.Leave;
   end;
@@ -787,9 +778,8 @@ begin
   // texto original de 20000 bytes, nao com o tamanho reduzido que passou
   // pelo fio.
   LStats := FServer.Stats;
-  Assert.IsTrue(
-    LStats.TotalBytesReceived >= UInt64(Length(PipeUtf8Encode(LTexto))),
-    'Stats deveriam contar o payload logico, nao o comprimido no fio');
+  TAssert.AssertTrue('Stats deveriam contar o payload logico, nao o comprimido no fio',
+    LStats.TotalBytesReceived >= UInt64(Length(PipeUtf8Encode(LTexto))));
 end;
 
 procedure TPipeEndToEndTests.Compressao_ServidorParaCliente_ChegaIntegro;
@@ -806,7 +796,7 @@ begin
   FClient := TNamedPipeClient.Create(LName);
   FClient.OnMessage := OnCliMessage;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FConnectedCount, 1, 3000), 'OnClientConnected nao disparou');
+  TAssert.AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
 
   FLock.Enter;
   try
@@ -817,11 +807,11 @@ begin
 
   LTexto := StringOfChar('B', 20000);
   FServer.SendText(LConnId, LTexto);
-  Assert.IsTrue(WaitCount(FCliMsgCount, 1, 3000), 'mensagem nao chegou ao cliente');
+  TAssert.AssertTrue('mensagem nao chegou ao cliente', WaitCount(FCliMsgCount, 1, 3000));
   FLock.Enter;
   try
-    Assert.AreEqual(LTexto, FClientTexts[0],
-      'payload deveria chegar integro depois de descomprimido no cliente');
+    TAssert.AssertEquals('payload deveria chegar integro depois de descomprimido no cliente',
+      LTexto, FClientTexts[0]);
   finally
     FLock.Leave;
   end;
@@ -904,24 +894,26 @@ begin
   FClient := TNamedPipeClient.Create(LName);
   FClient.OnError := OnCliError;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FConnectedCount, 1, 3000), 'OnClientConnected nao disparou');
+  TAssert.AssertTrue('OnClientConnected nao disparou', WaitCount(FConnectedCount, 1, 3000));
 
   FClient.SendText('boom', AGroupKey);
   FClient.SendText('depois', AGroupKey);
-  Assert.IsTrue(WaitCount(FSrvErrCount, 1, 3000), 'excecao do OnMessage nao chegou ao OnError');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem seguinte nao chegou (conexao caiu?)');
+  TAssert.AssertTrue('excecao do OnMessage nao chegou ao OnError',
+    WaitCount(FSrvErrCount, 1, 3000));
+  TAssert.AssertTrue('mensagem seguinte nao chegou (conexao caiu?)',
+    WaitCount(FSrvMsgCount, 1, 3000));
   FLock.Enter;
   try
-    Assert.AreEqual('OnMessage raised EConvertError: $.quantity: nao e numero', FErrText);
-    Assert.IsTrue(FErrConnId = FLastConnId, 'OnError devia trazer o ConnId da mensagem');
-    Assert.AreEqual('depois', FServerTexts[0]);
+    TAssert.AssertEquals('OnMessage raised EConvertError: $.quantity: nao e numero', FErrText);
+    TAssert.AssertTrue('OnError devia trazer o ConnId da mensagem', FErrConnId = FLastConnId);
+    TAssert.AssertEquals('depois', FServerTexts[0]);
   finally
     FLock.Leave;
   end;
-  Assert.IsTrue(PcAtomicGet(FSrvErrCount) = 1, 'OnError devia disparar uma vez');
-  Assert.IsTrue(PcAtomicGet(FCliErrCount) = 0, 'o cliente nao devia receber erro');
-  Assert.IsTrue(FServer.ClientCount = 1, 'a conexao devia continuar aberta');
-  Assert.IsTrue(FClient.Connected, 'o cliente devia continuar conectado');
+  TAssert.AssertTrue('OnError devia disparar uma vez', PcAtomicGet(FSrvErrCount) = 1);
+  TAssert.AssertTrue('o cliente nao devia receber erro', PcAtomicGet(FCliErrCount) = 0);
+  TAssert.AssertTrue('a conexao devia continuar aberta', FServer.ClientCount = 1);
+  TAssert.AssertTrue('o cliente devia continuar conectado', FClient.Connected);
 
   if FPumpMain then
   begin
@@ -970,17 +962,18 @@ begin
   end;
   FServer.SendText(LConnId, 'boom');
   FServer.SendText(LConnId, 'depois');
-  Assert.IsTrue(WaitCount(FCliErrCount, 1, 3000), 'excecao do OnMessage do cliente nao chegou ao OnError');
-  Assert.IsTrue(WaitCount(FCliMsgCount, 1, 3000), 'mensagem seguinte nao chegou ao cliente');
+  TAssert.AssertTrue('excecao do OnMessage do cliente nao chegou ao OnError',
+    WaitCount(FCliErrCount, 1, 3000));
+  TAssert.AssertTrue('mensagem seguinte nao chegou ao cliente', WaitCount(FCliMsgCount, 1, 3000));
   FLock.Enter;
   try
-    Assert.AreEqual('OnMessage raised EConvertError: cliente recusou', FErrText);
-    Assert.IsTrue(FErrConnId = 0, 'no cliente o ConnId e'' sempre 0');
-    Assert.AreEqual('depois', FClientTexts[0]);
+    TAssert.AssertEquals('OnMessage raised EConvertError: cliente recusou', FErrText);
+    TAssert.AssertTrue('no cliente o ConnId e'' sempre 0', FErrConnId = 0);
+    TAssert.AssertEquals('depois', FClientTexts[0]);
   finally
     FLock.Leave;
   end;
-  Assert.IsTrue(PcAtomicGet(FSrvErrCount) = 0, 'o servidor nao devia receber erro');
+  TAssert.AssertTrue('o servidor nao devia receber erro', PcAtomicGet(FSrvErrCount) = 0);
 end;
 
 procedure TPipeEndToEndTests.ExcecaoNoOnClientConnected_ViraOnErrorComNomeDoEvento;
@@ -997,16 +990,18 @@ begin
 
   FClient := TNamedPipeClient.Create(LName);
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FSrvErrCount, 1, 3000), 'excecao do OnClientConnected nao chegou ao OnError');
+  TAssert.AssertTrue('excecao do OnClientConnected nao chegou ao OnError',
+    WaitCount(FSrvErrCount, 1, 3000));
   FLock.Enter;
   try
-    Assert.AreEqual('OnClientConnected raised EInvalidOperation: falhou no connected', FErrText);
-    Assert.IsTrue(FErrConnId = FLastConnId, 'OnError devia trazer o ConnId da conexao');
+    TAssert.AssertEquals('OnClientConnected raised EInvalidOperation: falhou no connected',
+      FErrText);
+    TAssert.AssertTrue('OnError devia trazer o ConnId da conexao', FErrConnId = FLastConnId);
   finally
     FLock.Leave;
   end;
   FClient.SendText('segue');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'a conexao devia continuar funcionando');
+  TAssert.AssertTrue('a conexao devia continuar funcionando', WaitCount(FSrvMsgCount, 1, 3000));
 end;
 
 procedure TPipeEndToEndTests.ExcecaoNoProprioOnError_EngolidaSemRecursao;
@@ -1016,11 +1011,12 @@ begin
   FServer.OnError := OnSrvErrorRaising;
   FClient.SendText('boom');
   FClient.SendText('depois');
-  Assert.IsTrue(WaitCount(FSrvErrCount, 1, 3000), 'OnError nao disparou');
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem seguinte nao chegou');
+  TAssert.AssertTrue('OnError nao disparou', WaitCount(FSrvErrCount, 1, 3000));
+  TAssert.AssertTrue('mensagem seguinte nao chegou', WaitCount(FSrvMsgCount, 1, 3000));
   Sleep(200); // uma recursao apareceria como um segundo OnError
-  Assert.IsTrue(PcAtomicGet(FSrvErrCount) = 1, 'excecao do OnError nao pode realimentar o OnError');
-  Assert.IsTrue(FServer.ClientCount = 1, 'a conexao devia continuar aberta');
+  TAssert.AssertTrue('excecao do OnError nao pode realimentar o OnError',
+    PcAtomicGet(FSrvErrCount) = 1);
+  TAssert.AssertTrue('a conexao devia continuar aberta', FServer.ClientCount = 1);
 end;
 
 initialization

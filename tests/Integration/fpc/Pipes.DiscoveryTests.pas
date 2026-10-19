@@ -1,13 +1,18 @@
-unit Pipes.DiscoveryTests;
+﻿unit Pipes.DiscoveryTests;
 
 {$mode delphi}{$H+}
+
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Integration/Pipes.DiscoveryTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
 
 { Testes de integracao da descoberta (TPipeDiscoveryResponder +
   PipeDiscoverServers) via loopback, sempre com a forma DIRIGIDA
   ('127.0.0.1'): broadcast de verdade depende de interface/firewall e nao e'
   deterministico em maquina de CI — o que a forma dirigida nao cobre e' so' o
-  sendto para 255.255.255.255, mesmo socket e mesma coleta. Versao FPCUnit;
-  espelha a versao DUnitX em tests/Integration.
+  sendto para 255.255.255.255, mesmo socket e mesma coleta. Mestre DUnitX; o
+  espelho FPCUnit em tests/Integration/fpc e' gerado por
+  tools/gen_fpc_mirror.py.
 
   As portas sao fixas (faixa 457xx): colisao com servico real da maquina e'
   improvavel e apareceria como EPipeError de bind, nao como falha silenciosa. }
@@ -52,7 +57,6 @@ const
 
 procedure TPipeDiscoveryIntegrationTests.SetUp;
 begin
-  inherited;
   FRespA := nil;
   FRespB := nil;
 end;
@@ -61,7 +65,6 @@ procedure TPipeDiscoveryIntegrationTests.TearDown;
 begin
   FreeAndNil(FRespA); // Stop no destructor (idempotente)
   FreeAndNil(FRespB);
-  inherited;
 end;
 
 procedure TPipeDiscoveryIntegrationTests.DoStartRespB;
@@ -76,16 +79,15 @@ begin
   FRespA := TPipeDiscoveryResponder.Create(PORTA_SERVICO_A, ptTls,
     'Retaguarda Teste', PORTA_DESC_A, 'tok-teste');
   FRespA.Start;
-  AssertTrue('Active apos Start', FRespA.Active);
+  TAssert.AssertTrue('Active apos Start', FRespA.Active);
   // Janela de 700ms > cadencia de reenvio (300ms): o responder respondera a
   // 2-3 sondas e o dedup tem que reduzir a UMA entrada.
   LFound := PipeDiscoverServers('127.0.0.1', 700, PORTA_DESC_A, 'tok-teste');
-  AssertEquals('exatamente um servidor (dedup de reenvio)', 1,
-    Length(LFound));
-  AssertEquals('Address = IP do envelope + porta anunciada',
+  TAssert.AssertEquals('exatamente um servidor (dedup de reenvio)', 1, Length(LFound));
+  TAssert.AssertEquals('Address = IP do envelope + porta anunciada',
     '127.0.0.1:' + IntToStr(PORTA_SERVICO_A), LFound[0].Address);
-  AssertTrue('transporte preservado', LFound[0].Transport = ptTls);
-  AssertEquals('nome preservado', 'Retaguarda Teste', LFound[0].Name);
+  TAssert.AssertTrue('transporte preservado', LFound[0].Transport = ptTls);
+  TAssert.AssertEquals('nome preservado', 'Retaguarda Teste', LFound[0].Name);
 end;
 
 procedure TPipeDiscoveryIntegrationTests.TokenErrado_ListaVazia;
@@ -96,7 +98,7 @@ begin
     PORTA_DESC_A, 'tok-a');
   FRespA.Start;
   LFound := PipeDiscoverServers('127.0.0.1', 300, PORTA_DESC_A, 'tok-b');
-  AssertEquals('outra instalacao nao aparece', 0, Length(LFound));
+  TAssert.AssertEquals('outra instalacao nao aparece', 0, Length(LFound));
 end;
 
 procedure TPipeDiscoveryIntegrationTests.SemResponder_ListaVazia;
@@ -106,8 +108,7 @@ begin
   // Sonda para porta fechada: o SO devolve ICMP "porta inalcancavel", que o
   // canal tem que engolir (ECONNREFUSED/WSAECONNRESET) sem abortar a coleta.
   LFound := PipeDiscoverServers('127.0.0.1', 300, PORTA_DESC_B, '');
-  AssertEquals('ninguem respondeu = lista vazia, nao erro', 0,
-    Length(LFound));
+  TAssert.AssertEquals('ninguem respondeu = lista vazia, nao erro', 0, Length(LFound));
 end;
 
 procedure TPipeDiscoveryIntegrationTests.DoisResponders_CadaPortaAchaOSeu;
@@ -121,11 +122,11 @@ begin
   FRespA.Start;
   FRespB.Start;
   LFound := PipeDiscoverServers('127.0.0.1', 300, PORTA_DESC_A, '');
-  AssertEquals('porta A acha um', 1, Length(LFound));
-  AssertEquals('porta A acha o A', 'A', LFound[0].Name);
+  TAssert.AssertEquals('porta A acha um', 1, Length(LFound));
+  TAssert.AssertEquals('porta A acha o A', 'A', LFound[0].Name);
   LFound := PipeDiscoverServers('127.0.0.1', 300, PORTA_DESC_B, '');
-  AssertEquals('porta B acha um', 1, Length(LFound));
-  AssertEquals('porta B acha o B', 'B', LFound[0].Name);
+  TAssert.AssertEquals('porta B acha um', 1, Length(LFound));
+  TAssert.AssertEquals('porta B acha o B', 'B', LFound[0].Name);
 end;
 
 procedure TPipeDiscoveryIntegrationTests.PortaOcupada_StartLevanta;
@@ -135,9 +136,9 @@ begin
   FRespA.Start;
   FRespB := TPipeDiscoveryResponder.Create(PORTA_SERVICO_B, ptTcp, 'B',
     PORTA_DESC_A, ''); // mesma porta de descoberta, de proposito
-  AssertException('um responder por porta', EPipeError, DoStartRespB);
-  AssertFalse('o segundo nao ficou ativo', FRespB.Active);
-  AssertTrue('o primeiro segue ativo', FRespA.Active);
+  TAssert.AssertException('um responder por porta', EPipeError, DoStartRespB);
+  TAssert.AssertFalse('o segundo nao ficou ativo', FRespB.Active);
+  TAssert.AssertTrue('o primeiro segue ativo', FRespA.Active);
 end;
 
 procedure TPipeDiscoveryIntegrationTests.StopRapido_EReutilizavel;
@@ -150,16 +151,16 @@ begin
   FRespA.Start;
   LInicio := PcTickMs;
   FRespA.Stop;
-  AssertTrue('Stop com thread ociosa conclui em < 2s (levou ' +
+  TAssert.AssertTrue('Stop com thread ociosa conclui em < 2s (levou ' +
     IntToStr(Int64(PcTickMs - LInicio)) + 'ms)',
     PcTickMs - LInicio < 2000);
-  AssertFalse('inativo apos Stop', FRespA.Active);
+  TAssert.AssertFalse('inativo apos Stop', FRespA.Active);
   LFound := PipeDiscoverServers('127.0.0.1', 300, PORTA_DESC_A, '');
-  AssertEquals('parado nao responde', 0, Length(LFound));
+  TAssert.AssertEquals('parado nao responde', 0, Length(LFound));
   // A porta tem que ter sido liberada: Start de novo no MESMO objeto.
   FRespA.Start;
   LFound := PipeDiscoverServers('127.0.0.1', 700, PORTA_DESC_A, '');
-  AssertEquals('reutilizavel apos Stop', 1, Length(LFound));
+  TAssert.AssertEquals('reutilizavel apos Stop', 1, Length(LFound));
 end;
 
 initialization

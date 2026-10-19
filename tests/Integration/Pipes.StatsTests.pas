@@ -1,4 +1,4 @@
-unit Pipes.StatsTests;
+﻿unit Pipes.StatsTests;
 
 { Testes de integracao das metricas/observabilidade (Pipes.Server.Stats/
   ConnectionStats, Pipes.Client.Stats): contadores de bytes/mensagens batem
@@ -6,13 +6,14 @@ unit Pipes.StatsTests;
   SUCESSO (timeout fica de fora), e ConnectionStats devolve False para uma
   conexao que nao existe. Sempre ativos, sem opt-in, e validos em QUALQUER
   transporte — ao contrario do heartbeat, uso ptLocal aqui (mais simples,
-  sem porta). Versao DUnitX/Delphi; espelha a versao FPCUnit em
-  tests/Integration/fpc. }
+  sem porta). Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e'
+  gerado por tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Pipes.Types,
   PascalCommon.Threading,
@@ -42,7 +43,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     [Test] procedure Servidor_Stats_ContaBytesEMensagens;
     [Test] procedure Cliente_Stats_ContaBytesEMensagens;
     [Test] procedure ConnectionStats_ConexaoInexistente_DevolveFalse;
@@ -52,14 +53,6 @@ type
   end;
 
 implementation
-
-// Comparacao nao-generica (evita E2532: Length() e' NativeInt no Win64 e o
-// AreEqual<T> generico do DUnitX nao infere T com argumentos de tipos
-// diferentes — ver Pipes.FramingTests/Pipes.EndToEndTests).
-procedure EqualInt(AExpected, AActual: Integer);
-begin
-  Assert.AreEqual(AExpected, AActual);
-end;
 
 var
   GNameSeq: Integer;
@@ -149,26 +142,26 @@ begin
     LPayload[I] := I;
   for I := 1 to N do
     FClient.SendBytes(LPayload);
-  Assert.IsTrue(WaitCount(FSrvMsgCount, N, 3000),
-    'servidor nao recebeu as N mensagens a tempo');
+  TAssert.AssertTrue('servidor nao recebeu as N mensagens a tempo',
+    WaitCount(FSrvMsgCount, N, 3000));
 
   LIds := FServer.ClientIds;
-  EqualInt(1, Length(LIds));
-  Assert.IsTrue(FServer.ConnectionStats(LIds[0], LConnStats),
-    'ConnectionStats devia achar a conexao estabelecida');
-  Assert.IsTrue(LConnStats.MessagesReceived = UInt64(N),
-    'MessagesReceived nao bate com o que foi enviado');
-  Assert.IsTrue(LConnStats.BytesReceived =
-    UInt64(N * (PIPE_FRAME_HEADER_SIZE + PAYLOAD_LEN)),
-    'BytesReceived nao bate (header + payload por frame)');
+  TAssert.AssertEquals(1, Length(LIds));
+  TAssert.AssertTrue('ConnectionStats devia achar a conexao estabelecida',
+    FServer.ConnectionStats(LIds[0], LConnStats));
+  TAssert.AssertTrue('MessagesReceived nao bate com o que foi enviado',
+    LConnStats.MessagesReceived = UInt64(N));
+  TAssert.AssertTrue('BytesReceived nao bate (header + payload por frame)',
+    LConnStats.BytesReceived =
+    UInt64(N * (PIPE_FRAME_HEADER_SIZE + PAYLOAD_LEN)));
 
   LSrvStats := FServer.Stats;
-  Assert.AreEqual(1, LSrvStats.ClientCount);
-  Assert.IsTrue(LSrvStats.TotalConnectionsAccepted >= 1,
-    'TotalConnectionsAccepted devia contar ao menos esta conexao');
-  Assert.IsTrue(LSrvStats.TotalMessagesReceived >= UInt64(N),
-    'agregado do servidor nao reflete as mensagens recebidas');
-  Assert.IsTrue(LSrvStats.PoolQueueDepth >= 0);
+  TAssert.AssertEquals(1, LSrvStats.ClientCount);
+  TAssert.AssertTrue('TotalConnectionsAccepted devia contar ao menos esta conexao',
+    LSrvStats.TotalConnectionsAccepted >= 1);
+  TAssert.AssertTrue('agregado do servidor nao reflete as mensagens recebidas',
+    LSrvStats.TotalMessagesReceived >= UInt64(N));
+  TAssert.AssertTrue(LSrvStats.PoolQueueDepth >= 0);
 end;
 
 procedure TPipeStatsTests.Cliente_Stats_ContaBytesEMensagens;
@@ -191,20 +184,20 @@ begin
   SetLength(LPayload, PAYLOAD_LEN);
   for I := 1 to N do
     FClient.SendBytes(LPayload);
-  Assert.IsTrue(WaitCount(FSrvMsgCount, N, 3000),
-    'servidor nao recebeu as N mensagens a tempo');
+  TAssert.AssertTrue('servidor nao recebeu as N mensagens a tempo',
+    WaitCount(FSrvMsgCount, N, 3000));
 
   for I := 1 to M do
     FServer.Broadcast(LPayload);
-  Assert.IsTrue(WaitCount(FCliMsgCount, M, 3000),
-    'cliente nao recebeu as M mensagens do broadcast a tempo');
+  TAssert.AssertTrue('cliente nao recebeu as M mensagens do broadcast a tempo',
+    WaitCount(FCliMsgCount, M, 3000));
 
   LCliStats := FClient.Stats;
-  Assert.IsTrue(LCliStats.MessagesSent = UInt64(N));
-  Assert.IsTrue(LCliStats.BytesSent =
+  TAssert.AssertTrue(LCliStats.MessagesSent = UInt64(N));
+  TAssert.AssertTrue(LCliStats.BytesSent =
     UInt64(N * (PIPE_FRAME_HEADER_SIZE + PAYLOAD_LEN)));
-  Assert.IsTrue(LCliStats.MessagesReceived = UInt64(M));
-  Assert.IsTrue(LCliStats.BytesReceived =
+  TAssert.AssertTrue(LCliStats.MessagesReceived = UInt64(M));
+  TAssert.AssertTrue(LCliStats.BytesReceived =
     UInt64(M * (PIPE_FRAME_HEADER_SIZE + PAYLOAD_LEN)));
 end;
 
@@ -214,8 +207,8 @@ var
 begin
   FServer := TPipeServer.Create(UniquePipeName);
   FServer.Listen;
-  Assert.IsFalse(FServer.ConnectionStats(999999, LStats),
-    'conexao inexistente devia devolver False');
+  TAssert.AssertFalse('conexao inexistente devia devolver False',
+    FServer.ConnectionStats(999999, LStats));
 end;
 
 procedure TPipeStatsTests.Cliente_Stats_LatenciaSoContaSucesso;
@@ -230,22 +223,22 @@ begin
 
   // Timeout NAO deve contar na latencia (a resposta tardia do handler lento
   // chega depois, mas o slot ja foi removido — ver TPipeClient.Request).
-  Assert.WillRaise(DoRequestComTimeoutCurto, EPipeTimeout);
+  TAssert.AssertException(EPipeTimeout, DoRequestComTimeoutCurto);
   LStats := FClient.Stats;
-  Assert.AreEqual(Cardinal(0), LStats.AvgRequestLatencyMs,
-    'timeout nao devia contar na latencia');
-  Assert.AreEqual(Cardinal(0), LStats.MaxRequestLatencyMs,
-    'timeout nao devia contar na latencia');
-  Assert.AreEqual(0, LStats.PendingRequests,
-    'nao devia sobrar request pendente apos o timeout');
+  TAssert.AssertEquals('timeout nao devia contar na latencia',
+    Int64(0), Int64(LStats.AvgRequestLatencyMs));
+  TAssert.AssertEquals('timeout nao devia contar na latencia',
+    Int64(0), Int64(LStats.MaxRequestLatencyMs));
+  TAssert.AssertEquals('nao devia sobrar request pendente apos o timeout',
+    0, LStats.PendingRequests);
 
   // Um request BEM-SUCEDIDO deve contar.
   FServer.OnRequest := OnSrvRequestEco;
   FClient.Request(PipeUtf8Encode('oi'), 3000);
   LStats := FClient.Stats;
-  Assert.IsTrue(LStats.AvgRequestLatencyMs < 3000, 'latencia absurda');
-  Assert.IsTrue(LStats.MaxRequestLatencyMs >= LStats.AvgRequestLatencyMs);
-  Assert.AreEqual(0, LStats.PendingRequests);
+  TAssert.AssertTrue('latencia absurda', LStats.AvgRequestLatencyMs < 3000);
+  TAssert.AssertTrue(LStats.MaxRequestLatencyMs >= LStats.AvgRequestLatencyMs);
+  TAssert.AssertEquals(0, LStats.PendingRequests);
 end;
 
 procedure TPipeStatsTests.SemCompressao_BytesWireIgualBytesLogicoNosDoisLados;
@@ -267,17 +260,17 @@ begin
 
   SetLength(LPayload, PAYLOAD_LEN);
   FClient.SendBytes(LPayload);
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou a tempo');
+  TAssert.AssertTrue('mensagem nao chegou a tempo', WaitCount(FSrvMsgCount, 1, 3000));
 
   LCliStats := FClient.Stats;
-  Assert.IsTrue(LCliStats.BytesSentWire = LCliStats.BytesSent,
-    'sem compressao, BytesSentWire devia ser identico a BytesSent');
+  TAssert.AssertTrue('sem compressao, BytesSentWire devia ser identico a BytesSent',
+    LCliStats.BytesSentWire = LCliStats.BytesSent);
 
   LIds := FServer.ClientIds;
-  EqualInt(1, Length(LIds));
-  Assert.IsTrue(FServer.ConnectionStats(LIds[0], LConnStats));
-  Assert.IsTrue(LConnStats.BytesReceivedWire = LConnStats.BytesReceived,
-    'sem compressao, BytesReceivedWire devia ser identico a BytesReceived');
+  TAssert.AssertEquals(1, Length(LIds));
+  TAssert.AssertTrue(FServer.ConnectionStats(LIds[0], LConnStats));
+  TAssert.AssertTrue('sem compressao, BytesReceivedWire devia ser identico a BytesReceived',
+    LConnStats.BytesReceivedWire = LConnStats.BytesReceived);
 end;
 
 procedure TPipeStatsTests.ComCompressao_BytesWireMenorQueBytesLogicoNosDoisLados;
@@ -304,21 +297,21 @@ begin
   SetLength(LPayload, PAYLOAD_LEN);
   FillChar(LPayload[0], PAYLOAD_LEN, Ord('A'));
   FClient.SendBytes(LPayload);
-  Assert.IsTrue(WaitCount(FSrvMsgCount, 1, 3000), 'mensagem nao chegou a tempo');
+  TAssert.AssertTrue('mensagem nao chegou a tempo', WaitCount(FSrvMsgCount, 1, 3000));
 
   LCliStats := FClient.Stats;
-  Assert.IsTrue(LCliStats.BytesSentWire < LCliStats.BytesSent,
-    'BytesSentWire devia refletir a economia da compressao no envio');
+  TAssert.AssertTrue('BytesSentWire devia refletir a economia da compressao no envio',
+    LCliStats.BytesSentWire < LCliStats.BytesSent);
 
   LIds := FServer.ClientIds;
-  EqualInt(1, Length(LIds));
-  Assert.IsTrue(FServer.ConnectionStats(LIds[0], LConnStats));
-  Assert.IsTrue(LConnStats.BytesReceivedWire < LConnStats.BytesReceived,
-    'BytesReceivedWire devia refletir a economia da compressao no recebimento');
+  TAssert.AssertEquals(1, Length(LIds));
+  TAssert.AssertTrue(FServer.ConnectionStats(LIds[0], LConnStats));
+  TAssert.AssertTrue('BytesReceivedWire devia refletir a economia da compressao no recebimento',
+    LConnStats.BytesReceivedWire < LConnStats.BytesReceived);
 
   LSrvStats := FServer.Stats;
-  Assert.IsTrue(LSrvStats.TotalBytesReceivedWire < LSrvStats.TotalBytesReceived,
-    'agregado do servidor tambem devia refletir a economia');
+  TAssert.AssertTrue('agregado do servidor tambem devia refletir a economia',
+    LSrvStats.TotalBytesReceivedWire < LSrvStats.TotalBytesReceived);
 end;
 
 initialization

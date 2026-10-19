@@ -1,4 +1,4 @@
-unit Pipes.TlsTests;
+﻿unit Pipes.TlsTests;
 
 {$I pipes.inc}
 
@@ -15,13 +15,15 @@ unit Pipes.TlsTests;
   la'). Sem backend TLS no build, o fixture inteiro some — daí o include de
   pipes.inc no topo, para enxergar PIPES_TLS.
 
-  Versao DUnitX/Delphi; espelha a versao FPCUnit em tests/Integration/fpc. }
+  Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e' gerado por
+  tools/gen_fpc_mirror.py. }
 
 interface
 
 {$IFDEF PIPES_TLS}
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Classes,
   SyncObjs,
@@ -126,7 +128,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     // --- caminho feliz ---
     [Test] procedure Tls_RoundTripCifrado;
     [Test] procedure Mtls_ClienteComCertDaCa_Conecta;
@@ -170,30 +172,6 @@ implementation
 
 uses
   PascalCommon.Threading;
-
-// DUnitX recebe (condicao, mensagem) e o FPCUnit (mensagem, condicao). Estes
-// wrappers adotam a ordem do FPCUnit para que os dois arquivos deste fixture
-// fiquem comparaveis linha a linha — divergencia silenciosa entre eles ja seria
-// um bug em si.
-procedure AssertTrue(const AMsg: string; ACond: Boolean);
-begin
-  Assert.IsTrue(ACond, AMsg);
-end;
-
-procedure AssertFalse(const AMsg: string; ACond: Boolean);
-begin
-  Assert.IsFalse(ACond, AMsg);
-end;
-
-procedure AssertEquals(const AMsg, AExpected, AActual: string); overload;
-begin
-  Assert.AreEqual(AExpected, AActual, AMsg);
-end;
-
-procedure AssertEquals(const AMsg: string; AExpected, AActual: Integer); overload;
-begin
-  Assert.AreEqual(AExpected, AActual, AMsg);
-end;
 
 var
   GPkiDir: string;
@@ -474,7 +452,7 @@ end;
 procedure TPipeTlsTests.SetUp;
 begin
   if PkiDir = '' then
-    Assert.Fail('tests/pki nao encontrada a partir de ' + ParamStr(0) +
+    TAssert.Fail('tests/pki nao encontrada a partir de ' + ParamStr(0) +
       ' — sem ela os testes de TLS nao tem credenciais');
   FAddr := UniqueAddr;
   FHarness := TTlsHarness.Create(FAddr);
@@ -492,10 +470,10 @@ var
 begin
   FHarness.Listen(''); // sem mTLS
   LOk := FHarness.TryConnect('', LErro); // separado: LErro so' vale apos a chamada
-  AssertTrue('cliente deveria conectar: ' + LErro, LOk);
-  AssertTrue('servidor nao registrou o cliente como conectado',
+  TAssert.AssertTrue('cliente deveria conectar: ' + LErro, LOk);
+  TAssert.AssertTrue('servidor nao registrou o cliente como conectado',
     FHarness.ClienteAutenticado(5000));
-  AssertTrue('eco cifrado nao voltou integro', FHarness.Eco('ola tls', 5000));
+  TAssert.AssertTrue('eco cifrado nao voltou integro', FHarness.Eco('ola tls', 5000));
 end;
 
 procedure TPipeTlsTests.Mtls_ClienteComCertDaCa_Conecta;
@@ -505,10 +483,10 @@ var
 begin
   FHarness.Listen(Pki('ca_cert.pem')); // mTLS ligado
   LOk := FHarness.TryConnect('cli', LErro);
-  AssertTrue('cliente legitimo foi recusado: ' + LErro, LOk);
-  AssertTrue('servidor nao autenticou o cliente legitimo',
+  TAssert.AssertTrue('cliente legitimo foi recusado: ' + LErro, LOk);
+  TAssert.AssertTrue('servidor nao autenticou o cliente legitimo',
     FHarness.ClienteAutenticado(5000));
-  AssertTrue('eco nao voltou integro', FHarness.Eco('mtls ok', 5000));
+  TAssert.AssertTrue('eco nao voltou integro', FHarness.Eco('mtls ok', 5000));
 end;
 
 procedure TPipeTlsTests.Mtls_AutoReconnect_RefazHandshakeAposQueda;
@@ -528,18 +506,17 @@ begin
   FHarness.Client.ReconnectDelayMs := 300;
 
   LOk := FHarness.TryConnect('cli', LErro);
-  AssertTrue('primeira conexao mTLS falhou: ' + LErro, LOk);
-  AssertTrue('primeira conexao nao confirmada pelo proprio cliente',
+  TAssert.AssertTrue('primeira conexao mTLS falhou: ' + LErro, LOk);
+  TAssert.AssertTrue('primeira conexao nao confirmada pelo proprio cliente',
     FHarness.EsperaClienteConectou(1, 3000));
-  AssertTrue('servidor nao autenticou a primeira conexao',
+  TAssert.AssertTrue('servidor nao autenticou a primeira conexao',
     FHarness.ClienteAutenticado(3000));
 
   FHarness.Server.Stop; // derruba o cliente
-  AssertTrue('queda nao notificada ao cliente',
-    FHarness.EsperaClienteDesconectou(1, 5000));
+  TAssert.AssertTrue('queda nao notificada ao cliente', FHarness.EsperaClienteDesconectou(1, 5000));
 
   FHarness.Server.Listen; // "restart" do servidor no mesmo endereco/credenciais
-  AssertTrue('cliente nao reconectou sozinho (AutoReconnect)',
+  TAssert.AssertTrue('cliente nao reconectou sozinho (AutoReconnect)',
     FHarness.EsperaClienteConectou(2, 10000));
 
   // Contrato do AutoReconnect (igual ao teste equivalente em texto claro,
@@ -556,8 +533,9 @@ begin
     end;
     Sleep(50);
   end;
-  AssertTrue('eco pos-reconexao nao voltou — handshake da reconexao falhou ' +
-    'ou nao aconteceu', LOk);
+  TAssert.AssertTrue('eco pos-reconexao nao voltou — handshake da reconexao falhou ' +
+    'ou nao aconteceu',
+    LOk);
 end;
 
 procedure TPipeTlsTests.Tls_ClienteValidaServidorPorPadrao_Recusa;
@@ -573,9 +551,10 @@ begin
   FHarness.Listen(''); // servidor TLS simples (sem mTLS): o unico motivo de
                        // recusa aqui e' o cliente reprovar o cert do servidor.
   LOk := FHarness.TryConnectValidandoServidor(LErro);
-  AssertFalse('GRAVE: cliente aceitou servidor de PKI nao-confiavel com o ' +
-    'default — a validacao do servidor esta desligada por padrao?', LOk);
-  AssertFalse('cliente nao deveria autenticar contra servidor nao validado',
+  TAssert.AssertFalse('GRAVE: cliente aceitou servidor de PKI nao-confiavel com o ' +
+    'default — a validacao do servidor esta desligada por padrao?',
+    LOk);
+  TAssert.AssertFalse('cliente nao deveria autenticar contra servidor nao validado',
     FHarness.ClienteAutenticado(1000));
 end;
 
@@ -606,9 +585,8 @@ begin
   FHarness.Listen(''); // TLS simples: o unico veredito em jogo e' o do cliente
   FHarness.Client.TlsOptions.CaFile := Pki('ca_cert.pem');
   LOk := FHarness.TryConnectValidandoServidor(LErro);
-  AssertTrue('cliente RECUSOU um servidor legitimo ao validar por IP: ' + LErro,
-    LOk);
-  AssertTrue('eco nao voltou apos validacao por IP', FHarness.Eco('ip', 5000));
+  TAssert.AssertTrue('cliente RECUSOU um servidor legitimo ao validar por IP: ' + LErro, LOk);
+  TAssert.AssertTrue('eco nao voltou apos validacao por IP', FHarness.Eco('ip', 5000));
 {$ENDIF}
 end;
 
@@ -629,10 +607,10 @@ begin
   FHarness.Client.Address := 'localhost:' + LPorta;
   FHarness.Client.TlsOptions.CaFile := Pki('ca_cert.pem');
   LOk := FHarness.TryConnectValidandoServidor(LErro);
-  AssertTrue('cliente RECUSOU um servidor legitimo ao validar por nome: ' +
-    LErro, LOk);
-  AssertTrue('eco nao voltou apos validacao por nome',
-    FHarness.Eco('nome', 5000));
+  TAssert.AssertTrue('cliente RECUSOU um servidor legitimo ao validar por nome: ' +
+    LErro,
+    LOk);
+  TAssert.AssertTrue('eco nao voltou apos validacao por nome', FHarness.Eco('nome', 5000));
 {$ENDIF}
 end;
 
@@ -644,9 +622,9 @@ begin
   FHarness.TryConnect('', LErro); // pode falhar no Connect ou logo depois
   // O observavel que vale e' este: OnClientConnected so dispara DEPOIS do
   // handshake, entao se ele nao veio, o cliente nao entrou.
-  AssertFalse('GRAVE: cliente sem certificado foi autenticado (mTLS decorativo)',
+  TAssert.AssertFalse('GRAVE: cliente sem certificado foi autenticado (mTLS decorativo)',
     FHarness.ClienteAutenticado(2000));
-  AssertFalse('GRAVE: cliente sem certificado conseguiu trafegar',
+  TAssert.AssertFalse('GRAVE: cliente sem certificado conseguiu trafegar',
     FHarness.Eco('nao deveria passar', 1500));
 end;
 
@@ -659,9 +637,9 @@ begin
   // que aparece.
   FHarness.Listen(Pki('ca_cert.pem'));
   FHarness.TryConnect('rogue', LErro);
-  AssertFalse('GRAVE: certificado de CA desconhecida foi aceito',
+  TAssert.AssertFalse('GRAVE: certificado de CA desconhecida foi aceito',
     FHarness.ClienteAutenticado(2000));
-  AssertFalse('GRAVE: cliente de outra CA conseguiu trafegar',
+  TAssert.AssertFalse('GRAVE: cliente de outra CA conseguiu trafegar',
     FHarness.Eco('nao deveria passar', 1500));
 end;
 
@@ -683,10 +661,10 @@ begin
   // verificado sabotando-a de proposito: os outros testes seguiram verdes.
   FHarness.Listen(Pki('ca_cert.pem'));
   FHarness.TryConnect('selfsigned', LErro);
-  AssertFalse('GRAVE: certificado auto-assinado foi aceito — a raiz da cadeia ' +
+  TAssert.AssertFalse('GRAVE: certificado auto-assinado foi aceito — a raiz da cadeia ' +
     'nao esta sendo comparada com a CA configurada',
     FHarness.ClienteAutenticado(2000));
-  AssertFalse('GRAVE: cliente auto-assinado conseguiu trafegar',
+  TAssert.AssertFalse('GRAVE: cliente auto-assinado conseguiu trafegar',
     FHarness.Eco('nao deveria passar', 1500));
 end;
 
@@ -707,11 +685,11 @@ begin
   // versionar a evidencia da fronteira. Ver memoria ptls-estado-e-armadilhas.
   FHarness.Listen(Pki('ca_cert.pem'));
   FHarness.TryConnect('gemea', LErro);
-  AssertFalse('GRAVE: certificado de CA gemea (mesmo issuer+serial, chave ' +
+  TAssert.AssertFalse('GRAVE: certificado de CA gemea (mesmo issuer+serial, chave ' +
     'diferente) foi aceito — a raiz da cadeia esta sendo comparada so por ' +
     'issuer+serial, nao pelo certificado inteiro',
     FHarness.ClienteAutenticado(2000));
-  AssertFalse('GRAVE: cliente de CA gemea conseguiu trafegar',
+  TAssert.AssertFalse('GRAVE: cliente de CA gemea conseguiu trafegar',
     FHarness.Eco('nao deveria passar', 1500));
 end;
 
@@ -734,12 +712,11 @@ begin
     // thread ficaria presa lendo e este evento nunca chegaria — daí esperar
     // pelo erro, e nao so' pela ausencia de autenticacao (que passaria mesmo
     // com a thread travada).
-    AssertTrue('servidor nao abortou o handshake no prazo (reader presa?)',
+    TAssert.AssertTrue('servidor nao abortou o handshake no prazo (reader presa?)',
       FHarness.EsperaErroServidor(4000));
     // O erro chegou perto do prazo (1500ms), nao no fim de uma espera longa.
-    AssertTrue('servidor demorou muito alem do prazo do handshake',
-      PcTickMs - LT0 < 4000);
-    AssertFalse('cliente mudo nao deveria ser autenticado',
+    TAssert.AssertTrue('servidor demorou muito alem do prazo do handshake', PcTickMs - LT0 < 4000);
+    TAssert.AssertFalse('cliente mudo nao deveria ser autenticado',
       FHarness.ClienteAutenticado(200));
   finally
     LMudo.Free;
@@ -764,26 +741,23 @@ var
   LId: TPipePeerIdentity;
 begin
   FHarness.Listen(Pki('ca_cert.pem'));
-  AssertTrue('cliente legitimo foi recusado: ' + LErro,
-    FHarness.TryConnect('cli', LErro));
-  AssertTrue('servidor nao autenticou o cliente',
-    FHarness.ClienteAutenticado(5000));
+  TAssert.AssertTrue('cliente legitimo foi recusado: ' + LErro, FHarness.TryConnect('cli', LErro));
+  TAssert.AssertTrue('servidor nao autenticou o cliente', FHarness.ClienteAutenticado(5000));
 
-  AssertTrue('servidor nao expos identidade do cliente autenticado',
+  TAssert.AssertTrue('servidor nao expos identidade do cliente autenticado',
     FHarness.Server.TryClientIdentity(FHarness.LastConnId, LId));
   // 'pdv-loja-001' e' o CN de cli_cert.pem. E' confiavel porque a cadeia foi
   // validada ANTES: o certificado 'rogue' carrega este mesmo CN de proposito e
   // nao chega ate aqui — e' recusado no handshake.
-  AssertEquals('CN do cliente', 'pdv-loja-001', LId.CommonName);
-  AssertTrue('Subject deveria conter o CN',
-    Pos('pdv-loja-001', LId.Subject) > 0);
+  TAssert.AssertEquals('CN do cliente', 'pdv-loja-001', LId.CommonName);
+  TAssert.AssertTrue('Subject deveria conter o CN', Pos('pdv-loja-001', LId.Subject) > 0);
 
   // O contrato de publicacao: quem perguntar de dentro do proprio
   // OnClientConnected ja tem de enxergar a conexao anunciada.
-  AssertTrue('identidade nao estava disponivel dentro de OnClientConnected',
+  TAssert.AssertTrue('identidade nao estava disponivel dentro de OnClientConnected',
     FHarness.IdentityNoHandler);
-  AssertEquals('CN visto pelo handler', 'pdv-loja-001',
-    FHarness.IdentityFromHandler.CommonName);
+  TAssert.AssertEquals('CN visto pelo handler',
+    'pdv-loja-001', FHarness.IdentityFromHandler.CommonName);
 end;
 
 procedure TPipeTlsTests.Tls_SemMtls_NaoTemIdentidade;
@@ -794,13 +768,11 @@ begin
   // TLS sem CaFile: o cliente nao apresenta certificado, entao nao ha
   // identidade — e False aqui significa "nao ha", nunca "ainda nao chegou".
   FHarness.Listen('');
-  AssertTrue('cliente deveria conectar: ' + LErro,
-    FHarness.TryConnect('', LErro));
-  AssertTrue('servidor nao registrou o cliente',
-    FHarness.ClienteAutenticado(5000));
-  AssertFalse('sem mTLS nao deveria haver identidade',
+  TAssert.AssertTrue('cliente deveria conectar: ' + LErro, FHarness.TryConnect('', LErro));
+  TAssert.AssertTrue('servidor nao registrou o cliente', FHarness.ClienteAutenticado(5000));
+  TAssert.AssertFalse('sem mTLS nao deveria haver identidade',
     FHarness.Server.TryClientIdentity(FHarness.LastConnId, LId));
-  AssertEquals('CN deveria vir vazio', '', LId.CommonName);
+  TAssert.AssertEquals('CN deveria vir vazio', '', LId.CommonName);
 end;
 
 procedure TPipeTlsTests.Mtls_IdentidadeDisponivelNoOnClientDisconnected;
@@ -814,17 +786,14 @@ begin
   // Nao da' para amarrar a vida da identidade a limpeza da conexao: evento e
   // limpeza vao para filas diferentes e nao tem ordem garantida entre si.
   FHarness.Listen(Pki('ca_cert.pem'));
-  AssertTrue('cliente legitimo foi recusado: ' + LErro,
-    FHarness.TryConnect('cli', LErro));
-  AssertTrue('servidor nao autenticou o cliente',
-    FHarness.ClienteAutenticado(5000));
+  TAssert.AssertTrue('cliente legitimo foi recusado: ' + LErro, FHarness.TryConnect('cli', LErro));
+  TAssert.AssertTrue('servidor nao autenticou o cliente', FHarness.ClienteAutenticado(5000));
 
   FHarness.Client.Disconnect;
-  AssertTrue('servidor nao notificou a saida', FHarness.EsperaClienteSaiu(5000));
-  AssertTrue('identidade sumiu antes do OnClientDisconnected',
+  TAssert.AssertTrue('servidor nao notificou a saida', FHarness.EsperaClienteSaiu(5000));
+  TAssert.AssertTrue('identidade sumiu antes do OnClientDisconnected',
     FHarness.TinhaIdentidadeNaSaida);
-  AssertEquals('CN de quem saiu', 'pdv-loja-001',
-    FHarness.IdentityNaSaida.CommonName);
+  TAssert.AssertEquals('CN de quem saiu', 'pdv-loja-001', FHarness.IdentityNaSaida.CommonName);
 end;
 
 procedure TPipeTlsTests.ClientIds_NaoListaConexaoEmHandshake;
@@ -845,9 +814,9 @@ begin
   try
     LMudo.Connect(5000);
     Sleep(700); // deixa o accept registrar a conexao
-    AssertEquals('conexao em handshake nao deveria contar como cliente',
+    TAssert.AssertEquals('conexao em handshake nao deveria contar como cliente',
       0, FHarness.Server.ClientCount);
-    AssertEquals('ClientIds nao deveria listar conexao em handshake',
+    TAssert.AssertEquals('ClientIds nao deveria listar conexao em handshake',
       0, Length(FHarness.Server.ClientIds));
   finally
     LMudo.Free;
@@ -879,7 +848,7 @@ begin
   // "ha espacamento", nao um numero exato.
   Sleep(2000);
   LTentativas := FHarness.CliConnCount + FHarness.CliDiscCount;
-  AssertTrue('AutoReconnect virou laco quente: ' + IntToStr(LTentativas) +
+  TAssert.AssertTrue('AutoReconnect virou laco quente: ' + IntToStr(LTentativas) +
     ' eventos de conexao em 2s com ReconnectDelayMs=400',
     LTentativas < 20);
 end;
@@ -905,8 +874,9 @@ begin
   Sleep(1500); // mais de 4 intervalos: se ainda tentasse, apareceria aqui
   LDepois := FHarness.CliConnCount;
 
-  AssertEquals('depois de AutoReconnect:=False no callback nao deveria ' +
-    'haver novas conexoes', LAntes, LDepois);
+  TAssert.AssertEquals('depois de AutoReconnect:=False no callback nao deveria ' +
+    'haver novas conexoes',
+    LAntes, LDepois);
 end;
 
 procedure TPipeTlsTests.Mtls_MaxReconnectAttempts_AlcancaParQueAceitaEDerruba;
@@ -928,12 +898,14 @@ begin
   Sleep(3000);
   LConns := FHarness.CliConnCount;
   Sleep(1500); // se ainda tentasse, apareceria aqui
-  AssertEquals('depois de esgotar MaxReconnectAttempts nao deveria haver ' +
-    'novas conexoes', LConns, FHarness.CliConnCount);
+  TAssert.AssertEquals('depois de esgotar MaxReconnectAttempts nao deveria haver ' +
+    'novas conexoes',
+    LConns, FHarness.CliConnCount);
   // Teto de 3: a conexao inicial mais as tentativas. Um teto que nunca dispara
   // produziria dezenas.
-  AssertTrue('esperava poucas conexoes ate desistir, houve ' +
-    IntToStr(LConns), LConns <= 6);
+  TAssert.AssertTrue('esperava poucas conexoes ate desistir, houve ' +
+    IntToStr(LConns),
+    LConns <= 6);
 end;
 
 procedure TPipeTlsTests.DoSendParaConexaoEmHandshake;
@@ -968,8 +940,9 @@ begin
     // mas la' quem levanta e' a escrita num stream TLS ainda nao negociado.
     // Um teste que aceitasse qualquer EPipeError passaria com o filtro
     // removido, que foi exatamente o que aconteceu na primeira versao dele.
-    AssertTrue('SendBytes deveria recusar por "is not connected", veio: "' +
-      LMsg + '"', Pos('is not connected', LMsg) > 0);
+    TAssert.AssertTrue('SendBytes deveria recusar por "is not connected", veio: "' +
+      LMsg + '"',
+      Pos('is not connected', LMsg) > 0);
   finally
     LMudo.Free;
   end;
@@ -990,20 +963,18 @@ begin
   // nao quebra a entrega aos demais — regressao plausivel ao mexer no filtro.
   FHarness.Server.TlsOptions.HandshakeTimeoutMs := 30000;
   FHarness.Listen(Pki('ca_cert.pem'));
-  AssertTrue('cliente legitimo foi recusado: ' + LErro,
-    FHarness.TryConnect('cli', LErro));
-  AssertTrue('servidor nao autenticou o cliente',
-    FHarness.ClienteAutenticado(5000));
+  TAssert.AssertTrue('cliente legitimo foi recusado: ' + LErro, FHarness.TryConnect('cli', LErro));
+  TAssert.AssertTrue('servidor nao autenticou o cliente', FHarness.ClienteAutenticado(5000));
 
   LMudo := TPipeClient.Create(FAddr, ptTcp);
   try
     LMudo.Connect(5000);
     Sleep(500);
-    AssertEquals('so o cliente estabelecido deveria contar',
+    TAssert.AssertEquals('so o cliente estabelecido deveria contar',
       1, FHarness.Server.ClientCount);
     FHarness.PreparaEco;
     FHarness.Server.BroadcastText('aviso');
-    AssertTrue('cliente estabelecido nao recebeu o broadcast',
+    TAssert.AssertTrue('cliente estabelecido nao recebeu o broadcast',
       FHarness.EsperaEco('aviso', 5000));
   finally
     LMudo.Free;
@@ -1026,11 +997,11 @@ begin
   try
     LMudo.Connect(5000);
     Sleep(700); // a vaga unica agora esta ocupada por uma conexao em handshake
-    AssertEquals('a conexao muda nao deveria aparecer como cliente',
+    TAssert.AssertEquals('a conexao muda nao deveria aparecer como cliente',
       0, FHarness.Server.ClientCount);
     // O cliente legitimo nao deve entrar: a vaga esta tomada.
     FHarness.TryConnect('cli', LErro);
-    AssertFalse('cliente legitimo entrou apesar de MaxClients atingido',
+    TAssert.AssertFalse('cliente legitimo entrou apesar de MaxClients atingido',
       FHarness.ClienteAutenticado(2000));
   finally
     LMudo.Free;
@@ -1064,7 +1035,7 @@ begin
       while not FHarness.Server.TryClientIdentity(I, LQuem) and
         (PcTickMs < LDeadline) do
         Sleep(5);
-      AssertTrue('servidor nao registrou a identidade da conexao ' + IntToStr(I),
+      TAssert.AssertTrue('servidor nao registrou a identidade da conexao ' + IntToStr(I),
         FHarness.Server.TryClientIdentity(I, LQuem));
       LCli.Disconnect;
     finally
@@ -1073,26 +1044,18 @@ begin
   end;
 
   // A primeira conexao (id 1) ja saiu da janela; a ultima continua la'.
-  AssertFalse('a identidade mais antiga deveria ter sido despejada',
+  TAssert.AssertFalse('a identidade mais antiga deveria ter sido despejada',
     FHarness.Server.TryClientIdentity(1, LQuem));
-  AssertTrue('a identidade mais recente deveria continuar consultavel',
+  TAssert.AssertTrue('a identidade mais recente deveria continuar consultavel',
     FHarness.Server.TryClientIdentity(PIPES_RECENT_IDENTITIES + 1, LQuem));
-  AssertEquals('CN da mais recente', 'pdv-loja-001', LQuem.CommonName);
+  TAssert.AssertEquals('CN da mais recente', 'pdv-loja-001', LQuem.CommonName);
 end;
 
 procedure TPipeTlsTests.Tls_ListenSemCredenciais_Falha;
-var
-  LLevantou: Boolean;
 begin
   // Fail closed: melhor recusar a subir do que subir em texto claro.
-  LLevantou := False;
-  try
-    DoListenSemCredenciais;
-  except
-    on E: EPipeTls do
-      LLevantou := True;
-  end;
-  AssertTrue('Listen sem certificado deveria levantar EPipeTls', LLevantou);
+  TAssert.AssertException('Listen sem certificado deveria levantar EPipeTls', EPipeTls,
+    DoListenSemCredenciais);
 end;
 
 procedure TPipeTlsTests.DoTrocaCertComServidorAtivo;
@@ -1101,20 +1064,12 @@ begin
 end;
 
 procedure TPipeTlsTests.Tls_TrocaCertComServidorAtivo_Levanta;
-var
-  LLevantou: Boolean;
 begin
   FHarness.Listen('');
   // As credenciais sao lidas UMA vez, no Listen. Aceitar a troca aqui daria a
   // impressao de configuracao aplicada, sem efeito nenhum.
-  LLevantou := False;
-  try
-    DoTrocaCertComServidorAtivo;
-  except
-    on E: EPipeError do
-      LLevantou := True;
-  end;
-  AssertTrue('trocar CertFile com o servidor ativo deveria levantar', LLevantou);
+  TAssert.AssertException('trocar CertFile com o servidor ativo deveria levantar', EPipeError,
+    DoTrocaCertComServidorAtivo);
 end;
 
 initialization

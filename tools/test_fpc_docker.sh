@@ -34,6 +34,13 @@ CPUFLAG=""
 [ -f "$ROOT/external/pascal-common-faa/src/PascalCommon.ThreadPool.pas" ] \
   || { echo "external/pascal-common-faa vazio: git submodule update --init external/pascal-common-faa"; exit 1; }
 
+# Os espelhos FPCUnit (tests/*/fpc/*Tests.pas) sao GERADOS dos mestres DUnitX
+# por tools/gen_fpc_mirror.py (kit de testes da skill dual-compiler-delphi-
+# lazarus); espelho desatualizado para aqui, antes de compilar.
+PYTHON="${PYTHON:-python}"
+command -v "$PYTHON" >/dev/null 2>&1 || PYTHON=python3
+"$PYTHON" "$ROOT/tools/gen_fpc_mirror.py" --check
+
 MSYS_NO_PATHCONV=1 docker run --rm $CPUFLAG -e SUITES="$SUITES" -e RUNS="$RUNS" -e FPCOPT="$FPCOPT" \
   -v "$MOUNT:/src:ro" "$IMAGE" sh -c '
   set -e

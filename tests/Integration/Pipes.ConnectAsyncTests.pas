@@ -1,4 +1,4 @@
-unit Pipes.ConnectAsyncTests;
+﻿unit Pipes.ConnectAsyncTests;
 
 { Testes de ConnectAsync/Connecting (TPipeClient): a primeira conexao tentada
   em segundo plano, para o caso que Connect nao cobre (o app sobe ANTES do
@@ -16,12 +16,14 @@ unit Pipes.ConnectAsyncTests;
   backup + cliente + contadores) e porque dispara pelos DOIS caminhos que
   esta unit ja monta — ConnectAsync e reconexao automatica.
 
-  Versao DUnitX; espelha a versao FPCUnit em tests/Integration/fpc. }
+  Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e' gerado por
+  tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   SyncObjs,
   Pipes.Types,
@@ -52,7 +54,7 @@ type
     function AttemptAddrs: string;
     function AttemptNums: string;
     function LastAttemptError: string;
-    // Alvos de Assert.WillRaise (metodos de objeto: a lib nao usa metodos
+    // Alvos de AssertException (metodos de objeto: a lib nao usa metodos
     // anonimos, ver CLAUDE.md).
     procedure DoSetAddress;
     procedure DoSetTransport;
@@ -68,7 +70,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     [Test] procedure ConnectAsync_ServidorJaNoAr_ConectaENotifica;
     [Test] procedure ConnectAsync_ServidorSobeDepois_ConectaQuandoAparece;
     [Test] procedure ConnectAsync_ServidorNuncaAparece_EsgotaComMensagemDeConexaoInicial;
@@ -86,11 +88,6 @@ type
   end;
 
 implementation
-
-procedure EqualInt(AExpected, AActual: Integer);
-begin
-  Assert.AreEqual(AExpected, AActual);
-end;
 
 var
   GNameSeq: Integer;
@@ -250,10 +247,10 @@ begin
   FClient.OnConnected := OnCliConnected;
   FClient.ConnectAsync; // volta na hora, mesmo com o servidor ja disponivel
 
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000), 'OnConnected nao disparou');
-  Assert.IsTrue(FClient.Connected, 'deveria estar conectado');
-  Assert.IsTrue(WaitNotConnecting(2000), 'Connecting deveria ter caido');
-  Assert.IsTrue(WaitClientCount(FServer, 1, 2000));
+  TAssert.AssertTrue('OnConnected nao disparou', WaitCount(FCliConnCount, 1, 5000));
+  TAssert.AssertTrue('deveria estar conectado', FClient.Connected);
+  TAssert.AssertTrue('Connecting deveria ter caido', WaitNotConnecting(2000));
+  TAssert.AssertTrue(WaitClientCount(FServer, 1, 2000));
 end;
 
 procedure TPipeConnectAsyncTests.ConnectAsync_ServidorSobeDepois_ConectaQuandoAparece;
@@ -269,19 +266,18 @@ begin
   FClient.OnConnected := OnCliConnected;
   FClient.ConnectAsync;
 
-  Assert.IsTrue(FClient.Connecting, 'Connecting deveria ser True logo apos a chamada');
-  Assert.IsFalse(FClient.Connected, 'nao ha servidor: nao pode estar conectado');
+  TAssert.AssertTrue('Connecting deveria ser True logo apos a chamada', FClient.Connecting);
+  TAssert.AssertFalse('nao ha servidor: nao pode estar conectado', FClient.Connected);
   Sleep(400); // pelo menos uma tentativa fracassa antes de o servidor existir
-  EqualInt(0, FCliConnCount);
+  TAssert.AssertEquals(0, FCliConnCount);
 
   FServer := TPipeServer.Create(LName);
   FServer.Listen;
 
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000),
-    'nao conectou depois de o servidor subir');
-  Assert.IsTrue(FClient.Connected);
-  Assert.IsTrue(WaitNotConnecting(2000), 'Connecting deveria ter caido');
-  Assert.IsTrue(WaitClientCount(FServer, 1, 2000));
+  TAssert.AssertTrue('nao conectou depois de o servidor subir', WaitCount(FCliConnCount, 1, 5000));
+  TAssert.AssertTrue(FClient.Connected);
+  TAssert.AssertTrue('Connecting deveria ter caido', WaitNotConnecting(2000));
+  TAssert.AssertTrue(WaitClientCount(FServer, 1, 2000));
 end;
 
 procedure TPipeConnectAsyncTests.ConnectAsync_ServidorNuncaAparece_EsgotaComMensagemDeConexaoInicial;
@@ -296,14 +292,14 @@ begin
   FClient.OnError := OnCliError;
   FClient.ConnectAsync;
 
-  Assert.IsTrue(WaitCount(FErrCount, 1, 5000), 'nao avisou o esgotamento');
+  TAssert.AssertTrue('nao avisou o esgotamento', WaitCount(FErrCount, 1, 5000));
   // A mensagem muda com o contexto: "reconexao esgotada" soaria errado para
   // quem nunca chegou a ter uma sessao.
-  Assert.IsTrue(Pos('initial connection', LastError) > 0,
-    'esperava a mensagem de conexao INICIAL, veio: ' + LastError);
-  Assert.IsTrue(WaitNotConnecting(2000), 'Connecting deveria ter caido ao desistir');
-  Assert.IsFalse(FClient.Connected);
-  EqualInt(0, FCliConnCount); // nunca conectou
+  TAssert.AssertTrue('esperava a mensagem de conexao INICIAL, veio: ' + LastError,
+    Pos('initial connection', LastError) > 0);
+  TAssert.AssertTrue('Connecting deveria ter caido ao desistir', WaitNotConnecting(2000));
+  TAssert.AssertFalse(FClient.Connected);
+  TAssert.AssertEquals(0, FCliConnCount); // nunca conectou
 end;
 
 procedure TPipeConnectAsyncTests.ConnectAsync_CanceladoPorDisconnect_ParaDeTentar;
@@ -318,7 +314,7 @@ begin
   FClient.MaxReconnectAttempts := 0; // infinitas: so' o Disconnect para isto
   FClient.OnConnected := OnCliConnected;
   FClient.ConnectAsync;
-  Assert.IsTrue(FClient.Connecting);
+  TAssert.AssertTrue(FClient.Connecting);
 
   Sleep(100); // no meio da PRIMEIRA tentativa
   LT0 := PcTickMs;
@@ -329,16 +325,16 @@ begin
   // cancela um connect em progresso, e Disconnect herda o mesmo trade-off que
   // ja aceita para a reconexao automatica (ver WaitReconnectDone). O que este
   // teste prova e' que ele PARA - sem o cancelamento o laco seria infinito.
-  Assert.IsTrue(LDecorrido < 2500,
-    'Disconnect demorou ' + IntToStr(Int64(LDecorrido)) +
-    ' ms; esperava no maximo uma tentativa em curso');
-  Assert.IsFalse(FClient.Connecting, 'Connecting deveria ser False apos Disconnect');
-  Assert.IsFalse(FClient.Connected);
+  TAssert.AssertTrue('Disconnect demorou ' + IntToStr(Int64(LDecorrido)) +
+    ' ms; esperava no maximo uma tentativa em curso',
+    LDecorrido < 2500);
+  TAssert.AssertFalse('Connecting deveria ser False apos Disconnect', FClient.Connecting);
+  TAssert.AssertFalse(FClient.Connected);
 
   // E parou de verdade: nada mais acontece depois.
   Sleep(1500);
-  Assert.IsFalse(FClient.Connecting, 'voltou a tentar depois do Disconnect');
-  EqualInt(0, FCliConnCount);
+  TAssert.AssertFalse('voltou a tentar depois do Disconnect', FClient.Connecting);
+  TAssert.AssertEquals(0, FCliConnCount);
 end;
 
 procedure TPipeConnectAsyncTests.ConnectAsync_ChamadoDeNovoEnquantoEmVoo_ReiniciaSemDuplicar;
@@ -353,19 +349,19 @@ begin
   Sleep(400); // deixa a primeira tentativa fracassar
 
   FClient.ConnectAsync; // cancela a anterior e recomeca
-  Assert.IsTrue(FClient.Connecting);
+  TAssert.AssertTrue(FClient.Connecting);
 
   FServer := TPipeServer.Create(LName);
   FServer.Listen;
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000), 'a segunda chamada nao conectou');
-  Assert.IsTrue(WaitClientCount(FServer, 1, 2000));
+  TAssert.AssertTrue('a segunda chamada nao conectou', WaitCount(FCliConnCount, 1, 5000));
+  TAssert.AssertTrue(WaitClientCount(FServer, 1, 2000));
 
   // Uma thread orfa da PRIMEIRA chamada abriria uma segunda conexao no
   // servidor (e um segundo OnConnected) - e' isto que a rechamada nao pode
   // deixar acontecer.
   Sleep(700);
-  EqualInt(1, FCliConnCount);
-  EqualInt(1, FServer.ClientCount);
+  TAssert.AssertEquals(1, FCliConnCount);
+  TAssert.AssertEquals(1, FServer.ClientCount);
 end;
 
 procedure TPipeConnectAsyncTests.ConnectAsync_ComFailoverAddresses_MigraParaBackupSemPrimario;
@@ -385,10 +381,10 @@ begin
 
   // 1a tentativa mira o primario (morto, consome ReconnectDelayMs) e avanca;
   // a 2a mira o backup e conecta - a MESMA regra da reconexao automatica.
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000), 'nao alcancou o backup');
-  Assert.AreEqual(LBackup, FClient.ActiveAddress);
-  Assert.IsTrue(WaitNotConnecting(2000));
-  Assert.IsTrue(WaitClientCount(FBackup, 1, 2000));
+  TAssert.AssertTrue('nao alcancou o backup', WaitCount(FCliConnCount, 1, 5000));
+  TAssert.AssertEquals(LBackup, FClient.ActiveAddress);
+  TAssert.AssertTrue(WaitNotConnecting(2000));
+  TAssert.AssertTrue(WaitClientCount(FBackup, 1, 2000));
 end;
 
 procedure TPipeConnectAsyncTests.ConnectAsync_ComAutoReconnect_ContinuaReconectandoDepois;
@@ -407,22 +403,21 @@ begin
   FClient.ReconnectDelayMs := 300;
   FClient.OnConnected := OnCliConnected;
   FClient.ConnectAsync;
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000), 'conexao inicial nao ocorreu');
-  Assert.IsTrue(WaitNotConnecting(2000),
-    'Connecting deveria cair assim que a sessao subiu');
+  TAssert.AssertTrue('conexao inicial nao ocorreu', WaitCount(FCliConnCount, 1, 5000));
+  TAssert.AssertTrue('Connecting deveria cair assim que a sessao subiu', WaitNotConnecting(2000));
 
   Sleep(700); // sessao DURAVEL (bem mais que ReconnectDelayMs)
   FreeAndNil(FServer); // derruba a sessao...
   FServer := TPipeServer.Create(LName);
   FServer.Listen;      // ...e volta no mesmo endereco
 
-  Assert.IsTrue(WaitCount(FCliConnCount, 2, 6000),
-    'AutoReconnect nao reconectou depois de o ConnectAsync ter terminado');
-  Assert.IsTrue(FClient.Connected);
+  TAssert.AssertTrue('AutoReconnect nao reconectou depois de o ConnectAsync ter terminado',
+    WaitCount(FCliConnCount, 2, 6000));
+  TAssert.AssertTrue(FClient.Connected);
   // Reconexao automatica nao e' ConnectAsync: Connecting continua False.
-  Assert.IsFalse(FClient.Connecting,
-    'Connecting fala apenas de ConnectAsync, nao de reconexao automatica');
-  Assert.IsTrue(WaitClientCount(FServer, 1, 2000));
+  TAssert.AssertFalse('Connecting fala apenas de ConnectAsync, nao de reconexao automatica',
+    FClient.Connecting);
+  TAssert.AssertTrue(WaitClientCount(FServer, 1, 2000));
 end;
 
 procedure TPipeConnectAsyncTests.Connecting_SemChamarConnectAsync_PermaneceFalse;
@@ -434,15 +429,15 @@ begin
   FServer.Listen;
 
   FClient := TPipeClient.Create(LName);
-  Assert.IsFalse(FClient.Connecting, 'cliente recem-criado nao esta conectando');
+  TAssert.AssertFalse('cliente recem-criado nao esta conectando', FClient.Connecting);
 
   FClient.Connect(3000); // sincrono: nao liga Connecting em momento nenhum
-  Assert.IsTrue(FClient.Connected);
-  Assert.IsFalse(FClient.Connecting, 'Connect sincrono nao pode ligar Connecting');
+  TAssert.AssertTrue(FClient.Connected);
+  TAssert.AssertFalse('Connect sincrono nao pode ligar Connecting', FClient.Connecting);
 
   FClient.Disconnect;
-  Assert.IsFalse(FClient.Connecting);
-  Assert.IsFalse(FClient.Connected);
+  TAssert.AssertFalse(FClient.Connecting);
+  TAssert.AssertFalse(FClient.Connected);
 end;
 
 procedure TPipeConnectAsyncTests.ConnectAsync_EmVoo_ImpedeTrocarTransportOuAddress;
@@ -457,16 +452,16 @@ begin
   FClient := TPipeClient.Create(LName);
   FClient.ReconnectDelayMs := 300;
   FClient.ConnectAsync;
-  Assert.IsTrue(FClient.Connecting);
+  TAssert.AssertTrue(FClient.Connecting);
 
-  Assert.WillRaise(DoSetAddress, EPipeError, 'Address nao pode mudar em voo');
-  Assert.WillRaise(DoSetTransport, EPipeError, 'Transport nao pode mudar em voo');
-  Assert.AreEqual(LName, FClient.Address, 'Address nao pode ter mudado');
+  TAssert.AssertException('Address nao pode mudar em voo', EPipeError, DoSetAddress);
+  TAssert.AssertException('Transport nao pode mudar em voo', EPipeError, DoSetTransport);
+  TAssert.AssertEquals('Address nao pode ter mudado', LName, FClient.Address);
 
   FClient.Disconnect; // sem tentativa em voo, a configuracao volta a ser livre
-  Assert.IsFalse(FClient.Connecting);
+  TAssert.AssertFalse(FClient.Connecting);
   DoSetTransport;
-  Assert.IsTrue(FClient.Transport = ptTcp);
+  TAssert.AssertTrue(FClient.Transport = ptTcp);
 end;
 
 procedure TPipeConnectAsyncTests.AttemptFailed_ServidorAusente_DisparaPorTentativaComContador;
@@ -483,22 +478,22 @@ begin
   FClient.ConnectAsync;
 
   // Uma tentativa falha = um evento. Com teto 3, exatamente 3.
-  Assert.IsTrue(WaitCount(FAttemptCount, 3, 5000),
-    'esperava 3 eventos de tentativa, vieram ' + IntToStr(FAttemptCount));
-  Assert.IsTrue(WaitCount(FErrCount, 1, 5000), 'nao avisou o esgotamento');
+  TAssert.AssertTrue('esperava 3 eventos de tentativa, vieram ' + IntToStr(FAttemptCount),
+    WaitCount(FAttemptCount, 3, 5000));
+  TAssert.AssertTrue('nao avisou o esgotamento', WaitCount(FErrCount, 1, 5000));
 
   // AAttempt e' o MESMO contador que MaxReconnectAttempts limita, comecando
   // em 1 — e' o que deixa o log dizer "3a tentativa" sem guardar estado.
-  Assert.AreEqual('1|2|3|', AttemptNums);
+  TAssert.AssertEquals('1|2|3|', AttemptNums);
   // Sem FailoverAddresses, todo evento reporta o unico endereco.
-  Assert.AreEqual(LName + '|' + LName + '|' + LName + '|', AttemptAddrs);
+  TAssert.AssertEquals(LName + '|' + LName + '|' + LName + '|', AttemptAddrs);
   // A mensagem do transporte e' o que separa "servidor ausente" de "recusou
   // meu certificado" num log forense.
-  Assert.IsTrue(LastAttemptError <> '', 'evento sem mensagem de erro');
+  TAssert.AssertTrue('evento sem mensagem de erro', LastAttemptError <> '');
 
   // Desistiu: para de disparar (o teto vale para o diagnostico tambem).
   Sleep(800);
-  EqualInt(3, FAttemptCount);
+  TAssert.AssertEquals(3, FAttemptCount);
 end;
 
 procedure TPipeConnectAsyncTests.AttemptFailed_ComFailover_ReportaOEnderecoQueFalhou;
@@ -520,12 +515,12 @@ begin
   FClient.OnConnectAttemptFailed := OnCliAttemptFailed;
   FClient.ConnectAsync;
 
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000), 'nao alcancou o backup');
+  TAssert.AssertTrue('nao alcancou o backup', WaitCount(FCliConnCount, 1, 5000));
   // Exatamente uma falha: a do primario. O backup conectou de primeira.
-  EqualInt(1, FAttemptCount);
-  Assert.AreEqual(LPrimario + '|', AttemptAddrs,
-    'o evento deveria reportar o PRIMARIO, nao o endereco seguinte');
-  Assert.AreEqual(LBackup, FClient.ActiveAddress);
+  TAssert.AssertEquals(1, FAttemptCount);
+  TAssert.AssertEquals('o evento deveria reportar o PRIMARIO, nao o endereco seguinte',
+    LPrimario + '|', AttemptAddrs);
+  TAssert.AssertEquals(LBackup, FClient.ActiveAddress);
 end;
 
 procedure TPipeConnectAsyncTests.AttemptFailed_ReconexaoAutomatica_TambemDispara;
@@ -545,13 +540,13 @@ begin
   FClient.OnConnected := OnCliConnected;
   FClient.OnConnectAttemptFailed := OnCliAttemptFailed;
   FClient.Connect(3000); // Connect SINCRONO: nem ConnectAsync esta em jogo
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 3000));
-  EqualInt(0, FAttemptCount); // conectou de primeira
+  TAssert.AssertTrue(WaitCount(FCliConnCount, 1, 3000));
+  TAssert.AssertEquals(0, FAttemptCount); // conectou de primeira
 
   FreeAndNil(FServer); // cai e nao volta: as tentativas passam a falhar
-  Assert.IsTrue(WaitCount(FAttemptCount, 2, 5000),
-    'reconexao automatica nao reportou tentativas falhas');
-  Assert.IsTrue(Pos(LName, AttemptAddrs) > 0, 'endereco ausente no evento');
+  TAssert.AssertTrue('reconexao automatica nao reportou tentativas falhas',
+    WaitCount(FAttemptCount, 2, 5000));
+  TAssert.AssertTrue('endereco ausente no evento', Pos(LName, AttemptAddrs) > 0);
 end;
 
 procedure TPipeConnectAsyncTests.AttemptFailed_ConexaoBemSucedida_NaoDispara;
@@ -568,11 +563,11 @@ begin
   FClient.OnConnectAttemptFailed := OnCliAttemptFailed;
   FClient.ConnectAsync;
 
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 5000));
-  Assert.IsTrue(WaitNotConnecting(2000));
+  TAssert.AssertTrue(WaitCount(FCliConnCount, 1, 5000));
+  TAssert.AssertTrue(WaitNotConnecting(2000));
   Sleep(500); // operacao silenciosa: nada de ruido no log
-  EqualInt(0, FAttemptCount);
-  Assert.AreEqual('', AttemptAddrs);
+  TAssert.AssertEquals(0, FAttemptCount);
+  TAssert.AssertEquals('', AttemptAddrs);
 end;
 
 initialization

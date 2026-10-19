@@ -1,16 +1,17 @@
-unit Pipes.FailoverTests;
+﻿unit Pipes.FailoverTests;
 
 { Testes de FailoverAddresses/ActiveAddress (TPipeClient): Connect tentando
   varios enderecos, reconexao automatica migrando para um alternativo quando o
   primario cai, e o primario voltando a ser preferido depois de uma sessao
   DURAVEL num alternativo (nao so' "avanca pro proximo" - ver o cabecalho de
-  Pipes.Client.pas). Versao DUnitX; espelha a versao FPCUnit em
-  tests/Integration/fpc. }
+  Pipes.Client.pas). Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc
+  e' gerado por tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   SyncObjs,
   Pipes.Types,
@@ -40,7 +41,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     [Test] procedure SemFailoverAddresses_ActiveAddressEIgualAAddress;
     [Test] procedure Connect_PrimarioVivo_PrefereAddress;
     [Test] procedure Connect_PrimarioMorto_UsaFailover;
@@ -50,11 +51,6 @@ type
   end;
 
 implementation
-
-procedure EqualInt(AExpected, AActual: Integer);
-begin
-  Assert.AreEqual(AExpected, AActual);
-end;
 
 var
   GNameSeq: Integer;
@@ -131,7 +127,7 @@ begin
   FPrimary.Listen;
   FClient := TPipeClient.Create(LName);
   FClient.Connect(3000);
-  Assert.AreEqual(LName, FClient.ActiveAddress);
+  TAssert.AssertEquals(LName, FClient.ActiveAddress);
 end;
 
 procedure TPipeFailoverTests.Connect_PrimarioVivo_PrefereAddress;
@@ -149,9 +145,9 @@ begin
   FClient.FailoverAddresses := [LBackup];
   FClient.Connect(3000);
 
-  Assert.AreEqual(LPrimario, FClient.ActiveAddress);
-  Assert.IsTrue(WaitClientCount(FPrimary, 1, 2000));
-  EqualInt(0, FBackup2.ClientCount);
+  TAssert.AssertEquals(LPrimario, FClient.ActiveAddress);
+  TAssert.AssertTrue(WaitClientCount(FPrimary, 1, 2000));
+  TAssert.AssertEquals(0, FBackup2.ClientCount);
 end;
 
 procedure TPipeFailoverTests.Connect_PrimarioMorto_UsaFailover;
@@ -169,8 +165,8 @@ begin
   // "bater na porta" ate estourar e o backup responder na sequencia.
   FClient.Connect(4000);
 
-  Assert.AreEqual(LBackup, FClient.ActiveAddress);
-  Assert.IsTrue(WaitClientCount(FBackup2, 1, 2000));
+  TAssert.AssertEquals(LBackup, FClient.ActiveAddress);
+  TAssert.AssertTrue(WaitClientCount(FBackup2, 1, 2000));
 end;
 
 procedure TPipeFailoverTests.Reconexao_PrimarioCaiPermanente_MigraParaBackup;
@@ -190,16 +186,16 @@ begin
   FClient.ReconnectDelayMs := 300;
   FClient.OnConnected := OnCliConnected;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 3000), 'conexao inicial nao disparou');
+  TAssert.AssertTrue('conexao inicial nao disparou', WaitCount(FCliConnCount, 1, 3000));
 
   FPrimary.Stop; // cai e nao volta
 
   // 1a tentativa de reabrir mira o primario (morto, consome ReconnectDelayMs)
   // e avanca pro backup; a seguinte mira o backup e da certo.
-  Assert.IsTrue(WaitCount(FCliConnCount, 2, 5000),
-    'nao migrou para o backup apos o primario cair');
-  Assert.AreEqual(LBackup, FClient.ActiveAddress);
-  Assert.IsTrue(WaitClientCount(FBackup2, 1, 2000));
+  TAssert.AssertTrue('nao migrou para o backup apos o primario cair',
+    WaitCount(FCliConnCount, 2, 5000));
+  TAssert.AssertEquals(LBackup, FClient.ActiveAddress);
+  TAssert.AssertTrue(WaitClientCount(FBackup2, 1, 2000));
 end;
 
 procedure TPipeFailoverTests.Reconexao_SessaoDuravelNoBackup_VoltaAoPrimarioDepois;
@@ -222,12 +218,12 @@ begin
   FClient.ReconnectDelayMs := 300;
   FClient.OnConnected := OnCliConnected;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 3000));
+  TAssert.AssertTrue(WaitCount(FCliConnCount, 1, 3000));
 
   FPrimary.Stop; // 1o. episodio de falha: migra para o 1o alternativo (backup2)
-  Assert.IsTrue(WaitCount(FCliConnCount, 2, 5000),
-    'nao migrou para backup2 apos o primario cair');
-  Assert.AreEqual(LBackup2Name, FClient.ActiveAddress);
+  TAssert.AssertTrue('nao migrou para backup2 apos o primario cair',
+    WaitCount(FCliConnCount, 2, 5000));
+  TAssert.AssertEquals(LBackup2Name, FClient.ActiveAddress);
 
   // Sessao DURAVEL no backup2 (bem mais que ReconnectDelayMs): o proximo
   // episodio de falha deve preferir o PRIMARIO de novo, e nao so' "avancar"
@@ -238,11 +234,10 @@ begin
   FPrimary.Listen;
 
   FBackup2.Stop; // 2o. episodio de falha, a partir de uma sessao DURAVEL
-  Assert.IsTrue(WaitCount(FCliConnCount, 3, 5000),
-    'nao reconectou apos o backup2 cair');
-  Assert.AreEqual(LPrimario, FClient.ActiveAddress,
-    'sessao duravel deveria preferir o primario, nao avancar para o proximo da lista');
-  EqualInt(0, FBackup3.ClientCount);
+  TAssert.AssertTrue('nao reconectou apos o backup2 cair', WaitCount(FCliConnCount, 3, 5000));
+  TAssert.AssertEquals('sessao duravel deveria preferir o primario, nao avancar para o proximo da lista',
+    LPrimario, FClient.ActiveAddress);
+  TAssert.AssertEquals(0, FBackup3.ClientCount);
 end;
 
 procedure TPipeFailoverTests.MaxReconnectAttempts_ContaTentativasContraQualquerEndereco;
@@ -262,7 +257,7 @@ begin
   FClient.OnConnected := OnCliConnected;
   FClient.OnError := OnCliError;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 3000));
+  TAssert.AssertTrue(WaitCount(FCliConnCount, 1, 3000));
 
   FPrimary.Stop; // cai; o backup nunca esteve no ar - as 4 tentativas falham
 
@@ -270,12 +265,12 @@ begin
   Sleep(2000);
   FLock.Enter;
   try
-    Assert.IsTrue(Pos('attempts', FLastError) > 0,
-      'esperava o erro de reconexao esgotada, veio: ' + FLastError);
+    TAssert.AssertTrue('esperava o erro de reconexao esgotada, veio: ' + FLastError,
+      Pos('attempts', FLastError) > 0);
   finally
     FLock.Leave;
   end;
-  EqualInt(1, FCliConnCount); // nunca voltou a conectar em endereco nenhum
+  TAssert.AssertEquals(1, FCliConnCount); // nunca voltou a conectar em endereco nenhum
 end;
 
 initialization

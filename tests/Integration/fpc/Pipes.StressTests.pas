@@ -1,12 +1,16 @@
-unit Pipes.StressTests;
+﻿unit Pipes.StressTests;
 
 {$mode delphi}{$H+}
+
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Integration/Pipes.StressTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
 
 { Testes de stress do milestone M7: Stop sob trafego intenso (detector de
   deadlock), quedas abruptas repetidas sem vazamento de handle/fd, requests
   concorrentes (correlacao RPC sob disputa), ciclos de reuso de servidor e
-  cliente e integridade de payload grande. Versao FPCUnit; espelha a versao
-  DUnitX em tests/Integration. }
+  cliente e integridade de payload grande. Mestre DUnitX; o espelho FPCUnit em
+  tests/Integration/fpc e' gerado por tools/gen_fpc_mirror.py. }
 
 interface
 
@@ -113,7 +117,8 @@ begin
   end;
 end;
 {$ELSE}
-// Declarada localmente: nem toda versao da unit Windows do FPC a expoe.
+// Declaradas localmente: nem toda versao da Winapi.Windows (Delphi) ou da
+// unit Windows (FPC) as expoe.
 function GetProcessHandleCount(hProcess: THandle;
   var pdwHandleCount: LongWord): LongBool; stdcall;
   external 'kernel32.dll' name 'GetProcessHandleCount';
@@ -192,9 +197,8 @@ end;
 
 { TPipeStressTests }
 
-procedure TPipeStressTests.SetUp;
+procedure TPipeStressTests.Setup;
 begin
-  inherited;
   FSrvMsgCount := 0;
   FSrvConnCount := 0;
   FSrvDiscCount := 0;
@@ -203,7 +207,6 @@ end;
 procedure TPipeStressTests.TearDown;
 begin
   FreeAndNil(FServer); // Stop no destructor
-  inherited;
 end;
 
 function TPipeStressTests.WaitCount(var ACounter: Integer;
@@ -263,7 +266,7 @@ var
 begin
   LEp := PipeConnect(FServer.PipeName, 3000);
   try
-    AssertTrue('conexao nao foi aceita pelo servidor',
+    TAssert.AssertTrue('conexao nao foi aceita pelo servidor',
       WaitCount(FSrvConnCount, AExpectedConns, 5000));
     LStream := TPipeEndpointStream.Create(LEp);
     try
@@ -299,14 +302,13 @@ begin
     for I := 0 to 3 do
       LSenders[I] := TFloodSender.Create(LClients[I]);
     // Garante trafego REAL em voo antes do Stop.
-    AssertTrue('flood nao gerou trafego suficiente',
-      WaitCount(FSrvMsgCount, 200, 5000));
+    TAssert.AssertTrue('flood nao gerou trafego suficiente', WaitCount(FSrvMsgCount, 200, 5000));
 
     T0 := PcTickMs;
     FServer.Stop;
-    AssertTrue('Stop sob flood de 4 clientes demorou demais (deadlock?)',
+    TAssert.AssertTrue('Stop sob flood de 4 clientes demorou demais (deadlock?)',
       PcTickMs - T0 < 2000);
-    AssertTrue('servidor devia estar inativo', not FServer.Active);
+    TAssert.AssertFalse('servidor devia estar inativo', FServer.Active);
   finally
     for I := 0 to 3 do
       if LSenders[I] <> nil then
@@ -331,16 +333,16 @@ begin
   OpenServer;
   // Aquecimento: primeiro ciclo cria pool global, threads e caches do RTL.
   AbruptClientCycle(1);
-  AssertTrue('warmup: OnClientDisconnected nao disparou',
+  TAssert.AssertTrue('warmup: OnClientDisconnected nao disparou',
     WaitCount(FSrvDiscCount, 1, 5000));
   Sleep(100); // cleanup do ciclo de aquecimento assenta
   LBaseline := CurrentHandleCount;
 
   for I := 1 to CYCLES do
     AbruptClientCycle(1 + I);
-  AssertTrue('nem toda queda abrupta gerou OnClientDisconnected',
+  TAssert.AssertTrue('nem toda queda abrupta gerou OnClientDisconnected',
     WaitCount(FSrvDiscCount, 1 + CYCLES, 10000));
-  AssertTrue('mensagens pre-queda deviam ter chegado',
+  TAssert.AssertTrue('mensagens pre-queda deviam ter chegado',
     WaitCount(FSrvMsgCount, 1 + CYCLES, 5000));
 
   // Espera o teardown assíncrono devolver os handles/fds ao patamar base.
@@ -351,9 +353,10 @@ begin
     Sleep(50);
     LFinal := CurrentHandleCount;
   end;
-  AssertTrue(Format('vazamento de handle/fd: base=%d, final=%d apos %d quedas',
-    [LBaseline, LFinal, CYCLES]), LFinal <= LBaseline + SLACK);
-  AssertEquals(0, FServer.ClientCount);
+  TAssert.AssertTrue(Format('vazamento de handle/fd: base=%d, final=%d apos %d quedas',
+      [LBaseline, LFinal, CYCLES]),
+    LFinal <= LBaseline + SLACK);
+  TAssert.AssertEquals(0, FServer.ClientCount);
 end;
 
 procedure TPipeStressTests.RequestsConcorrentes_CorrelacaoSemTroca;
@@ -382,8 +385,8 @@ begin
       Inc(LFailures, LStorms[I].Failures);
       Inc(LCompleted, LStorms[I].Completed);
     end;
-    AssertEquals('requests concluidos', THREADS * REQS, LCompleted);
-    AssertEquals('replies trocados/falhos (correlacao)', 0, LFailures);
+    TAssert.AssertEquals('requests concluidos', THREADS * REQS, LCompleted);
+    TAssert.AssertEquals('replies trocados/falhos (correlacao)', 0, LFailures);
   finally
     for I := 0 to THREADS - 1 do
       LStorms[I].Free;
@@ -404,23 +407,23 @@ begin
   for LCycle := 1 to CYCLES do
   begin
     FServer.Listen;
-    AssertTrue('ciclo ' + IntToStr(LCycle) + ': servidor devia estar ativo',
+    TAssert.AssertTrue('ciclo ' + IntToStr(LCycle) + ': servidor devia estar ativo',
       FServer.Active);
     LClient := TNamedPipeClient.Create(FServer.PipeName);
     try
       LClient.Connect(3000);
       LClient.SendText('ciclo' + IntToStr(LCycle));
-      AssertTrue('ciclo ' + IntToStr(LCycle) + ': mensagem nao chegou',
+      TAssert.AssertTrue('ciclo ' + IntToStr(LCycle) + ': mensagem nao chegou',
         WaitCount(FSrvMsgCount, LCycle, 5000));
     finally
       LClient.Free;
     end;
     T0 := PcTickMs;
     FServer.Stop;
-    AssertTrue('ciclo ' + IntToStr(LCycle) + ': Stop lento (deadlock?)',
+    TAssert.AssertTrue('ciclo ' + IntToStr(LCycle) + ': Stop lento (deadlock?)',
       PcTickMs - T0 < 2000);
   end;
-  AssertEquals(CYCLES, PcAtomicGet(FSrvMsgCount));
+  TAssert.AssertEquals(CYCLES, PcAtomicGet(FSrvMsgCount));
 end;
 
 procedure TPipeStressTests.CiclosConnectDisconnect_ClienteReutilizavel;
@@ -437,17 +440,17 @@ begin
     begin
       LClient.Connect(3000);
       LClient.SendText('volta' + IntToStr(LCycle));
-      AssertTrue('ciclo ' + IntToStr(LCycle) + ': mensagem nao chegou',
+      TAssert.AssertTrue('ciclo ' + IntToStr(LCycle) + ': mensagem nao chegou',
         WaitCount(FSrvMsgCount, LCycle, 5000));
       LClient.Disconnect;
-      AssertTrue('ciclo ' + IntToStr(LCycle) + ': desconexao nao notificada',
+      TAssert.AssertTrue('ciclo ' + IntToStr(LCycle) + ': desconexao nao notificada',
         WaitCount(FSrvDiscCount, LCycle, 5000));
     end;
   finally
     LClient.Free;
   end;
-  AssertEquals(CYCLES, PcAtomicGet(FSrvConnCount));
-  AssertEquals(0, FServer.ClientCount);
+  TAssert.AssertEquals(CYCLES, PcAtomicGet(FSrvConnCount));
+  TAssert.AssertEquals(0, FServer.ClientCount);
 end;
 
 procedure TPipeStressTests.PayloadGrande_RoundTripIntegro;
@@ -468,8 +471,8 @@ begin
   try
     LClient.Connect(3000);
     LReply := LClient.Request(LData, 15000);
-    AssertEquals('tamanho do eco', PAYLOAD_SIZE, Length(LReply));
-    AssertTrue('payload corrompido no round-trip',
+    TAssert.AssertEquals('tamanho do eco', PAYLOAD_SIZE, Length(LReply));
+    TAssert.AssertTrue('payload corrompido no round-trip',
       CompareMem(@LData[0], @LReply[0], PAYLOAD_SIZE));
   finally
     LClient.Free;

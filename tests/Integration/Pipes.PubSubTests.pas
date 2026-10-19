@@ -1,4 +1,4 @@
-unit Pipes.PubSubTests;
+﻿unit Pipes.PubSubTests;
 
 { Testes fim-a-fim da camada de topicos (pub/sub): fanout so' para quem assina,
   curingas no fio, retido, tetos, limpeza da assinatura quando a conexao morre,
@@ -9,12 +9,14 @@ unit Pipes.PubSubTests;
   nao abre conexao nenhuma. Aqui se testa a FIACAO: se o frame certo sai, chega,
   e mexe no estado certo do outro lado.
 
-  Versao DUnitX; espelha a versao FPCUnit em tests/Integration/fpc. }
+  Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e' gerado por
+  tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Classes,
   SyncObjs,
@@ -74,7 +76,7 @@ type
       AConnId: TPipeConnectionId);
     procedure OnCliConnected(Sender: TObject; AConnId: TPipeConnectionId);
     procedure OnCliDisconnected(Sender: TObject; AConnId: TPipeConnectionId);
-    // Para Assert.WillRaise:
+    // Para AssertException:
     procedure DoSubscribeFiltroInvalido;
     procedure DoPublishTopicoInvalidoNoServidor;
     procedure DoPublishDesconectado;
@@ -98,7 +100,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     [Test] procedure Fanout_SoQuemAssinaRecebe;
     [Test] procedure Fanout_CuringasNoFio;
     [Test] procedure Unsubscribe_ParaDeReceber;
@@ -137,18 +139,6 @@ function UniquePipeName: string;
 begin
   Result := 'pipes_faa_pubsub_' + IntToStr(Int64(PcTickMs)) + '_' +
     IntToStr(PcAtomicInc(GNameSeq));
-end;
-
-// Length() e' NativeInt no Win64 e AreEqual<T> nao infere T com argumentos de
-// tipos diferentes (E2532) — mesmo helper dos outros fixtures.
-procedure EqualInt(AExpected, AActual: Integer); overload;
-begin
-  Assert.AreEqual(AExpected, AActual);
-end;
-
-procedure EqualInt(AExpected, AActual: Integer; const AMsg: string); overload;
-begin
-  Assert.AreEqual(AExpected, AActual, AMsg);
 end;
 
 { TPipePubSubTests }
@@ -440,19 +430,19 @@ begin
   FClients[0].Subscribe('caixa.3.status');
   FClients[1].Subscribe('caixa.4.status');
   // O cliente 2 nao assina nada: e' a metade do teste que costuma faltar.
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000),
-    'servidor nao registrou a assinatura do cliente 0');
-  Assert.IsTrue(WaitSubscribers('caixa.4.status', 1, 3000),
-    'servidor nao registrou a assinatura do cliente 1');
+  TAssert.AssertTrue('servidor nao registrou a assinatura do cliente 0',
+    WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue('servidor nao registrou a assinatura do cliente 1',
+    WaitSubscribers('caixa.4.status', 1, 3000));
 
   FServer.PublishText('caixa.3.status', 'aberto');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000), 'assinante nao recebeu');
+  TAssert.AssertTrue('assinante nao recebeu', WaitCount(FTopicCount[0], 1, 3000));
   Sleep(150); // janela para uma entrega indevida aparecer
-  EqualInt(0, PcAtomicGet(FTopicCount[1]),
-    'cliente 1 nao devia receber topico de outro caixa');
-  EqualInt(0, PcAtomicGet(FTopicCount[2]),
-    'cliente 2 nao assinou nada e nao devia receber');
-  EqualInt(1, CountLog('0|caixa.3.status|aberto'));
+  TAssert.AssertEquals('cliente 1 nao devia receber topico de outro caixa',
+    0, PcAtomicGet(FTopicCount[1]));
+  TAssert.AssertEquals('cliente 2 nao assinou nada e nao devia receber',
+    0, PcAtomicGet(FTopicCount[2]));
+  TAssert.AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
 end;
 
 procedure TPipePubSubTests.Fanout_CuringasNoFio;
@@ -462,17 +452,15 @@ begin
   AddClient(1);
   FClients[0].Subscribe('caixa.*.status'); // um segmento
   FClients[1].Subscribe('caixa.#');        // o resto
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 2, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 2, 3000));
 
   FServer.PublishText('caixa.3.status', 'a');       // casa nos dois
   FServer.PublishText('caixa.3.venda.item', 'b');   // so' no '#'
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000),
-    'curinga de um segmento nao entregou');
-  Assert.IsTrue(WaitCount(FTopicCount[1], 2, 3000),
-    'curinga de resto nao entregou as duas');
+  TAssert.AssertTrue('curinga de um segmento nao entregou', WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertTrue('curinga de resto nao entregou as duas', WaitCount(FTopicCount[1], 2, 3000));
   Sleep(150);
-  EqualInt(1, PcAtomicGet(FTopicCount[0]),
-    'caixa.*.status nao devia alcancar tres segmentos abaixo');
+  TAssert.AssertEquals('caixa.*.status nao devia alcancar tres segmentos abaixo',
+    1, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.Unsubscribe_ParaDeReceber;
@@ -480,20 +468,19 @@ begin
   OpenServer;
   AddClient(0);
   FClients[0].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
   FServer.PublishText('caixa.3.status', 'primeira');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertTrue(WaitCount(FTopicCount[0], 1, 3000));
 
   FClients[0].Unsubscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 0, 3000),
-    'servidor nao removeu a assinatura');
-  Assert.IsTrue(WaitCount(FUnsubCount, 1, 3000), 'OnUnsubscribe nao disparou');
-  EqualInt(0, Length(FClients[0].Subscriptions));
+  TAssert.AssertTrue('servidor nao removeu a assinatura',
+    WaitSubscribers('caixa.3.status', 0, 3000));
+  TAssert.AssertTrue('OnUnsubscribe nao disparou', WaitCount(FUnsubCount, 1, 3000));
+  TAssert.AssertEquals(0, Length(FClients[0].Subscriptions));
 
   FServer.PublishText('caixa.3.status', 'segunda');
   Sleep(200);
-  EqualInt(1, PcAtomicGet(FTopicCount[0]),
-    'nao devia receber depois do Unsubscribe');
+  TAssert.AssertEquals('nao devia receber depois do Unsubscribe', 1, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.SubscribeIdempotente_UmaCopiaPorMensagem;
@@ -505,16 +492,16 @@ begin
   FClients[0].Subscribe('caixa.#');
   FClients[0].Subscribe('caixa.#');
   FClients[0].Subscribe('caixa.*.status');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
-  EqualInt(2, Length(FClients[0].Subscriptions),
-    'filtro repetido nao devia entrar duas vezes');
-  EqualInt(2, Length(FServer.ClientSubscriptions(FLastConnId)));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertEquals('filtro repetido nao devia entrar duas vezes',
+    2, Length(FClients[0].Subscriptions));
+  TAssert.AssertEquals(2, Length(FServer.ClientSubscriptions(FLastConnId)));
 
   FServer.PublishText('caixa.3.status', 'uma vez');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertTrue(WaitCount(FTopicCount[0], 1, 3000));
   Sleep(200);
-  EqualInt(1, PcAtomicGet(FTopicCount[0]),
-    'dois filtros casando nao podem duplicar a entrega');
+  TAssert.AssertEquals('dois filtros casando nao podem duplicar a entrega',
+    1, PcAtomicGet(FTopicCount[0]));
 end;
 
 { --- ciclo de vida da assinatura --- }
@@ -526,7 +513,7 @@ begin
   OpenServer;
   AddClient(0);
   FClients[0].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
   FLock.Enter;
   try
     LConnId := FLastConnId;
@@ -535,10 +522,10 @@ begin
   end;
 
   FClients[0].Disconnect;
-  Assert.IsTrue(WaitCount(FSrvDiscCount, 1, 3000), 'servidor nao viu a saida');
-  EqualInt(0, FServer.SubscriberCount('caixa.3.status'),
-    'a assinatura tinha de morrer com a conexao');
-  EqualInt(0, Length(FServer.ClientSubscriptions(LConnId)));
+  TAssert.AssertTrue('servidor nao viu a saida', WaitCount(FSrvDiscCount, 1, 3000));
+  TAssert.AssertEquals('a assinatura tinha de morrer com a conexao',
+    0, FServer.SubscriberCount('caixa.3.status'));
+  TAssert.AssertEquals(0, Length(FServer.ClientSubscriptions(LConnId)));
   // Publicar sem assinante nao levanta nem enfileira nada.
   FServer.PublishText('caixa.3.status', 'no vacuo');
 end;
@@ -555,7 +542,7 @@ begin
   OpenServer;
   LEp := PipeConnect(FServer.Address, 3000);
   try
-    Assert.IsTrue(WaitCount(FSrvConnCount, 1, 5000), 'conexao nao foi aceita');
+    TAssert.AssertTrue('conexao nao foi aceita', WaitCount(FSrvConnCount, 1, 5000));
     LStream := TPipeEndpointStream.Create(LEp);
     try
       PipeWriteFrame(LStream, PipeSubscribeFrame('caixa.#'),
@@ -563,18 +550,18 @@ begin
     finally
       LStream.Free;
     end;
-    Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000),
-      'servidor nao registrou a assinatura');
+    TAssert.AssertTrue('servidor nao registrou a assinatura',
+      WaitSubscribers('caixa.3.status', 1, 3000));
   finally
     LEp.Free; // do ponto de vista do servidor, o processo do cliente morreu
   end;
-  Assert.IsTrue(WaitCount(FSrvDiscCount, 1, 5000), 'servidor nao viu a queda');
+  TAssert.AssertTrue('servidor nao viu a queda', WaitCount(FSrvDiscCount, 1, 5000));
   LDeadline := PcTickMs + 3000;
   while (FServer.SubscriberCount('caixa.3.status') > 0) and
         (PcTickMs < LDeadline) do
     Sleep(5);
-  EqualInt(0, FServer.SubscriberCount('caixa.3.status'),
-    'assinatura vazou depois da queda abrupta');
+  TAssert.AssertEquals('assinatura vazou depois da queda abrupta',
+    0, FServer.SubscriberCount('caixa.3.status'));
 end;
 
 { --- retido --- }
@@ -588,14 +575,13 @@ begin
   FServer.PublishText('caixa.4.status', 'fechado', True);
   AddClient(0);
   FClients[0].Subscribe('caixa.3.#');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000),
-    'retido nao chegou na assinatura');
+  TAssert.AssertTrue('retido nao chegou na assinatura', WaitCount(FTopicCount[0], 1, 3000));
   Sleep(200);
-  EqualInt(1, PcAtomicGet(FTopicCount[0]),
-    'so o retido que casa com o filtro devia chegar');
-  EqualInt(1, CountLog('0|caixa.3.status|aberto'));
-  EqualInt(1, PcAtomicGet(FRetainedCount[0]),
-    'catch-up tinha de chegar marcado como retido');
+  TAssert.AssertEquals('so o retido que casa com o filtro devia chegar',
+    1, PcAtomicGet(FTopicCount[0]));
+  TAssert.AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
+  TAssert.AssertEquals('catch-up tinha de chegar marcado como retido',
+    1, PcAtomicGet(FRetainedCount[0]));
 end;
 
 procedure TPipePubSubTests.Retido_AoVivoNaoVemMarcado;
@@ -607,17 +593,17 @@ begin
   OpenServer;
   AddClient(0);
   FClients[0].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
   FServer.PublishText('caixa.3.status', 'aberto', True); // retain + assinante
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000));
-  EqualInt(0, PcAtomicGet(FRetainedCount[0]),
-    'publicacao ao vivo nao pode vir marcada como retida');
+  TAssert.AssertTrue(WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertEquals('publicacao ao vivo nao pode vir marcada como retida',
+    0, PcAtomicGet(FRetainedCount[0]));
   // ... e o valor ficou guardado do mesmo jeito, para o proximo assinante.
   AddClient(1);
   FClients[1].Subscribe('caixa.#');
-  Assert.IsTrue(WaitCount(FTopicCount[1], 1, 3000));
-  EqualInt(1, PcAtomicGet(FRetainedCount[1]),
-    'o segundo cliente devia receber o retido, marcado');
+  TAssert.AssertTrue(WaitCount(FTopicCount[1], 1, 3000));
+  TAssert.AssertEquals('o segundo cliente devia receber o retido, marcado',
+    1, PcAtomicGet(FRetainedCount[1]));
 end;
 
 procedure TPipePubSubTests.Retido_CorpoVazioApaga;
@@ -627,10 +613,9 @@ begin
   FServer.Publish('caixa.3.status', nil, True); // corpo vazio: apaga
   AddClient(0);
   FClients[0].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
   Sleep(250);
-  EqualInt(0, PcAtomicGet(FTopicCount[0]),
-    'valor apagado nao devia ser entregue');
+  TAssert.AssertEquals('valor apagado nao devia ser entregue', 0, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.Retido_TetoDescartaOMaisAntigo;
@@ -642,13 +627,12 @@ begin
   FServer.PublishText('t.3', 'tres', True); // despeja 't.1'
   AddClient(0);
   FClients[0].Subscribe('t.#');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 2, 3000), 'retidos nao chegaram');
+  TAssert.AssertTrue('retidos nao chegaram', WaitCount(FTopicCount[0], 2, 3000));
   Sleep(200);
-  EqualInt(2, PcAtomicGet(FTopicCount[0]),
-    'o teto tinha de descartar o mais antigo');
-  EqualInt(0, CountLog('0|t.1|'));
-  EqualInt(1, CountLog('0|t.2|dois'));
-  EqualInt(1, CountLog('0|t.3|tres'));
+  TAssert.AssertEquals('o teto tinha de descartar o mais antigo', 2, PcAtomicGet(FTopicCount[0]));
+  TAssert.AssertEquals(0, CountLog('0|t.1|'));
+  TAssert.AssertEquals(1, CountLog('0|t.2|dois'));
+  TAssert.AssertEquals(1, CountLog('0|t.3|tres'));
 end;
 
 { --- recusas --- }
@@ -660,21 +644,19 @@ begin
   AddClient(0);
   FClients[0].Subscribe('a.#');
   FClients[0].Subscribe('b.#');
-  Assert.IsTrue(WaitSubscribers('a.x', 1, 3000));
-  Assert.IsTrue(WaitSubscribers('b.x', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('a.x', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('b.x', 1, 3000));
 
   FClients[0].Subscribe('c.#'); // acima do teto
   // A recusa aparece nos DOIS lados: OnError do servidor (quem recusou) e
   // OnError do cliente (via reply de erro com corrId 0). Silencio no cliente
   // seria o pior desfecho — ele esperaria mensagens que nunca viriam.
-  Assert.IsTrue(WaitCount(FSrvErrCount, 1, 3000),
-    'servidor nao registrou a recusa');
-  Assert.IsTrue(WaitCount(FCliErrCount[0], 1, 3000),
-    'cliente nao foi avisado da recusa');
-  EqualInt(2, Length(FServer.ClientSubscriptions(FLastConnId)),
-    'o filtro recusado nao devia entrar');
-  EqualInt(1, FServer.ClientCount, 'a conexao devia continuar de pe');
-  EqualInt(0, FServer.SubscriberCount('c.x'));
+  TAssert.AssertTrue('servidor nao registrou a recusa', WaitCount(FSrvErrCount, 1, 3000));
+  TAssert.AssertTrue('cliente nao foi avisado da recusa', WaitCount(FCliErrCount[0], 1, 3000));
+  TAssert.AssertEquals('o filtro recusado nao devia entrar',
+    2, Length(FServer.ClientSubscriptions(FLastConnId)));
+  TAssert.AssertEquals('a conexao devia continuar de pe', 1, FServer.ClientCount);
+  TAssert.AssertEquals(0, FServer.SubscriberCount('c.x'));
 end;
 
 procedure TPipePubSubTests.FiltroInvalido_LevantaNoCliente;
@@ -683,14 +665,14 @@ begin
   AddClient(0);
   // Erro de programacao no proprio processo: levanta na hora, na linha errada,
   // em vez de virar um frame que o servidor recusaria depois.
-  Assert.WillRaise(DoSubscribeFiltroInvalido, EPipeError);
-  EqualInt(0, Length(FClients[0].Subscriptions));
+  TAssert.AssertException(EPipeError, DoSubscribeFiltroInvalido);
+  TAssert.AssertEquals(0, Length(FClients[0].Subscriptions));
 end;
 
 procedure TPipePubSubTests.TopicoInvalido_LevantaNoServidor;
 begin
   OpenServer;
-  Assert.WillRaise(DoPublishTopicoInvalidoNoServidor, EPipeError);
+  TAssert.AssertException(EPipeError, DoPublishTopicoInvalidoNoServidor);
 end;
 
 procedure TPipePubSubTests.PublishDesconectado_Levanta;
@@ -699,7 +681,7 @@ begin
   FClients[0] := TPipeClient.Create(FServer.Address);
   // Publicar e' um acontecimento com hora, nao uma intencao guardada como o
   // Subscribe: sem sessao, levanta.
-  Assert.WillRaise(DoPublishDesconectado, EPipeClosed);
+  TAssert.AssertException(EPipeClosed, DoPublishDesconectado);
 end;
 
 { --- publicacao vinda do cliente --- }
@@ -710,17 +692,16 @@ begin
   AddClient(0);
   AddClient(1);
   FClients[1].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
 
   FClients[0].PublishText('caixa.3.status', 'do cliente');
-  Assert.IsTrue(WaitCount(FPublishCount, 1, 3000),
-    'OnPublish nao disparou no servidor');
+  TAssert.AssertTrue('OnPublish nao disparou no servidor', WaitCount(FPublishCount, 1, 3000));
   Sleep(200);
-  EqualInt(0, PcAtomicGet(FTopicCount[1]),
-    'sem RelayClientPublish, um cliente nao injeta nos outros');
+  TAssert.AssertEquals('sem RelayClientPublish, um cliente nao injeta nos outros',
+    0, PcAtomicGet(FTopicCount[1]));
   FLock.Enter;
   try
-    Assert.AreEqual('caixa.3.status|do cliente', FPublishLog[0]);
+    TAssert.AssertEquals('caixa.3.status|do cliente', FPublishLog[0]);
   finally
     FLock.Leave;
   end;
@@ -734,14 +715,13 @@ begin
   AddClient(1);
   FClients[1].Subscribe('caixa.#');
   FClients[0].Subscribe('caixa.#'); // tambem assina: o relay inclui o autor
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 2, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 2, 3000));
 
   FClients[0].PublishText('caixa.3.status', 'do cliente');
-  Assert.IsTrue(WaitCount(FTopicCount[1], 1, 3000),
-    'o outro assinante nao recebeu o relay');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000),
-    'o proprio autor assinante tambem devia receber');
-  Assert.IsTrue(WaitCount(FPublishCount, 1, 3000));
+  TAssert.AssertTrue('o outro assinante nao recebeu o relay', WaitCount(FTopicCount[1], 1, 3000));
+  TAssert.AssertTrue('o proprio autor assinante tambem devia receber',
+    WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertTrue(WaitCount(FPublishCount, 1, 3000));
 end;
 
 { --- reconexao --- }
@@ -767,25 +747,22 @@ begin
   FClients[0].AutoReconnect := True;
   FClients[0].ReconnectDelayMs := 300;
   FClients[0].Connect(3000);
-  Assert.IsTrue(WaitCount(FCliConnCount, 1, 3000),
-    'primeira conexao nao confirmou');
+  TAssert.AssertTrue('primeira conexao nao confirmou', WaitCount(FCliConnCount, 1, 3000));
   FClients[0].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
 
   FServer.Stop;
-  Assert.IsTrue(WaitCount(FCliDiscCount, 1, 5000), 'queda nao notificada');
+  TAssert.AssertTrue('queda nao notificada', WaitCount(FCliDiscCount, 1, 5000));
   FServer.Listen; // mesmo nome: o cliente reconecta
-  Assert.IsTrue(WaitCount(FCliConnCount, 2, 10000), 'cliente nao reconectou');
+  TAssert.AssertTrue('cliente nao reconectou', WaitCount(FCliConnCount, 2, 10000));
 
   // Nenhum Subscribe novo aqui: quem tem de reassinar e' a lib.
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 5000),
-    'assinatura nao foi reenviada na reconexao');
+  TAssert.AssertTrue('assinatura nao foi reenviada na reconexao',
+    WaitSubscribers('caixa.3.status', 1, 5000));
   FServer.PublishText('caixa.3.status', 'depois da reconexao');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 5000),
-    'publicacao pos-reconexao nao chegou');
-  EqualInt(1, CountLog('0|caixa.3.status|depois da reconexao'));
-  EqualInt(1, Length(FClients[0].Subscriptions),
-    'o app nao devia ter de reassinar');
+  TAssert.AssertTrue('publicacao pos-reconexao nao chegou', WaitCount(FTopicCount[0], 1, 5000));
+  TAssert.AssertEquals(1, CountLog('0|caixa.3.status|depois da reconexao'));
+  TAssert.AssertEquals('o app nao devia ter de reassinar', 1, Length(FClients[0].Subscriptions));
 end;
 
 { --- encerramento --- }
@@ -801,7 +778,7 @@ begin
   AddClient(2);
   for I := 0 to 2 do
     FClients[I].Subscribe('carga.#');
-  Assert.IsTrue(WaitSubscribers('carga.x', 3, 3000));
+  TAssert.AssertTrue(WaitSubscribers('carga.x', 3, 3000));
 
   // Fanout para 3 assinantes, 300 vezes: o Stop tem de vencer a fila de
   // escritas em vez de esperar por ela (detector de deadlock).
@@ -809,11 +786,10 @@ begin
     FServer.PublishText('carga.x', 'p' + IntToStr(I));
   T0 := PcTickMs;
   FServer.Stop;
-  Assert.IsTrue(PcTickMs - T0 < 2000,
-    'Stop sob publicacao intensa demorou demais (deadlock?)');
-  Assert.IsFalse(FServer.Active, 'servidor devia estar inativo');
-  Assert.IsTrue(WaitCount(FCliDiscCount, 3, 3000),
-    'os clientes nao perceberam o Stop');
+  TAssert.AssertTrue('Stop sob publicacao intensa demorou demais (deadlock?)',
+    PcTickMs - T0 < 2000);
+  TAssert.AssertFalse('servidor devia estar inativo', FServer.Active);
+  TAssert.AssertTrue('os clientes nao perceberam o Stop', WaitCount(FCliDiscCount, 3, 3000));
 end;
 
 { --- PublishBatch --- }
@@ -829,8 +805,8 @@ begin
   FClients[0].Subscribe('caixa.3.status');
   FClients[1].Subscribe('caixa.4.status');
   // O cliente 2 nao assina nada: item sem assinante nao pode virar Write nenhum.
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
-  Assert.IsTrue(WaitSubscribers('caixa.4.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.4.status', 1, 3000));
 
   SetLength(LItems, 2);
   LItems[0].Topic := 'caixa.3.status';
@@ -839,15 +815,15 @@ begin
   LItems[1].Payload := PipeUtf8Encode('fechado');
   FServer.PublishBatch(LItems);
 
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000),
-    'cliente 0 nao recebeu o item do seu topico');
-  Assert.IsTrue(WaitCount(FTopicCount[1], 1, 3000),
-    'cliente 1 nao recebeu o item do seu topico');
+  TAssert.AssertTrue('cliente 0 nao recebeu o item do seu topico',
+    WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertTrue('cliente 1 nao recebeu o item do seu topico',
+    WaitCount(FTopicCount[1], 1, 3000));
   Sleep(150);
-  EqualInt(0, PcAtomicGet(FTopicCount[2]),
-    'cliente 2 nao assinou nada e nao devia receber');
-  EqualInt(1, CountLog('0|caixa.3.status|aberto'));
-  EqualInt(1, CountLog('1|caixa.4.status|fechado'));
+  TAssert.AssertEquals('cliente 2 nao assinou nada e nao devia receber',
+    0, PcAtomicGet(FTopicCount[2]));
+  TAssert.AssertEquals(1, CountLog('0|caixa.3.status|aberto'));
+  TAssert.AssertEquals(1, CountLog('1|caixa.4.status|fechado'));
 end;
 
 procedure TPipePubSubTests.PublishBatch_RetainPorItem_ChegaAQuemAssinaDepois;
@@ -866,12 +842,12 @@ begin
 
   AddClient(0);
   FClients[0].Subscribe('t.#');
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000), 'retido do lote nao chegou');
+  TAssert.AssertTrue('retido do lote nao chegou', WaitCount(FTopicCount[0], 1, 3000));
   Sleep(200);
-  EqualInt(1, PcAtomicGet(FTopicCount[0]),
-    'so o item com Retain=True devia sobreviver para o novo assinante');
-  EqualInt(1, CountLog('0|t.1|um'));
-  EqualInt(0, CountLog('0|t.2|'));
+  TAssert.AssertEquals('so o item com Retain=True devia sobreviver para o novo assinante',
+    1, PcAtomicGet(FTopicCount[0]));
+  TAssert.AssertEquals(1, CountLog('0|t.1|um'));
+  TAssert.AssertEquals(0, CountLog('0|t.2|'));
 end;
 
 procedure TPipePubSubTests.PublishBatch_RetainAoVivo_NaoMarcaARetainedParaQuemJaAssinava;
@@ -885,7 +861,7 @@ begin
   OpenServer;
   AddClient(0);
   FClients[0].Subscribe('caixa.3.status');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
 
   SetLength(LItems, 1);
   LItems[0].Topic := 'caixa.3.status';
@@ -893,9 +869,9 @@ begin
   LItems[0].Retain := True;
   FServer.PublishBatch(LItems);
 
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000), 'assinante nao recebeu o item');
-  EqualInt(0, PcAtomicGet(FRetainedCount[0]),
-    'entrega AO VIVO nao pode chegar marcada como ARetained=True');
+  TAssert.AssertTrue('assinante nao recebeu o item', WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertEquals('entrega AO VIVO nao pode chegar marcada como ARetained=True',
+    0, PcAtomicGet(FRetainedCount[0]));
 end;
 
 procedure TPipePubSubTests.PublishBatch_TopicoInvalido_NaoPublicaNadaDoLote;
@@ -903,11 +879,11 @@ begin
   OpenServer;
   AddClient(0);
   FClients[0].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
-  Assert.WillRaise(DoPublishBatchTopicoInvalidoNoServidor, EPipeError);
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertException(EPipeError, DoPublishBatchTopicoInvalidoNoServidor);
   Sleep(150);
-  EqualInt(0, PcAtomicGet(FTopicCount[0]),
-    'topico invalido no lote nao pode deixar os outros itens passarem');
+  TAssert.AssertEquals('topico invalido no lote nao pode deixar os outros itens passarem',
+    0, PcAtomicGet(FTopicCount[0]));
 end;
 
 procedure TPipePubSubTests.PublishBatch_DoCliente_SemRelayVaiSoParaOnPublish;
@@ -918,7 +894,7 @@ begin
   AddClient(0);
   AddClient(1);
   FClients[1].Subscribe('caixa.#');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
 
   SetLength(LItems, 2);
   LItems[0].Topic := 'caixa.3.status';
@@ -927,11 +903,10 @@ begin
   LItems[1].Payload := PipeUtf8Encode('b');
   FClients[0].PublishBatch(LItems);
 
-  Assert.IsTrue(WaitCount(FPublishCount, 2, 3000),
-    'OnPublish nao viu os dois itens do lote');
+  TAssert.AssertTrue('OnPublish nao viu os dois itens do lote', WaitCount(FPublishCount, 2, 3000));
   Sleep(150);
-  EqualInt(0, PcAtomicGet(FTopicCount[1]),
-    'sem RelayClientPublish, o lote nao alcanca outros clientes');
+  TAssert.AssertEquals('sem RelayClientPublish, o lote nao alcanca outros clientes',
+    0, PcAtomicGet(FTopicCount[1]));
 end;
 
 { --- OnDelivered / OnDeliveryFailed --- }
@@ -943,21 +918,22 @@ begin
   OpenServer;
   AddClient(0);
   FClients[0].Subscribe('caixa.3.status');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
   LConnId0 := FLastConnId; // captura ANTES do cliente 1 conectar (que move FLastConnId)
 
   AddClient(1); // nao assina nada: nao pode gerar OnDelivered nenhum
   FServer.PublishText('caixa.3.status', 'aberto');
 
-  Assert.IsTrue(WaitCount(FDeliveredCount, 1, 3000),
-    'OnDelivered nao disparou para o assinante');
+  TAssert.AssertTrue('OnDelivered nao disparou para o assinante',
+    WaitCount(FDeliveredCount, 1, 3000));
   Sleep(150); // janela para uma segunda entrega indevida aparecer
-  EqualInt(1, PcAtomicGet(FDeliveredCount),
-    'OnDelivered devia disparar exatamente uma vez, apenas para quem assina');
-  EqualInt(1, CountLogIn(FDeliveredLog,
+  TAssert.AssertEquals('OnDelivered devia disparar exatamente uma vez, apenas para quem assina',
+    1, PcAtomicGet(FDeliveredCount));
+  TAssert.AssertEquals(1,
+    CountLogIn(FDeliveredLog,
     IntToStr(LConnId0) + '|caixa.3.status|aberto|False'));
-  EqualInt(0, PcAtomicGet(FDeliveryFailedCount),
-    'entrega bem-sucedida nao pode disparar OnDeliveryFailed');
+  TAssert.AssertEquals('entrega bem-sucedida nao pode disparar OnDeliveryFailed',
+    0, PcAtomicGet(FDeliveryFailedCount));
 end;
 
 procedure TPipePubSubTests.OnDelivered_Retido_ChegaComARetainedTrue;
@@ -968,10 +944,11 @@ begin
   AddClient(0);
   FClients[0].Subscribe('caixa.5.status');
 
-  Assert.IsTrue(WaitCount(FTopicCount[0], 1, 3000), 'retido nao chegou ao novo assinante');
-  Assert.IsTrue(WaitCount(FDeliveredCount, 1, 3000),
-    'OnDelivered nao disparou para o replay do retido');
-  EqualInt(1, CountLogIn(FDeliveredLog,
+  TAssert.AssertTrue('retido nao chegou ao novo assinante', WaitCount(FTopicCount[0], 1, 3000));
+  TAssert.AssertTrue('OnDelivered nao disparou para o replay do retido',
+    WaitCount(FDeliveredCount, 1, 3000));
+  TAssert.AssertEquals(1,
+    CountLogIn(FDeliveredLog,
     IntToStr(FLastConnId) + '|caixa.5.status|aberto|True'));
 end;
 
@@ -984,8 +961,8 @@ begin
   AddClient(1);
   FClients[0].Subscribe('caixa.3.status');
   FClients[1].Subscribe('caixa.4.status');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
-  Assert.IsTrue(WaitSubscribers('caixa.4.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.4.status', 1, 3000));
 
   SetLength(LItems, 2);
   LItems[0].Topic := 'caixa.3.status';
@@ -994,11 +971,11 @@ begin
   LItems[1].Payload := PipeUtf8Encode('fechado');
   FServer.PublishBatch(LItems);
 
-  Assert.IsTrue(WaitCount(FDeliveredCount, 2, 3000),
-    'OnDelivered nao disparou para os dois itens do lote');
+  TAssert.AssertTrue('OnDelivered nao disparou para os dois itens do lote',
+    WaitCount(FDeliveredCount, 2, 3000));
   Sleep(150);
-  EqualInt(2, PcAtomicGet(FDeliveredCount),
-    'cada item do lote pode gerar no maximo um OnDelivered por conexao que casou');
+  TAssert.AssertEquals('cada item do lote pode gerar no maximo um OnDelivered por conexao que casou',
+    2, PcAtomicGet(FDeliveredCount));
 end;
 
 procedure TPipePubSubTests.OnDeliveryFailed_PayloadExcedeMaxMessageSize;
@@ -1011,19 +988,20 @@ begin
   OpenServer(pdmPool, 40);
   AddClient(0);
   FClients[0].Subscribe('caixa.3.status');
-  Assert.IsTrue(WaitSubscribers('caixa.3.status', 1, 3000));
+  TAssert.AssertTrue(WaitSubscribers('caixa.3.status', 1, 3000));
 
   FServer.PublishText('caixa.3.status', 'este payload excede de sobra o teto configurado');
 
-  Assert.IsTrue(WaitCount(FDeliveryFailedCount, 1, 3000),
-    'OnDeliveryFailed nao disparou para o payload grande demais');
-  EqualInt(1, CountLogIn(FDeliveryFailedLog,
+  TAssert.AssertTrue('OnDeliveryFailed nao disparou para o payload grande demais',
+    WaitCount(FDeliveryFailedCount, 1, 3000));
+  TAssert.AssertEquals(1,
+    CountLogIn(FDeliveryFailedLog,
     IntToStr(FLastConnId) + '|caixa.3.status|'));
-  EqualInt(0, PcAtomicGet(FDeliveredCount),
-    'entrega que falhou nao pode contar como OnDelivered');
+  TAssert.AssertEquals('entrega que falhou nao pode contar como OnDelivered',
+    0, PcAtomicGet(FDeliveredCount));
   Sleep(150);
-  EqualInt(0, PcAtomicGet(FTopicCount[0]),
-    'o cliente nao pode ter recebido o payload que nao coube no teto');
+  TAssert.AssertEquals('o cliente nao pode ter recebido o payload que nao coube no teto',
+    0, PcAtomicGet(FTopicCount[0]));
 end;
 
 initialization

@@ -21,7 +21,12 @@
   Android puxaria o backend FPC-only e nem compilaria. }
 
 {$IFDEF FPC}
-  {$MODE DELPHI}
+  // So' troca o modo se ele ainda nao for Delphi: o FPC aceita UM {$MODE} por
+  // unit, e os espelhos FPCUnit gerados por tools/gen_fpc_mirror.py ja trazem
+  // {$mode delphi} antes do include (Pipes.TlsTests inclui este arquivo).
+  {$IFNDEF FPC_DELPHI}
+    {$MODE DELPHI}
+  {$ENDIF}
   {$H+}
 {$ENDIF}
 

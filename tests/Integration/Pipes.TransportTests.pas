@@ -1,16 +1,18 @@
-unit Pipes.TransportTests;
+﻿unit Pipes.TransportTests;
 
 { Testes de integracao do transporte (loopback em processo, sem dependencia
   externa): conexao, dados nos dois sentidos, frame NPF1 fim-a-fim, e as
   garantias anti-deadlock (Close desbloqueia Accept; CloseAbort desbloqueia
   Read; queda do par e' detectada). Usam so as fabricas de Pipes.Transport,
   entao valem para qualquer backend (Windows agora; POSIX no M4).
-  Versao DUnitX/Delphi; espelha a versao FPCUnit em tests/Integration/fpc. }
+  Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e' gerado por
+  tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Classes,
   Pipes.Types,
@@ -36,7 +38,7 @@ type
     function TestTransport: TPipeTransport; virtual;
   public
     [TearDown] procedure TearDown;
-  published
+  public
     [Test] procedure Loopback_EnviaERecebeNosDoisSentidos;
     [Test] procedure Loopback_FrameNpf1FimAFim;
     [Test] procedure Accept_DesbloqueiaComClose;
@@ -50,7 +52,10 @@ type
     Pipes.Transport.Tcp: no Windows, a espera Winsock com WSAEventSelect; no
     POSIX, o socket AF_INET reaproveitando o endpoint/listener de
     Pipes.Transport.Posix. }
-  [TestFixture]
+  // Sem [TestFixture] de proposito: herda os testes da classe-base (o
+  // registro explicito no fim da unit basta ao DUnitX), e tools/
+  // gen_fpc_mirror.py so' converte fixture sem heranca — esta declaracao ja
+  // e' FPCUnit valido como esta.
   TPipeTcpTransportTests = class(TPipeTransportTests)
   protected
     function TestAddress: string; override;
@@ -59,12 +64,6 @@ type
   end;
 
 implementation
-
-// Comparacoes nao-genericas (evita E2532 com NativeInt no Win64).
-procedure EqualInt(AExpected, AActual: Integer);
-begin
-  Assert.AreEqual(AExpected, AActual);
-end;
 
 var
   GNameSeq: Integer;
@@ -218,7 +217,7 @@ begin
   finally
     LAcc.Free;
   end;
-  Assert.IsNotNull(FServerEp, 'Accept nao devolveu endpoint');
+  TAssert.AssertTrue('Accept nao devolveu endpoint', FServerEp <> nil);
 end;
 
 procedure TPipeTransportTests.DoConnectInexistente;
@@ -238,18 +237,18 @@ begin
   FClientEp.WriteExactly(LOut[0], Length(LOut));
   SetLength(LIn, 16);
   LLen := FServerEp.Read(LIn[0], 16);
-  EqualInt(4, LLen);
+  TAssert.AssertEquals(4, LLen);
   SetLength(LIn, LLen);
-  Assert.AreEqual('ping', PipeUtf8Decode(LIn));
+  TAssert.AssertEquals('ping', PipeUtf8Decode(LIn));
 
   // servidor -> cliente
   LOut := PipeUtf8Encode('pong!');
   FServerEp.WriteExactly(LOut[0], Length(LOut));
   SetLength(LIn, 16);
   LLen := FClientEp.Read(LIn[0], 16);
-  EqualInt(5, LLen);
+  TAssert.AssertEquals(5, LLen);
   SetLength(LIn, LLen);
-  Assert.AreEqual('pong!', PipeUtf8Decode(LIn));
+  TAssert.AssertEquals('pong!', PipeUtf8Decode(LIn));
 end;
 
 procedure TPipeTransportTests.Loopback_FrameNpf1FimAFim;
@@ -264,16 +263,16 @@ begin
     PipeWriteFrame(LCliStream, TPipeFrame.Request(99, PipeUtf8Encode('soma 2+2')),
       PIPES_DEFAULT_MAX_MESSAGE_SIZE);
     LFrame := PipeReadFrame(LSrvStream, PIPES_DEFAULT_MAX_MESSAGE_SIZE);
-    Assert.IsTrue(LFrame.Kind = pfkRequest, 'kind devia ser request');
-    Assert.IsTrue(LFrame.CorrId = 99, 'corrId nao preservado');
-    Assert.AreEqual('soma 2+2', LFrame.PayloadAsText);
+    TAssert.AssertTrue('kind devia ser request', LFrame.Kind = pfkRequest);
+    TAssert.AssertTrue('corrId nao preservado', LFrame.CorrId = 99);
+    TAssert.AssertEquals('soma 2+2', LFrame.PayloadAsText);
 
     PipeWriteFrame(LSrvStream, TPipeFrame.Reply(99, PipeUtf8Encode('4')),
       PIPES_DEFAULT_MAX_MESSAGE_SIZE);
     LFrame := PipeReadFrame(LCliStream, PIPES_DEFAULT_MAX_MESSAGE_SIZE);
-    Assert.IsTrue(LFrame.Kind = pfkReply, 'kind devia ser reply');
-    Assert.IsTrue(LFrame.CorrId = 99, 'corrId do reply nao preservado');
-    Assert.AreEqual('4', LFrame.PayloadAsText);
+    TAssert.AssertTrue('kind devia ser reply', LFrame.Kind = pfkReply);
+    TAssert.AssertTrue('corrId do reply nao preservado', LFrame.CorrId = 99);
+    TAssert.AssertEquals('4', LFrame.PayloadAsText);
   finally
     LCliStream.Free;
     LSrvStream.Free;
@@ -292,8 +291,8 @@ begin
     T0 := PcTickMs;
     FListener.Close;
     LAcc.WaitFor;
-    Assert.IsTrue(PcTickMs - T0 < 2000, 'Close nao desbloqueou o Accept em ate 2s');
-    Assert.IsNull(LAcc.Accepted(0), 'Accept devia devolver nil apos Close');
+    TAssert.AssertTrue('Close nao desbloqueou o Accept em ate 2s', PcTickMs - T0 < 2000);
+    TAssert.AssertTrue('Accept devia devolver nil apos Close', LAcc.Accepted(0) = nil);
   finally
     LAcc.Free;
   end;
@@ -311,8 +310,8 @@ begin
     T0 := PcTickMs;
     FServerEp.CloseAbort;
     LReader.WaitFor;
-    Assert.IsTrue(PcTickMs - T0 < 2000, 'CloseAbort nao desbloqueou o Read em ate 2s');
-    Assert.IsTrue(LReader.GotClosed, 'Read abortado devia levantar EPipeClosed');
+    TAssert.AssertTrue('CloseAbort nao desbloqueou o Read em ate 2s', PcTickMs - T0 < 2000);
+    TAssert.AssertTrue('Read abortado devia levantar EPipeClosed', LReader.GotClosed);
   finally
     LReader.Free;
   end;
@@ -331,8 +330,8 @@ begin
     FClientEp.CloseAbort;
     FreeAndNil(FClientEp); // fecha o handle do cliente: par do servidor caiu
     LReader.WaitFor;
-    Assert.IsTrue(PcTickMs - T0 < 2000, 'queda do par nao desbloqueou o Read em ate 2s');
-    Assert.IsTrue(LReader.GotClosed, 'queda do par devia levantar EPipeClosed');
+    TAssert.AssertTrue('queda do par nao desbloqueou o Read em ate 2s', PcTickMs - T0 < 2000);
+    TAssert.AssertTrue('queda do par devia levantar EPipeClosed', LReader.GotClosed);
   finally
     LReader.Free;
   end;
@@ -343,9 +342,9 @@ var
   T0: UInt64;
 begin
   T0 := PcTickMs;
-  Assert.WillRaise(DoConnectInexistente, EPipeTimeout);
-  Assert.IsTrue(PcTickMs - T0 >= 250, 'timeout retornou cedo demais');
-  Assert.IsTrue(PcTickMs - T0 < 5000, 'timeout demorou demais');
+  TAssert.AssertException(EPipeTimeout, DoConnectInexistente);
+  TAssert.AssertTrue('timeout retornou cedo demais', PcTickMs - T0 >= 250);
+  TAssert.AssertTrue('timeout demorou demais', PcTickMs - T0 < 5000);
 end;
 
 procedure TPipeTransportTests.MultiplosClientes_CadaUmComSeuEndpoint;
@@ -365,7 +364,7 @@ begin
       LClients[I] := PipeConnect(LName, 3000);
     LAcc.WaitFor;
     for I := 0 to 2 do
-      Assert.IsNotNull(LAcc.Accepted(I), 'endpoint do servidor ' + IntToStr(I) + ' nulo');
+      TAssert.AssertTrue('endpoint do servidor ' + IntToStr(I) + ' nulo', LAcc.Accepted(I) <> nil);
 
     // Cada cliente manda um byte proprio; o conjunto {1,2,3} deve chegar
     // (sem assumir a ordem de accept).
@@ -378,11 +377,11 @@ begin
     for I := 0 to 2 do
     begin
       LLen := LAcc.Accepted(I).Read(LByte, 1);
-      EqualInt(1, LLen);
-      Assert.IsTrue((LByte >= 1) and (LByte <= 3), 'byte fora do esperado');
+      TAssert.AssertEquals(1, LLen);
+      TAssert.AssertTrue('byte fora do esperado', (LByte >= 1) and (LByte <= 3));
       LSum := LSum + LByte;
     end;
-    EqualInt(6, LSum); // 1+2+3: os tres clientes chegaram, sem duplicata
+    TAssert.AssertEquals(6, LSum); // 1+2+3: os tres clientes chegaram, sem duplicata
   finally
     for I := 0 to 2 do
       LClients[I].Free;

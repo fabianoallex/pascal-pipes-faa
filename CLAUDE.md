@@ -182,9 +182,41 @@ também numa aplicação que usa esta lib como submódulo):
   `RejectControl`), ambos UTF-8 livre — o protocolo não depende do texto. Teste que compara
   texto de mensagem (sobretudo o NEGATIVO, `Pos(...) = 0`) precisa mudar junto. Ver §25.
 
+## Testes espelhados: kit da skill (desde 2026-10-19)
+
+O kit de testes vem da skill `dual-compiler-delphi-lazarus` (pascal-skills-faa), não é deste
+repositório — mesma cópia usada pela pascal-common-faa, -jsonmapper-faa, -db-faa,
+-api-infra-faa e pascal-agenda-faa:
+- `tools/gen_fpc_mirror.py`: cópia SEM alteração de `scripts/gen_fpc_mirror.py` da skill.
+  Gera `tests/<Suite>/fpc/*Tests.pas` a partir do mestre DUnitX `tests/<Suite>/*Tests.pas`
+  (troca só a declaração das fixtures, os atributos, o `uses` e o registro).
+- `tests/Unit/Pipes.DUnitXCompat.pas`: o adaptador `TAssert` (`assets/DUnitXCompat.pas.template`
+  da skill; só o nome da unit e o comentário do topo são daqui).
+- `python <skill>/scripts/check_test_kit.py .` tem de dizer "same as the skill's"; para
+  atualizar: `--install Pipes`. Falta uma sobrecarga? Ela vai para o template da skill, não
+  para a cópia daqui.
+
+Regras: o MESTRE é sempre o DUnitX. **Nunca edite `tests/*/fpc/*Tests.pas` à mão** — edite o
+mestre e rode `python tools/gen_fpc_mirror.py`; `tools/test_fpc.sh` e
+`tools/test_fpc_docker.sh` rodam `--check` antes de compilar. Corpo dos testes no dialeto
+FPCUnit via `TAssert.*` (`AssertEquals(msg, esperado, atual)`, `AssertTrue(msg, cond)`,
+`AssertException(msg, Classe, Metodo)` — classe EXATA nos dois lados), Double sempre com
+delta; nada de `Assert.*` do DUnitX nem em comentário (o gerador recusa). Fixture: `public` +
+`[Test]` (nunca `published`), `[Setup] procedure SetUp`/`[TearDown] procedure TearDown`.
+Fixture com herança (`TPipeTcpTransportTests`) fica SEM `[TestFixture]` (o registro
+explícito basta ao DUnitX e a declaração já é FPCUnit válida). Código que difere por
+compilador vai em `{$IFDEF FPC}` no próprio mestre (ex.: helpers `Json*` de
+`Pipes.JsonTests`, contagem de fds `{$IFDEF UNIX}` de `Pipes.StressTests`).
+`Pipes.FinalizationCheck.pas` não é fixture: a cópia em `tests/Unit/fpc` continua manual
+(idêntica). `tests/Android` fica fora do kit (só Delphi, sem espelho). Os arquivos são LF
+(`.gitattributes`, `* text=auto eol=lf`): com CRLF o gerador não acha `unit X;` e o
+`--check` acusaria tudo.
+
 ## Restrições obrigatórias de código (compat dual Delphi/FPC)
 
-- Toda unit começa com `{$I pipes.inc}` (no FPC ativa `{$MODE DELPHI}{$H+}`; define
+- Toda unit começa com `{$I pipes.inc}` (no FPC ativa `{$MODE DELPHI}{$H+}` — o `{$MODE}` só
+  se o modo ainda não for Delphi (`FPC_DELPHI`), porque o FPC aceita um por unit e o espelho
+  gerado de `Pipes.TlsTests` já o traz antes do include; define
   `PIPES_WINDOWS`/`PIPES_POSIX` — molde: `..\pascal-amqp-faa\src\amqp.inc`).
 - **PROIBIDO:** métodos anônimos (`reference to`), `System.Threading` (TTask),
   `System.TMonitor`, atributos/RTTI estendida, inline vars. Nada que não compile no
@@ -378,12 +410,15 @@ tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery + FinalizationCh
   checagem de finalização do PipeGroupDispatcher — ver §23.1)
   + tests/Integration (Transport/EndToEnd/PubSub/Stress/Tls/Heartbeat/Stats/Json/Failover/
     Discovery/PeerAddress)
-  — DUnit e fpcunit, layout espelhado do pascal-amqp-faa
+  — mestres DUnitX + espelhos FPCUnit em tests/*/fpc GERADOS por tools/gen_fpc_mirror.py
+    (kit da skill — ver "Testes espelhados"), adaptador em tests/Unit/Pipes.DUnitXCompat.pas
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
 samples/ (20 amostras — ver README.md)  docs/ARQUITETURA.md  docs/INTEROP.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
 external/pascal-common-faa (submódulo, tag v1.12.0 — só testes/samples/scripts)
-tools/test_fpc.sh (FPC Windows: lazbuild + as duas suítes, heaptrc, checagem de finalização)
+tools/gen_fpc_mirror.py (gerador dos espelhos FPCUnit; cópia sem alteração da skill)
+tools/test_fpc.sh (FPC Windows: --check dos espelhos, lazbuild + as duas suítes, heaptrc,
+  checagem de finalização)
 tools/test_fpc_docker.sh (FPC Linux em Docker; FPCOPT=-dPIPES_OPENSSL liga ptTls, CPUS=1 e
   RUNS=N para caçar corrida com vários containers ao mesmo tempo)
 ```

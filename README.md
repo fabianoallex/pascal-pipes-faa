@@ -1241,6 +1241,12 @@ Toda suíte compila o submódulo da pascal-common-faa: rode `git submodule updat
 vez depois de clonar. Sem `--recursive`: o submódulo da própria pascal-common-faa só serve
 aos testes dela.
 
+- Os testes são escritos uma vez, nos mestres DUnitX (`tests/Unit/*Tests.pas`,
+  `tests/Integration/*Tests.pas`); os espelhos FPCUnit de `tests/*/fpc` são GERADOS por
+  `python tools/gen_fpc_mirror.py` e não se editam à mão. O gerador e o adaptador
+  `tests/Unit/Pipes.DUnitXCompat.pas` vêm do kit de testes da skill
+  `dual-compiler-delphi-lazarus` (pascal-skills-faa); os dois scripts abaixo rodam
+  `gen_fpc_mirror.py --check` antes de compilar.
 - Delphi: abra `Pipes.groupproj` e rode `Pipes.UnitTests` e `Pipes.IntegrationTests` (DUnitX).
 - FPC/Lazarus (Windows): `sh tools/test_fpc.sh` (lazbuild + as duas suítes; critério: 0
   erros, 0 falhas, "0 unfreed memory blocks" do heaptrc e nenhuma linha "FINALIZATION CHECK
@@ -1314,7 +1320,8 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing,
                      cima de OnMessage — nao acoplada ao core)
 packages/            pipes_faa.lpk (pacote Lazarus; exige pascal_common_faa pelo nome)
 external/            submodulo pascal-common-faa (so' testes e samples; ver "Instalacao")
-tools/               test_fpc.sh (Windows), test_fpc_docker.sh (Linux), gerar-pki.sh
+tools/               test_fpc.sh (Windows), test_fpc_docker.sh (Linux), gerar-pki.sh,
+                     gen_fpc_mirror.py (gera os espelhos FPCUnit)
 samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional),
                      EchoCommand (Pipes.Commands.pas, opcional),
                      EchoFailover (FailoverAddresses, reaproveita o EchoServer.exe),
@@ -1329,7 +1336,7 @@ samples/             EchoServer, EchoClient, EchoJson (Pipes.Json.pas, opcional)
                      GatewaySeguro (ptTls -> ptLocal, servidor + cliente no mesmo processo),
                      TransferenciaArquivos (CompressionMinSize e Stats.*Wire, UI VCL/LCL),
                      EchoAndroid (FMX/Android, so Delphi)
-tests/               Unit + Integration (DUnitX e FPCUnit, espelhados)
+tests/               Unit + Integration (mestres DUnitX; espelhos FPCUnit gerados)
 tests/Android/       suite de DEVICE do backend Android (loopback; sem par dual-compiler)
 tests/pki/           PKI de TESTE versionada, sem valor de seguranca (ver LEIA-ME)
 docs/ARQUITETURA.md  arquitetura completa (wire format, ciclo de vida das threads, racional)

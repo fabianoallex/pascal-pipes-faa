@@ -1,4 +1,4 @@
-unit Pipes.HeartbeatTests;
+﻿unit Pipes.HeartbeatTests;
 
 { Testes de integracao do heartbeat de aplicacao
   (Pipes.Base.HeartbeatIntervalMs): deteccao de peer zumbi em ptTcp nos DOIS
@@ -8,12 +8,14 @@ unit Pipes.HeartbeatTests;
   StopHeartbeat). "Zumbi" aqui e' literal: um TPipeEndpoint cru que aceita a
   conexao e nunca mais le nem escreve nada — diferente de um FIN limpo, que a
   camada de leitura ja detecta sem heartbeat nenhum.
-  Versao DUnitX/Delphi; espelha a versao FPCUnit em tests/Integration/fpc. }
+  Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e' gerado por
+  tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Pipes.Types,
   PascalCommon.Threading,
@@ -40,7 +42,7 @@ type
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
-  published
+  public
     [Test] procedure Servidor_DetectaClienteZumbi;
     [Test] procedure Cliente_DetectaServidorZumbi;
     [Test] procedure PtLocal_IgnoraHeartbeatIntervalMs;
@@ -127,8 +129,8 @@ begin
   // mapeamento mas deixou o socket local vivo do lado do peer.
   LZumbi := PipeConnect(FServer.Address, 3000, ptTcp);
   try
-    Assert.IsTrue(WaitCount(FSrvDiscCount, 1, 3000),
-      'servidor nao detectou o cliente zumbi a tempo');
+    TAssert.AssertTrue('servidor nao detectou o cliente zumbi a tempo',
+      WaitCount(FSrvDiscCount, 1, 3000));
   finally
     LZumbi.CloseAbort;
     LZumbi.Free;
@@ -154,8 +156,8 @@ begin
     // Aceita e SEGURA o endpoint cru (nao fecha, nao libera): o socket fica
     // vivo, mas ninguem do lado servidor nunca mais le nem escreve.
     LServerSide := LListener.Accept;
-    Assert.IsTrue(WaitCount(FCliDiscCount, 1, 3000),
-      'cliente nao detectou o servidor zumbi a tempo');
+    TAssert.AssertTrue('cliente nao detectou o servidor zumbi a tempo',
+      WaitCount(FCliDiscCount, 1, 3000));
   finally
     LListener.Close;
     LListener.Free;
@@ -178,9 +180,9 @@ begin
   FClient.HeartbeatIntervalMs := 100;
   FClient.OnDisconnected := OnCliDisconnected;
   FClient.Connect(3000);
-  Assert.IsTrue(WaitStill(FSrvDiscCount, 1, 600),
-    'ptLocal nao devia cair por causa de HeartbeatIntervalMs');
-  Assert.IsTrue(FClient.Connected, 'cliente devia continuar conectado');
+  TAssert.AssertTrue('ptLocal nao devia cair por causa de HeartbeatIntervalMs',
+    WaitStill(FSrvDiscCount, 1, 600));
+  TAssert.AssertTrue('cliente devia continuar conectado', FClient.Connected);
 end;
 
 procedure TPipeHeartbeatTests.StopEDisconnect_ComHeartbeatAtivo_TerminamRapido;
@@ -199,13 +201,13 @@ begin
 
   T0 := PcTickMs;
   FServer.Stop;
-  Assert.IsTrue(PcTickMs - T0 < 2000,
-    'Stop com heartbeat ativo demorou demais (deadlock na StopHeartbeat?)');
+  TAssert.AssertTrue('Stop com heartbeat ativo demorou demais (deadlock na StopHeartbeat?)',
+    PcTickMs - T0 < 2000);
 
   T0 := PcTickMs;
   FClient.Disconnect;
-  Assert.IsTrue(PcTickMs - T0 < 2000,
-    'Disconnect com heartbeat ativo demorou demais (deadlock na StopHeartbeat?)');
+  TAssert.AssertTrue('Disconnect com heartbeat ativo demorou demais (deadlock na StopHeartbeat?)',
+    PcTickMs - T0 < 2000);
 end;
 
 initialization
