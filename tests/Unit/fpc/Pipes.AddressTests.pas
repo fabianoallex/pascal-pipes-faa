@@ -1,11 +1,15 @@
-unit Pipes.AddressTests;
+﻿unit Pipes.AddressTests;
 
 {$mode delphi}{$H+}
 
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Unit/Pipes.AddressTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
+
 { Testes do parsing de endereco TCP (PipeParseHostPort) e da validacao de
   coerencia entre Address e Transport (PipeValidateAddress), ambos em
-  Pipes.Transport. Versao FPCUnit; espelha a cobertura da versao DUnitX em
-  tests/Unit. }
+  Pipes.Transport. Mestre DUnitX; o espelho FPCUnit em tests/Unit/fpc e' gerado
+  por tools/gen_fpc_mirror.py. }
 
 interface
 
@@ -75,14 +79,14 @@ var
   LPort: Word;
 begin
   PipeParseHostPort(AAddress, LHost, LPort);
-  AssertEquals('host de ' + AAddress, AHost, LHost);
-  AssertEquals('porta de ' + AAddress, Integer(APort), Integer(LPort));
+  TAssert.AssertEquals('host de ' + AAddress, AHost, LHost);
+  TAssert.AssertEquals('porta de ' + AAddress, Integer(APort), Integer(LPort));
 end;
 
 procedure TPipeAddressTests.CheckParseFails(const AAddress: string);
 begin
   FAddress := AAddress;
-  AssertException('deveria recusar "' + AAddress + '"', EPipeError, DoParse);
+  TAssert.AssertException('deveria recusar "' + AAddress + '"', EPipeError, DoParse);
 end;
 
 procedure TPipeAddressTests.CheckInvalid(const AAddress: string;
@@ -90,14 +94,14 @@ procedure TPipeAddressTests.CheckInvalid(const AAddress: string;
 begin
   FAddress := AAddress;
   FTransport := ATransport;
-  AssertException('deveria recusar "' + AAddress + '"', EPipeError, DoValidate);
+  TAssert.AssertException('deveria recusar "' + AAddress + '"', EPipeError, DoValidate);
 end;
 
 procedure TPipeAddressTests.CheckValid(const AAddress: string;
   ATransport: TPipeTransport);
 begin
   PipeValidateAddress(AAddress, ATransport); // nao deve levantar
-  AssertTrue('"' + AAddress + '" deveria ser aceito', True);
+  TAssert.AssertTrue('"' + AAddress + '" deveria ser aceito', True);
 end;
 
 procedure TPipeAddressTests.ParseHostPort_IPv4;

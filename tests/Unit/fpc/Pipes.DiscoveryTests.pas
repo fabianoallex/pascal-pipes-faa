@@ -1,11 +1,15 @@
-unit Pipes.DiscoveryTests;
+﻿unit Pipes.DiscoveryTests;
 
 {$mode delphi}{$H+}
 
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Unit/Pipes.DiscoveryTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
+
 { Testes do protocolo NPD1 e dos helpers IPv4 de Pipes.Discovery — so' as
   funcoes puras (encode/decode), sem socket nenhum; o caminho com rede fica no
-  teste de integracao. Versao FPCUnit; espelha a cobertura da versao DUnitX em
-  tests/Unit. }
+  teste de integracao. Mestre DUnitX; o espelho FPCUnit em tests/Unit/fpc e'
+  gerado por tools/gen_fpc_mirror.py. }
 
 interface
 
@@ -21,8 +25,8 @@ type
     FToken: string;
     FName: string;
     FPort: Word;
-    // Alvos dos AssertException: campos + metodo, nunca closure (mesmo
-    // padrao do Pipes.AddressTests, que mantem o espelho Delphi 1:1).
+    // Alvos de AssertException: campos + metodo, nunca closure
+    // (mesmo padrao do Pipes.AddressTests).
     procedure DoEncodeProbe;
     procedure DoEncodeResponse;
     /// Copia ADatagram com o byte AIndex substituido por AValue.
@@ -88,9 +92,8 @@ var
   LProbe: TBytes;
 begin
   LProbe := PipeDiscoveryEncodeProbe('');
-  AssertEquals('sonda sem token = so o header', 6, Length(LProbe));
-  AssertTrue('sonda valida deveria decodificar',
-    PipeDiscoveryTryDecodeProbe(LProbe, ''));
+  TAssert.AssertEquals('sonda sem token = so o header', 6, Length(LProbe));
+  TAssert.AssertTrue('sonda valida deveria decodificar', PipeDiscoveryTryDecodeProbe(LProbe, ''));
 end;
 
 procedure TPipeDiscoveryTests.Probe_RoundTrip_ComToken;
@@ -98,8 +101,7 @@ var
   LProbe: TBytes;
 begin
   LProbe := PipeDiscoveryEncodeProbe('loja-03');
-  AssertTrue('token igual deveria casar',
-    PipeDiscoveryTryDecodeProbe(LProbe, 'loja-03'));
+  TAssert.AssertTrue('token igual deveria casar', PipeDiscoveryTryDecodeProbe(LProbe, 'loja-03'));
 end;
 
 procedure TPipeDiscoveryTests.Probe_TokenErrado_Recusa;
@@ -107,11 +109,11 @@ var
   LProbe: TBytes;
 begin
   LProbe := PipeDiscoveryEncodeProbe('loja-03');
-  AssertFalse('token diferente nao pode casar',
+  TAssert.AssertFalse('token diferente nao pode casar',
     PipeDiscoveryTryDecodeProbe(LProbe, 'loja-04'));
-  AssertFalse('token vazio nao casa com sonda com token',
+  TAssert.AssertFalse('token vazio nao casa com sonda com token',
     PipeDiscoveryTryDecodeProbe(LProbe, ''));
-  AssertFalse('sonda sem token nao casa com token esperado',
+  TAssert.AssertFalse('sonda sem token nao casa com token esperado',
     PipeDiscoveryTryDecodeProbe(PipeDiscoveryEncodeProbe(''), 'loja-03'));
 end;
 
@@ -120,7 +122,7 @@ var
   LProbe: TBytes;
 begin
   LProbe := PipeDiscoveryEncodeProbe('');
-  AssertFalse('magic corrompido nao pode decodificar',
+  TAssert.AssertFalse('magic corrompido nao pode decodificar',
     PipeDiscoveryTryDecodeProbe(Corrupt(LProbe, 0, Ord('X')), ''));
 end;
 
@@ -131,8 +133,7 @@ begin
   // Uma RESPOSTA nunca pode ser aceita como sonda (senao dois responders na
   // mesma porta entrariam em loop respondendo um ao outro).
   LResponse := PipeDiscoveryEncodeResponse(5000, ptTcp, '', '');
-  AssertFalse('resposta nao e sonda',
-    PipeDiscoveryTryDecodeProbe(LResponse, ''));
+  TAssert.AssertFalse('resposta nao e sonda', PipeDiscoveryTryDecodeProbe(LResponse, ''));
 end;
 
 procedure TPipeDiscoveryTests.Probe_ComSobra_Recusa;
@@ -140,7 +141,7 @@ var
   LProbe: TBytes;
 begin
   LProbe := PipeDiscoveryEncodeProbe('tok');
-  AssertFalse('comprimento e estrito: sobra = lixo',
+  TAssert.AssertFalse('comprimento e estrito: sobra = lixo',
     PipeDiscoveryTryDecodeProbe(Resize(LProbe, 1), 'tok'));
 end;
 
@@ -149,16 +150,17 @@ var
   LProbe: TBytes;
 begin
   LProbe := PipeDiscoveryEncodeProbe('tok');
-  AssertFalse('truncada nao decodifica',
+  TAssert.AssertFalse('truncada nao decodifica',
     PipeDiscoveryTryDecodeProbe(Resize(LProbe, -1), 'tok'));
-  AssertFalse('datagrama vazio nao decodifica',
-    PipeDiscoveryTryDecodeProbe(Resize(LProbe, -Length(LProbe)), 'tok'));
+  TAssert.AssertFalse('datagrama vazio nao decodifica',
+    PipeDiscoveryTryDecodeProbe(Resize(LProbe, -Length(LProbe)),
+    'tok'));
 end;
 
 procedure TPipeDiscoveryTests.Probe_TokenLongoDemais_Levanta;
 begin
   FToken := StringOfChar('x', PIPES_DISCOVERY_MAX_TOKEN_BYTES + 1);
-  AssertException('token acima do teto', EPipeError, DoEncodeProbe);
+  TAssert.AssertException('token acima do teto', EPipeError, DoEncodeProbe);
 end;
 
 procedure TPipeDiscoveryTests.Response_RoundTrip;
@@ -170,12 +172,12 @@ var
 begin
   LResp := PipeDiscoveryEncodeResponse(5000, ptTls, 'Retaguarda Loja 3',
     'loja-03');
-  AssertTrue('resposta valida deveria decodificar',
-    PipeDiscoveryTryDecodeResponse(LResp, 'loja-03', LPort, LTransport,
-      LName));
-  AssertEquals('porta preservada', 5000, Integer(LPort));
-  AssertTrue('transporte preservado', LTransport = ptTls);
-  AssertEquals('nome preservado', 'Retaguarda Loja 3', LName);
+  TAssert.AssertTrue('resposta valida deveria decodificar',
+    PipeDiscoveryTryDecodeResponse(LResp, 'loja-03', LPort,
+    LTransport, LName));
+  TAssert.AssertEquals('porta preservada', 5000, LPort);
+  TAssert.AssertTrue('transporte preservado', LTransport = ptTls);
+  TAssert.AssertEquals('nome preservado', 'Retaguarda Loja 3', LName);
 end;
 
 procedure TPipeDiscoveryTests.Response_RoundTrip_NomeVazioETokenVazio;
@@ -186,11 +188,12 @@ var
   LName: string;
 begin
   LResp := PipeDiscoveryEncodeResponse(65535, ptLocal, '', '');
-  AssertTrue('nome e token vazios sao validos',
-    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport, LName));
-  AssertEquals('porta maxima preservada', 65535, Integer(LPort));
-  AssertTrue('transporte preservado', LTransport = ptLocal);
-  AssertEquals('nome vazio preservado', '', LName);
+  TAssert.AssertTrue('nome e token vazios sao validos',
+    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport,
+    LName));
+  TAssert.AssertEquals('porta maxima preservada', 65535, LPort);
+  TAssert.AssertTrue('transporte preservado', LTransport = ptLocal);
+  TAssert.AssertEquals('nome vazio preservado', '', LName);
 end;
 
 procedure TPipeDiscoveryTests.Response_RoundTrip_NomeUtf8;
@@ -205,9 +208,10 @@ const
   NOME_ACENTUADO = 'Padaria S' + #$00E3 + 'o Jo' + #$00E3 + 'o';
 begin
   LResp := PipeDiscoveryEncodeResponse(1, ptTcp, NOME_ACENTUADO, '');
-  AssertTrue('nome UTF-8 deveria decodificar',
-    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport, LName));
-  AssertEquals('nome multibyte preservado', NOME_ACENTUADO, LName);
+  TAssert.AssertTrue('nome UTF-8 deveria decodificar',
+    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport,
+    LName));
+  TAssert.AssertEquals('nome multibyte preservado', NOME_ACENTUADO, LName);
 end;
 
 procedure TPipeDiscoveryTests.Response_NomeNoLimite_RoundTrip;
@@ -219,10 +223,10 @@ var
 begin
   LResp := PipeDiscoveryEncodeResponse(80, ptTcp,
     StringOfChar('n', PIPES_DISCOVERY_MAX_NAME_BYTES), '');
-  AssertTrue('nome exatamente no teto e valido',
-    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport, LName));
-  AssertEquals('nome no limite preservado', PIPES_DISCOVERY_MAX_NAME_BYTES,
-    Length(LName));
+  TAssert.AssertTrue('nome exatamente no teto e valido',
+    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport,
+    LName));
+  TAssert.AssertEquals('nome no limite preservado', PIPES_DISCOVERY_MAX_NAME_BYTES, Length(LName));
 end;
 
 procedure TPipeDiscoveryTests.Response_TransporteDesconhecido_Recusa;
@@ -235,9 +239,9 @@ begin
   LResp := PipeDiscoveryEncodeResponse(5000, ptTcp, '', '');
   // O byte de transporte vem logo apos a porta (header 6 + porta 2 = indice 8
   // com token vazio).
-  AssertFalse('transporte de versao futura: recusa, nao adivinha',
-    PipeDiscoveryTryDecodeResponse(Corrupt(LResp, 8, 250), '', LPort,
-      LTransport, LName));
+  TAssert.AssertFalse('transporte de versao futura: recusa, nao adivinha',
+    PipeDiscoveryTryDecodeResponse(Corrupt(LResp, 8, 250), '',
+    LPort, LTransport, LName));
 end;
 
 procedure TPipeDiscoveryTests.Response_ComSobra_Recusa;
@@ -248,9 +252,9 @@ var
   LName: string;
 begin
   LResp := PipeDiscoveryEncodeResponse(5000, ptTcp, 'srv', '');
-  AssertFalse('comprimento e estrito: sobra = lixo',
-    PipeDiscoveryTryDecodeResponse(Resize(LResp, 3), '', LPort, LTransport,
-      LName));
+  TAssert.AssertFalse('comprimento e estrito: sobra = lixo',
+    PipeDiscoveryTryDecodeResponse(Resize(LResp, 3), '', LPort,
+    LTransport, LName));
 end;
 
 procedure TPipeDiscoveryTests.Response_Truncada_Recusa;
@@ -261,12 +265,12 @@ var
   LName: string;
 begin
   LResp := PipeDiscoveryEncodeResponse(5000, ptTcp, 'srv', '');
-  AssertFalse('nome anunciado maior que o datagrama',
-    PipeDiscoveryTryDecodeResponse(Resize(LResp, -1), '', LPort, LTransport,
-      LName));
-  AssertFalse('corpo truncado',
-    PipeDiscoveryTryDecodeResponse(Resize(LResp, -4), '', LPort, LTransport,
-      LName));
+  TAssert.AssertFalse('nome anunciado maior que o datagrama',
+    PipeDiscoveryTryDecodeResponse(Resize(LResp, -1), '', LPort,
+    LTransport, LName));
+  TAssert.AssertFalse('corpo truncado',
+    PipeDiscoveryTryDecodeResponse(Resize(LResp, -4), '', LPort,
+    LTransport, LName));
 end;
 
 procedure TPipeDiscoveryTests.Response_TokenErrado_Recusa;
@@ -277,9 +281,9 @@ var
   LName: string;
 begin
   LResp := PipeDiscoveryEncodeResponse(5000, ptTcp, '', 'loja-03');
-  AssertFalse('resposta de outra instalacao nao entra na lista',
-    PipeDiscoveryTryDecodeResponse(LResp, 'loja-04', LPort, LTransport,
-      LName));
+  TAssert.AssertFalse('resposta de outra instalacao nao entra na lista',
+    PipeDiscoveryTryDecodeResponse(LResp, 'loja-04', LPort,
+    LTransport, LName));
 end;
 
 procedure TPipeDiscoveryTests.Response_PortaZero_Recusa;
@@ -294,8 +298,9 @@ begin
   LResp := PipeDiscoveryEncodeResponse(5000, ptTcp, '', '');
   LResp := Corrupt(LResp, 6, 0);
   LResp := Corrupt(LResp, 7, 0);
-  AssertFalse('porta 0 no fio e recusada',
-    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport, LName));
+  TAssert.AssertFalse('porta 0 no fio e recusada',
+    PipeDiscoveryTryDecodeResponse(LResp, '', LPort, LTransport,
+    LName));
 end;
 
 procedure TPipeDiscoveryTests.Encode_PortaZero_Levanta;
@@ -303,7 +308,7 @@ begin
   FPort := 0;
   FName := '';
   FToken := '';
-  AssertException('porta 0 nao e anunciavel', EPipeError, DoEncodeResponse);
+  TAssert.AssertException('porta 0 nao e anunciavel', EPipeError, DoEncodeResponse);
 end;
 
 procedure TPipeDiscoveryTests.Encode_NomeLongoDemais_Levanta;
@@ -311,49 +316,47 @@ begin
   FPort := 5000;
   FName := StringOfChar('n', PIPES_DISCOVERY_MAX_NAME_BYTES + 1);
   FToken := '';
-  AssertException('nome acima do teto', EPipeError, DoEncodeResponse);
+  TAssert.AssertException('nome acima do teto', EPipeError, DoEncodeResponse);
 end;
 
 procedure TPipeDiscoveryTests.Ipv4_RoundTrip;
 var
   LAddr: LongWord;
 begin
-  AssertTrue('192.168.1.10', PipeTryStringToIPv4('192.168.1.10', LAddr));
-  AssertEquals('roundtrip', '192.168.1.10', PipeIPv4ToString(LAddr));
-  AssertTrue('0.0.0.0', PipeTryStringToIPv4('0.0.0.0', LAddr));
-  AssertEquals('roundtrip zeros', '0.0.0.0', PipeIPv4ToString(LAddr));
-  AssertTrue('broadcast', PipeTryStringToIPv4('255.255.255.255', LAddr));
-  AssertEquals('roundtrip broadcast', '255.255.255.255',
-    PipeIPv4ToString(LAddr));
+  TAssert.AssertTrue('192.168.1.10', PipeTryStringToIPv4('192.168.1.10', LAddr));
+  TAssert.AssertEquals('roundtrip', '192.168.1.10', PipeIPv4ToString(LAddr));
+  TAssert.AssertTrue('0.0.0.0', PipeTryStringToIPv4('0.0.0.0', LAddr));
+  TAssert.AssertEquals('roundtrip zeros', '0.0.0.0', PipeIPv4ToString(LAddr));
+  TAssert.AssertTrue('broadcast', PipeTryStringToIPv4('255.255.255.255', LAddr));
+  TAssert.AssertEquals('roundtrip broadcast', '255.255.255.255', PipeIPv4ToString(LAddr));
 end;
 
 procedure TPipeDiscoveryTests.Ipv4_OrdemDeRede;
 var
   LAddr: LongWord;
 begin
-  AssertTrue('1.2.3.4', PipeTryStringToIPv4('1.2.3.4', LAddr));
-  // Comparado via AssertTrue: AssertEquals nao tem overload de LongWord
-  // (mesma razao do IsTrue na versao Delphi).
-  AssertTrue('layout de sin_addr', LAddr = LongWord($04030201));
-  AssertEquals('volta do mesmo valor', '1.2.3.4',
-    PipeIPv4ToString(LongWord($04030201)));
+  // Em ordem de rede num host little-endian, 1.2.3.4 = $04030201 (primeiro
+  // octeto no byte mais baixo) — e' o layout que sin_addr espera.
+  TAssert.AssertTrue('1.2.3.4', PipeTryStringToIPv4('1.2.3.4', LAddr));
+  // Comparado via AssertTrue: LongWord nao tem sobrecarga de AssertEquals.
+  TAssert.AssertTrue('layout de sin_addr', LAddr = LongWord($04030201));
+  TAssert.AssertEquals('volta do mesmo valor', '1.2.3.4', PipeIPv4ToString(LongWord($04030201)));
 end;
 
 procedure TPipeDiscoveryTests.Ipv4_LiteraisInvalidos_Recusa;
 var
   LAddr: LongWord;
 begin
-  AssertFalse('vazio', PipeTryStringToIPv4('', LAddr));
-  AssertFalse('nome de host', PipeTryStringToIPv4('servidor01', LAddr));
-  AssertFalse('faltando octeto', PipeTryStringToIPv4('1.2.3', LAddr));
-  AssertFalse('octeto a mais', PipeTryStringToIPv4('1.2.3.4.5', LAddr));
-  AssertFalse('octeto > 255', PipeTryStringToIPv4('256.1.1.1', LAddr));
-  AssertFalse('octeto vazio', PipeTryStringToIPv4('1..2.3', LAddr));
-  AssertFalse('termina em ponto', PipeTryStringToIPv4('1.2.3.', LAddr));
-  AssertFalse('espaco no fim', PipeTryStringToIPv4('1.2.3.4 ', LAddr));
-  AssertFalse('sinal', PipeTryStringToIPv4('-1.2.3.4', LAddr));
-  AssertFalse('mais de 3 digitos por octeto',
-    PipeTryStringToIPv4('1.2.3.0004', LAddr));
+  TAssert.AssertFalse('vazio', PipeTryStringToIPv4('', LAddr));
+  TAssert.AssertFalse('nome de host', PipeTryStringToIPv4('servidor01', LAddr));
+  TAssert.AssertFalse('faltando octeto', PipeTryStringToIPv4('1.2.3', LAddr));
+  TAssert.AssertFalse('octeto a mais', PipeTryStringToIPv4('1.2.3.4.5', LAddr));
+  TAssert.AssertFalse('octeto > 255', PipeTryStringToIPv4('256.1.1.1', LAddr));
+  TAssert.AssertFalse('octeto vazio', PipeTryStringToIPv4('1..2.3', LAddr));
+  TAssert.AssertFalse('termina em ponto', PipeTryStringToIPv4('1.2.3.', LAddr));
+  TAssert.AssertFalse('espaco no fim', PipeTryStringToIPv4('1.2.3.4 ', LAddr));
+  TAssert.AssertFalse('sinal', PipeTryStringToIPv4('-1.2.3.4', LAddr));
+  TAssert.AssertFalse('mais de 3 digitos por octeto', PipeTryStringToIPv4('1.2.3.0004', LAddr));
 end;
 
 initialization

@@ -8,6 +8,7 @@ uses
   DUnitX.Loggers.Console,
   DUnitX.Loggers.Xml.NUnit,
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat in 'Pipes.DUnitXCompat.pas',
   // Antes de qualquer unit do pipes: finalizada DEPOIS de Pipes.Threading
   // (ver o cabecalho da unit).
   Pipes.FinalizationCheck in 'Pipes.FinalizationCheck.pas',

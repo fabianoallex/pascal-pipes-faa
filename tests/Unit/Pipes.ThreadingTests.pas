@@ -1,8 +1,8 @@
-unit Pipes.ThreadingTests;
+﻿unit Pipes.ThreadingTests;
 
 { Testes de Pipes.Threading: o despacho por chave (TPipeKeyedDispatcher) e o
-  PipeGroupDispatcher global. Versao DUnitX/Delphi; a versao FPCUnit em
-  tests/Unit/fpc espelha a mesma cobertura.
+  PipeGroupDispatcher global. Mestre DUnitX; o espelho FPCUnit em
+  tests/Unit/fpc e' gerado por tools/gen_fpc_mirror.py.
 
   Atomics, monitor e pool foram para a pascal-common-faa e sao testados la
   (PascalCommon.ThreadingTests/ThreadPoolTests). TPipeHeartbeatThread nunca
@@ -17,6 +17,7 @@ interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Classes,
   SyncObjs,
@@ -28,7 +29,7 @@ uses
 type
   [TestFixture]
   TPipeThreadingTests = class
-  published
+  public
     [Test] procedure KeyedDispatcher_MesmaChave_NuncaSobrepoeEPreservaOrdem;
     [Test] procedure KeyedDispatcher_ChavesDiferentes_ExecutamEmParalelo;
     [Test] procedure KeyedDispatcher_ChaveReaproveitadaAposEsvaziar_ComecaDoZero;
@@ -262,13 +263,6 @@ begin
   Result := ADispatcher.ActiveDrains = 0;
 end;
 
-// Comparacao nao-generica (evita E2532: TList<Integer>.Count nao infere T
-// igual ao literal no Win64 — mesma armadilha de Length() nas outras units).
-procedure EqualInt(AExpected, AActual: Integer; const AMsg: string = '');
-begin
-  Assert.AreEqual(AExpected, AActual, AMsg);
-end;
-
 { TPipeThreadingTests }
 
 procedure TPipeThreadingTests.KeyedDispatcher_MesmaChave_NuncaSobrepoeEPreservaOrdem;
@@ -292,15 +286,14 @@ begin
     for I := 1 to N do
       LDispatcher.Enqueue(777, TKeyedProbeWork.Create(I, @LBusy, @LViolation,
         LLock, LLog, 3));
-    Assert.IsTrue(WaitListCount(LLock, LLog, N, 5000),
-      'itens da mesma chave nao terminaram');
-    Assert.AreEqual(0, PcAtomicGet(LViolation),
-      'duas instancias da mesma chave rodaram ao mesmo tempo');
+    TAssert.AssertTrue('itens da mesma chave nao terminaram', WaitListCount(LLock, LLog, N, 5000));
+    TAssert.AssertEquals('duas instancias da mesma chave rodaram ao mesmo tempo',
+      0, PcAtomicGet(LViolation));
     LLock.Enter;
     try
-      EqualInt(N, LLog.Count);
+      TAssert.AssertEquals(N, LLog.Count);
       for I := 0 to N - 1 do
-        Assert.AreEqual(I + 1, LLog[I], 'ordem dentro da chave nao preservada');
+        TAssert.AssertEquals('ordem dentro da chave nao preservada', I + 1, LLog[I]);
     finally
       LLock.Leave;
     end;
@@ -334,11 +327,11 @@ begin
       LLock, LLog, 200));
     LDispatcher.Enqueue(222, TKeyedProbeWork.Create(2, @LBusyB, @LViolation,
       LLock, LLog, 200));
-    Assert.IsTrue(WaitListCount(LLock, LLog, 2, 3000), 'as duas chaves nao terminaram');
+    TAssert.AssertTrue('as duas chaves nao terminaram', WaitListCount(LLock, LLog, 2, 3000));
     // Serializado (bug) levaria ~400ms; em paralelo, ~200ms — folga generosa
     // pra nao ficar flaky, mas longe o bastante de 400 pra provar o ponto.
-    Assert.IsTrue(PcTickMs - T0 < 350,
-      'chaves diferentes nao rodaram em paralelo (parece serializado)');
+    TAssert.AssertTrue('chaves diferentes nao rodaram em paralelo (parece serializado)',
+      PcTickMs - T0 < 350);
   finally
     LPool.Free;
     LDispatcher.Free;
@@ -364,20 +357,20 @@ begin
   try
     LDispatcher.Enqueue(555, TKeyedProbeWork.Create(1, @LBusy, @LViolation,
       LLock, LLog, 5));
-    Assert.IsTrue(WaitListCount(LLock, LLog, 1, 3000));
+    TAssert.AssertTrue(WaitListCount(LLock, LLog, 1, 3000));
     // A drenagem se desconta so' depois de tirar a chave do dicionario: com
     // ActiveDrains = 0 a mailbox ja' sumiu (sem Sleep-e-torcer).
-    Assert.IsTrue(WaitNoActiveDrains(LDispatcher, 3000), 'a mailbox da chave nao esvaziou');
+    TAssert.AssertTrue('a mailbox da chave nao esvaziou', WaitNoActiveDrains(LDispatcher, 3000));
     LDispatcher.Enqueue(555, TKeyedProbeWork.Create(2, @LBusy, @LViolation,
       LLock, LLog, 5));
-    Assert.IsTrue(WaitListCount(LLock, LLog, 2, 3000),
-      'chave reaproveitada nao processou o item novo');
-    Assert.AreEqual(0, PcAtomicGet(LViolation));
+    TAssert.AssertTrue('chave reaproveitada nao processou o item novo',
+      WaitListCount(LLock, LLog, 2, 3000));
+    TAssert.AssertEquals(0, PcAtomicGet(LViolation));
     LLock.Enter;
     try
-      EqualInt(2, LLog.Count);
-      Assert.AreEqual(1, LLog[0]);
-      Assert.AreEqual(2, LLog[1]);
+      TAssert.AssertEquals(2, LLog.Count);
+      TAssert.AssertEquals(1, LLog[0]);
+      TAssert.AssertEquals(2, LLog[1]);
     finally
       LLock.Leave;
     end;
@@ -401,8 +394,8 @@ begin
   try
     LDispatcher.Enqueue(999, TRaiseWork.Create);
     LDispatcher.Enqueue(999, TCounterWork.Create(@LCounter));
-    Assert.IsTrue(WaitCounter(LCounter, 1, 3000),
-      'item apos excecao na mesma chave nao rodou');
+    TAssert.AssertTrue('item apos excecao na mesma chave nao rodou',
+      WaitCounter(LCounter, 1, 3000));
   finally
     LPool.Free;
     LDispatcher.Free;
@@ -430,8 +423,9 @@ begin
     // dizia antes da pascal-common-faa).
     LPool.Free;
     LPool := nil;
-    EqualInt(N, PcAtomicGet(LCounter), 'pool destruido nao executou todos os pendentes');
-    EqualInt(0, LDispatcher.ActiveDrains, 'sobrou drenagem viva');
+    TAssert.AssertEquals('pool destruido nao executou todos os pendentes',
+      N, PcAtomicGet(LCounter));
+    TAssert.AssertEquals('sobrou drenagem viva', 0, LDispatcher.ActiveDrains);
   finally
     LPool.Free;
     LDispatcher.Free;
@@ -456,14 +450,14 @@ begin
     for K := 1 to KEYS do
       for I := 1 to PER_KEY do
         LDispatcher.Enqueue(UInt64(K), TCounterWork.Create(@LCounter, 20));
-    Assert.IsTrue(LDispatcher.ActiveDrains > 0, 'o teste precisa de drenagem em voo');
+    TAssert.AssertTrue('o teste precisa de drenagem em voo', LDispatcher.ActiveDrains > 0);
     // Sem a espera em Destroy, Free liberaria as mailboxes com itens ainda
     // pendentes (que nunca rodariam) e a drenagem chamaria Fetch num objeto
     // liberado.
     LDispatcher.Free;
     LDispatcher := nil;
-    EqualInt(KEYS * PER_KEY, PcAtomicGet(LCounter),
-      'Destroy do dispatcher voltou antes de as drenagens terminarem');
+    TAssert.AssertEquals('Destroy do dispatcher voltou antes de as drenagens terminarem',
+      KEYS * PER_KEY, PcAtomicGet(LCounter));
   finally
     LDispatcher.Free;
     LPool.Free;
@@ -487,7 +481,7 @@ begin
   try
     LDispatcher := TPipeKeyedDispatcher.Create(LPool);
     LDispatcher.Enqueue(1, TGateWork.Create(LGate, @LStarted));
-    Assert.IsTrue(WaitCounter(LStarted, 1, 3000), 'o item da comporta nao comecou');
+    TAssert.AssertTrue('o item da comporta nao comecou', WaitCounter(LStarted, 1, 3000));
     // Destroy fica preso esperando a drenagem da chave 1 (presa na comporta).
     LDestroyer := TDestroyerThread.Create(LDispatcher);
     try
@@ -508,7 +502,7 @@ begin
       LDestroyer.WaitFor;
       LDestroyer.Free;
     end;
-    Assert.IsTrue(LRejected, 'Enqueue durante o Destroy executou o item ou nao o liberou');
+    TAssert.AssertTrue('Enqueue durante o Destroy executou o item ou nao o liberou', LRejected);
   finally
     LPool.Free;
     LGate.Free;
@@ -518,8 +512,8 @@ end;
 procedure TPipeThreadingTests.GroupDispatcherGlobal_DevolveMesmaInstancia;
 begin
   // Criado na initialization de Pipes.Threading: ja existe antes do 1o uso.
-  Assert.IsNotNull(PipeGroupDispatcher);
-  Assert.AreSame(PipeGroupDispatcher, PipeGroupDispatcher);
+  TAssert.AssertTrue(PipeGroupDispatcher <> nil);
+  TAssert.AssertTrue(PipeGroupDispatcher = PipeGroupDispatcher);
 end;
 
 const

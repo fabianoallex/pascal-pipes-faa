@@ -1,9 +1,14 @@
-unit Pipes.FramingTests;
+﻿unit Pipes.FramingTests;
 
 {$mode delphi}{$H+}
 
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Unit/Pipes.FramingTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
+
 { Testes do wire format NPF1 (Pipes.Framing) e da conversao UTF-8 portatil.
-  Versao FPCUnit; espelha a cobertura da versao DUnitX em tests/Unit. }
+  Mestre DUnitX; o espelho FPCUnit em tests/Unit/fpc e' gerado por
+  tools/gen_fpc_mirror.py. }
 
 interface
 
@@ -48,12 +53,6 @@ type
 
 implementation
 
-// Forca a sobrecarga nao-generica AssertEquals(Integer, Integer).
-procedure EqualByte(AExpected: Integer; AActual: Byte);
-begin
-  TAssert.AssertEquals(AExpected, Integer(AActual));
-end;
-
 function MakeBytes(const AValues: array of Byte): TBytes;
 var
   I: Integer;
@@ -79,7 +78,6 @@ end;
 procedure TPipeFramingTests.TearDown;
 begin
   FreeAndNil(FStream);
-  inherited;
 end;
 
 procedure TPipeFramingTests.DoReadFromStream;
@@ -103,35 +101,35 @@ var
 begin
   B := PipeEncodeFrame(TPipeFrame.Request(UInt64($1122334455667788),
     MakeBytes([$AA, $BB, $CC])));
-  AssertEquals(23, Length(B));
+  TAssert.AssertEquals(23, Length(B));
   // magic 'NPF1'
-  EqualByte(Ord('N'), B[0]);
-  EqualByte(Ord('P'), B[1]);
-  EqualByte(Ord('F'), B[2]);
-  EqualByte(Ord('1'), B[3]);
+  TAssert.AssertEquals(Ord('N'), B[0]);
+  TAssert.AssertEquals(Ord('P'), B[1]);
+  TAssert.AssertEquals(Ord('F'), B[2]);
+  TAssert.AssertEquals(Ord('1'), B[3]);
   // kind=request, flags/reserved zerados
-  EqualByte(1, B[4]);
-  EqualByte(0, B[5]);
-  EqualByte(0, B[6]);
-  EqualByte(0, B[7]);
+  TAssert.AssertEquals(1, B[4]);
+  TAssert.AssertEquals(0, B[5]);
+  TAssert.AssertEquals(0, B[6]);
+  TAssert.AssertEquals(0, B[7]);
   // corrId little-endian
-  EqualByte($88, B[8]);
-  EqualByte($77, B[9]);
-  EqualByte($66, B[10]);
-  EqualByte($55, B[11]);
-  EqualByte($44, B[12]);
-  EqualByte($33, B[13]);
-  EqualByte($22, B[14]);
-  EqualByte($11, B[15]);
+  TAssert.AssertEquals($88, B[8]);
+  TAssert.AssertEquals($77, B[9]);
+  TAssert.AssertEquals($66, B[10]);
+  TAssert.AssertEquals($55, B[11]);
+  TAssert.AssertEquals($44, B[12]);
+  TAssert.AssertEquals($33, B[13]);
+  TAssert.AssertEquals($22, B[14]);
+  TAssert.AssertEquals($11, B[15]);
   // length little-endian
-  EqualByte(3, B[16]);
-  EqualByte(0, B[17]);
-  EqualByte(0, B[18]);
-  EqualByte(0, B[19]);
+  TAssert.AssertEquals(3, B[16]);
+  TAssert.AssertEquals(0, B[17]);
+  TAssert.AssertEquals(0, B[18]);
+  TAssert.AssertEquals(0, B[19]);
   // payload
-  EqualByte($AA, B[20]);
-  EqualByte($BB, B[21]);
-  EqualByte($CC, B[22]);
+  TAssert.AssertEquals($AA, B[20]);
+  TAssert.AssertEquals($BB, B[21]);
+  TAssert.AssertEquals($CC, B[22]);
 end;
 
 procedure TPipeFramingTests.RoundTrip_Message;
@@ -143,11 +141,11 @@ begin
   PipeWriteFrame(FStream, TPipeFrame.Msg(MakeBytes([1, 2, 3, 4, 5])), 1024);
   FStream.Position := 0;
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue('kind devia ser pfkMessage', LFrame.Kind = pfkMessage);
-  AssertTrue('corrId de msg devia ser 0', LFrame.CorrId = 0);
-  AssertEquals(5, Length(LFrame.Payload));
+  TAssert.AssertTrue('kind devia ser pfkMessage', LFrame.Kind = pfkMessage);
+  TAssert.AssertTrue('corrId de msg devia ser 0', LFrame.CorrId = 0);
+  TAssert.AssertEquals(5, Length(LFrame.Payload));
   for I := 0 to 4 do
-    EqualByte(I + 1, LFrame.Payload[I]);
+    TAssert.AssertEquals(I + 1, LFrame.Payload[I]);
 end;
 
 procedure TPipeFramingTests.RoundTrip_RequestReply_PreservaCorrId;
@@ -160,14 +158,14 @@ begin
   FStream.Position := 0;
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue('primeiro frame devia ser request', LFrame.Kind = pfkRequest);
-  AssertTrue('corrId do request nao preservado', LFrame.CorrId = 42);
-  AssertEquals('ping', LFrame.PayloadAsText);
+  TAssert.AssertTrue('primeiro frame devia ser request', LFrame.Kind = pfkRequest);
+  TAssert.AssertTrue('corrId do request nao preservado', LFrame.CorrId = 42);
+  TAssert.AssertEquals('ping', LFrame.PayloadAsText);
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue('segundo frame devia ser reply', LFrame.Kind = pfkReply);
-  AssertTrue('corrId do reply nao preservado', LFrame.CorrId = 42);
-  AssertEquals('pong', LFrame.PayloadAsText);
+  TAssert.AssertTrue('segundo frame devia ser reply', LFrame.Kind = pfkReply);
+  TAssert.AssertTrue('corrId do reply nao preservado', LFrame.CorrId = 42);
+  TAssert.AssertEquals('pong', LFrame.PayloadAsText);
 end;
 
 procedure TPipeFramingTests.RoundTrip_PayloadVazio;
@@ -178,8 +176,8 @@ begin
   PipeWriteFrame(FStream, TPipeFrame.Msg(nil), 1024);
   FStream.Position := 0;
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue(LFrame.Kind = pfkMessage);
-  AssertEquals(0, Length(LFrame.Payload));
+  TAssert.AssertTrue(LFrame.Kind = pfkMessage);
+  TAssert.AssertEquals(0, Length(LFrame.Payload));
 end;
 
 procedure TPipeFramingTests.RoundTrip_MultiplosFramesEmSequencia;
@@ -193,19 +191,19 @@ begin
   FStream.Position := 0;
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue(LFrame.Kind = pfkMessage);
-  AssertEquals(1, Length(LFrame.Payload));
+  TAssert.AssertTrue(LFrame.Kind = pfkMessage);
+  TAssert.AssertEquals(1, Length(LFrame.Payload));
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue(LFrame.Kind = pfkRequest);
-  AssertEquals(2, Length(LFrame.Payload));
-  EqualByte(20, LFrame.Payload[0]);
-  EqualByte(21, LFrame.Payload[1]);
+  TAssert.AssertTrue(LFrame.Kind = pfkRequest);
+  TAssert.AssertEquals(2, Length(LFrame.Payload));
+  TAssert.AssertEquals(20, LFrame.Payload[0]);
+  TAssert.AssertEquals(21, LFrame.Payload[1]);
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue(LFrame.Kind = pfkReply);
-  AssertTrue(LFrame.CorrId = 7);
-  AssertEquals(0, Length(LFrame.Payload));
+  TAssert.AssertTrue(LFrame.Kind = pfkReply);
+  TAssert.AssertTrue(LFrame.CorrId = 7);
+  TAssert.AssertEquals(0, Length(LFrame.Payload));
 end;
 
 procedure TPipeFramingTests.RoundTrip_ErrorReply_PreservaFlagEMensagem;
@@ -216,10 +214,10 @@ begin
   PipeWriteFrame(FStream, TPipeFrame.ErrorReply(7, 'falha proposital'), 1024);
   FStream.Position := 0;
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue('kind devia ser reply', LFrame.Kind = pfkReply);
-  AssertTrue('flag de erro nao preservada', LFrame.IsError);
-  AssertTrue('corrId nao preservado', LFrame.CorrId = 7);
-  AssertEquals('falha proposital', LFrame.PayloadAsText);
+  TAssert.AssertTrue('kind devia ser reply', LFrame.Kind = pfkReply);
+  TAssert.AssertTrue('flag de erro nao preservada', LFrame.IsError);
+  TAssert.AssertTrue('corrId nao preservado', LFrame.CorrId = 7);
+  TAssert.AssertEquals('falha proposital', LFrame.PayloadAsText);
 end;
 
 procedure TPipeFramingTests.RoundTrip_Ping;
@@ -232,24 +230,24 @@ begin
   PipeWriteFrame(FStream, TPipeFrame.Ping, 1024);
   FStream.Position := 0;
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue('kind devia ser pfkPing', LFrame.Kind = pfkPing);
-  AssertTrue('corrId de ping devia ser 0', LFrame.CorrId = 0);
-  AssertEquals(0, Integer(LFrame.Flags));
-  AssertEquals(0, Length(LFrame.Payload));
+  TAssert.AssertTrue('kind devia ser pfkPing', LFrame.Kind = pfkPing);
+  TAssert.AssertTrue('corrId de ping devia ser 0', LFrame.CorrId = 0);
+  TAssert.AssertEquals(0, Integer(LFrame.Flags));
+  TAssert.AssertEquals(0, Length(LFrame.Payload));
 end;
 
 procedure TPipeFramingTests.ReadFrame_MagicInvalido_Levanta;
 begin
   FStream := BuildStream([Ord('X'), Ord('P'), Ord('F'), Ord('1'),
     0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0]);
-  AssertException(EPipeProtocol, DoReadFromStream);
+  TAssert.AssertException(EPipeProtocol, DoReadFromStream);
 end;
 
 procedure TPipeFramingTests.ReadFrame_KindDesconhecido_Levanta;
 begin
   FStream := BuildStream([Ord('N'), Ord('P'), Ord('F'), Ord('1'),
     99, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  0, 0, 0, 0]);
-  AssertException(EPipeProtocol, DoReadFromStream);
+  TAssert.AssertException(EPipeProtocol, DoReadFromStream);
 end;
 
 procedure TPipeFramingTests.ReadFrame_PayloadAcimaDoMaximo_Levanta;
@@ -257,7 +255,7 @@ begin
   // length = 101, maximo do teste = 100
   FStream := BuildStream([Ord('N'), Ord('P'), Ord('F'), Ord('1'),
     0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  101, 0, 0, 0]);
-  AssertException(EPipeProtocol, DoReadFromStream);
+  TAssert.AssertException(EPipeProtocol, DoReadFromStream);
 end;
 
 procedure TPipeFramingTests.ReadFrame_StreamTruncado_Levanta;
@@ -266,7 +264,7 @@ begin
   FStream := BuildStream([Ord('N'), Ord('P'), Ord('F'), Ord('1'),
     0, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 0,  10, 0, 0, 0,
     1, 2, 3]);
-  AssertException(EPipeClosed, DoReadFromStream);
+  TAssert.AssertException(EPipeClosed, DoReadFromStream);
 end;
 
 procedure TPipeFramingTests.WriteFrame_PayloadAcimaDoMaximo_Levanta;
@@ -276,8 +274,8 @@ begin
   SetLength(LBig, 101); // maximo do teste = 100
   FFrame := TPipeFrame.Msg(LBig);
   FStream := TBytesStream.Create;
-  AssertException(EPipeProtocol, DoWriteToStream);
-  AssertEquals(0, Integer(FStream.Size)); // falhou ANTES de escrever
+  TAssert.AssertException(EPipeProtocol, DoWriteToStream);
+  TAssert.AssertEquals('falhou mas escreveu bytes no stream', Int64(0), FStream.Size);
 end;
 
 procedure TPipeFramingTests.WriteFrames_Vazio_NaoEscreveNada;
@@ -285,7 +283,7 @@ begin
   FFrames := nil;
   FStream := TBytesStream.Create;
   PipeWriteFrames(FStream, FFrames, 1024);
-  AssertEquals(0, Integer(FStream.Size));
+  TAssert.AssertEquals(Int64(0), FStream.Size);
 end;
 
 procedure TPipeFramingTests.WriteFrames_IdenticoASequenciaDeWriteFrame;
@@ -307,8 +305,8 @@ begin
     PipeWriteFrames(LViaFrames, FFrames, 1024);
     for I := 0 to High(FFrames) do
       PipeWriteFrame(LViaLoop, FFrames[I], 1024);
-    AssertEquals(Integer(LViaLoop.Size), Integer(LViaFrames.Size));
-    AssertTrue('bytes divergem entre PipeWriteFrames e a sequencia de PipeWriteFrame',
+    TAssert.AssertEquals(LViaLoop.Size, LViaFrames.Size);
+    TAssert.AssertTrue('bytes divergem entre PipeWriteFrames e a sequencia de PipeWriteFrame',
       CompareMem(LViaFrames.Memory, LViaLoop.Memory, LViaLoop.Size));
   finally
     LViaFrames.Free;
@@ -330,19 +328,19 @@ begin
   FStream.Position := 0;
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue(LFrame.Kind = pfkMessage);
-  AssertEquals(1, Length(LFrame.Payload));
+  TAssert.AssertTrue(LFrame.Kind = pfkMessage);
+  TAssert.AssertEquals(1, Length(LFrame.Payload));
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue(LFrame.Kind = pfkRequest);
-  AssertEquals(2, Length(LFrame.Payload));
-  EqualByte(20, LFrame.Payload[0]);
-  EqualByte(21, LFrame.Payload[1]);
+  TAssert.AssertTrue(LFrame.Kind = pfkRequest);
+  TAssert.AssertEquals(2, Length(LFrame.Payload));
+  TAssert.AssertEquals(20, LFrame.Payload[0]);
+  TAssert.AssertEquals(21, LFrame.Payload[1]);
 
   LFrame := PipeReadFrame(FStream, 1024);
-  AssertTrue(LFrame.Kind = pfkReply);
-  AssertTrue(LFrame.CorrId = 7);
-  AssertEquals(0, Length(LFrame.Payload));
+  TAssert.AssertTrue(LFrame.Kind = pfkReply);
+  TAssert.AssertTrue(LFrame.CorrId = 7);
+  TAssert.AssertEquals(0, Length(LFrame.Payload));
 end;
 
 procedure TPipeFramingTests.WriteFrames_PayloadAcimaDoMaximo_LevantaSemEscreverNada;
@@ -357,15 +355,15 @@ begin
   FFrames[0] := TPipeFrame.Msg(MakeBytes([1, 2, 3]));
   FFrames[1] := TPipeFrame.Msg(LBig);
   FStream := TBytesStream.Create;
-  AssertException(EPipeProtocol, DoWriteFramesToStream);
-  AssertEquals(0, Integer(FStream.Size));
+  TAssert.AssertException(EPipeProtocol, DoWriteFramesToStream);
+  TAssert.AssertEquals('falhou mas escreveu bytes no stream', Int64(0), FStream.Size);
 end;
 
 procedure TPipeFramingTests.Utf8_RoundTripAscii;
 const
   S = 'named pipes 123';
 begin
-  AssertEquals(S, PipeUtf8Decode(PipeUtf8Encode(S)));
+  TAssert.AssertEquals(S, PipeUtf8Decode(PipeUtf8Encode(S)));
 end;
 
 procedure TPipeFramingTests.Utf8_RoundTripNaoAscii_ViaBytes;
@@ -377,9 +375,9 @@ begin
   // por bytes para nao depender do encoding do arquivo-fonte.
   LIn := MakeBytes([$C3, $A9, $C3, $A7, $E2, $82, $AC]);
   LOut := PipeUtf8Encode(PipeUtf8Decode(LIn));
-  AssertEquals(Length(LIn), Length(LOut));
+  TAssert.AssertEquals(Length(LIn), Length(LOut));
   for I := 0 to High(LIn) do
-    EqualByte(LIn[I], LOut[I]);
+    TAssert.AssertEquals(LIn[I], LOut[I]);
 end;
 
 initialization

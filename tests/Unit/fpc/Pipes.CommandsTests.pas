@@ -1,9 +1,18 @@
-unit Pipes.CommandsTests;
+﻿unit Pipes.CommandsTests;
 
 {$mode delphi}{$H+}
 
-{ Testes do roteador de comandos por nome (Pipes.Commands). Versao FPCUnit;
-  espelha a cobertura da versao DUnitX em tests/Unit. }
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Unit/Pipes.CommandsTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
+
+{ Testes do roteador de comandos por nome (Pipes.Commands): registro
+  (duplicado, limites de tamanho, handler nil) e despacho via HandleMessage.
+  Mestre DUnitX; o espelho FPCUnit em tests/Unit/fpc e' gerado por
+  tools/gen_fpc_mirror.py.
+
+  Como em Pipes.TopicsTests, o alvo e' a unit inteira SEM abrir conexao:
+  HandleMessage e' chamado direto, simulando o que Server.OnMessage faria. }
 
 interface
 
@@ -38,6 +47,7 @@ type
     procedure OnSomaRequest(Sender: TObject; AConnId: TPipeConnectionId;
       const ACommand: string; const APayload: TBytes; out AReply: TBytes);
 
+    // --- alvos de AssertException (procedure of object, nunca anonima) ---
     procedure DoRegisterNomeVazio;
     procedure DoRegisterNomeMuitoLongo;
     procedure DoRegisterHandlerNil;
@@ -94,17 +104,6 @@ type
   end;
 
 implementation
-
-// Forca a sobrecarga nao-generica AssertEquals(Integer, Integer).
-procedure EqualInt(AExpected, AActual: Integer);
-begin
-  TAssert.AssertEquals(AExpected, AActual);
-end;
-
-procedure EqualByte(AExpected: Integer; AActual: Byte);
-begin
-  TAssert.AssertEquals(AExpected, Integer(AActual));
-end;
 
 function MakeBytes(const AValues: array of Byte): TBytes;
 var
@@ -272,7 +271,7 @@ procedure TPipeCommandsTests.Registro_NomeVazio_Levanta;
 begin
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeCommandError, DoRegisterNomeVazio);
+    TAssert.AssertException(EPipeCommandError, DoRegisterNomeVazio);
   finally
     FRouter.Free;
   end;
@@ -282,7 +281,7 @@ procedure TPipeCommandsTests.Registro_NomeMuitoLongo_Levanta;
 begin
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeCommandError, DoRegisterNomeMuitoLongo);
+    TAssert.AssertException(EPipeCommandError, DoRegisterNomeMuitoLongo);
   finally
     FRouter.Free;
   end;
@@ -292,7 +291,7 @@ procedure TPipeCommandsTests.Registro_HandlerNil_Levanta;
 begin
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeCommandError, DoRegisterHandlerNil);
+    TAssert.AssertException(EPipeCommandError, DoRegisterHandlerNil);
   finally
     FRouter.Free;
   end;
@@ -302,7 +301,7 @@ procedure TPipeCommandsTests.Registro_MinSizeInvalido_Levanta;
 begin
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeCommandError, DoRegisterMinSizeInvalido);
+    TAssert.AssertException(EPipeCommandError, DoRegisterMinSizeInvalido);
   finally
     FRouter.Free;
   end;
@@ -312,7 +311,7 @@ procedure TPipeCommandsTests.Registro_MaxSizeInvalido_Levanta;
 begin
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeCommandError, DoRegisterMaxSizeInvalido);
+    TAssert.AssertException(EPipeCommandError, DoRegisterMaxSizeInvalido);
   finally
     FRouter.Free;
   end;
@@ -322,7 +321,7 @@ procedure TPipeCommandsTests.Registro_MaxMenorQueMin_Levanta;
 begin
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeCommandError, DoRegisterMaxMenorQueMin);
+    TAssert.AssertException(EPipeCommandError, DoRegisterMaxMenorQueMin);
   finally
     FRouter.Free;
   end;
@@ -333,7 +332,7 @@ begin
   FRouter := TPipeCommandRouter.Create;
   try
     FRouter.RegisterCommand('PING', OnPing);
-    AssertException(EPipeCommandError, DoRegisterDuplicado);
+    TAssert.AssertException(EPipeCommandError, DoRegisterDuplicado);
   finally
     FRouter.Free;
   end;
@@ -352,12 +351,12 @@ begin
     FRouter.RegisterCommand('PING', OnPing);
     FRouter.HandleMessage(LSender, 7,
       PipeEncodeCommandPayload('PING', MakeBytes([1, 2, 3])));
-    AssertTrue(FHandlerCalled);
-    AssertTrue(LSender = FLastSender);
-    EqualInt(7, FLastConnId);
-    AssertEquals('PING', FLastCommand);
-    EqualInt(3, Length(FLastPayload));
-    EqualByte(1, FLastPayload[0]);
+    TAssert.AssertTrue(FHandlerCalled);
+    TAssert.AssertTrue(LSender = FLastSender);
+    TAssert.AssertEquals(7, FLastConnId);
+    TAssert.AssertEquals('PING', FLastCommand);
+    TAssert.AssertEquals(3, Length(FLastPayload));
+    TAssert.AssertEquals(1, FLastPayload[0]);
   finally
     FRouter.Free;
     LSender.Free;
@@ -372,9 +371,9 @@ begin
     FRouter.OnUnknownCommand := OnUnknown;
     FRouter.HandleMessage(Self, 1,
       PipeEncodeCommandPayload('SAVE_ORDER', MakeBytes([9])));
-    AssertTrue(FUnknownCalled);
-    AssertFalse(FHandlerCalled);
-    AssertEquals('SAVE_ORDER', FLastCommand);
+    TAssert.AssertTrue(FUnknownCalled);
+    TAssert.AssertFalse(FHandlerCalled);
+    TAssert.AssertEquals('SAVE_ORDER', FLastCommand);
   finally
     FRouter.Free;
   end;
@@ -385,9 +384,11 @@ begin
   Reset;
   FRouter := TPipeCommandRouter.Create;
   try
+    // Sem OnUnknownCommand atribuido: mesmo silencio de um OnMessage sem
+    // assinante, nao pode levantar nem travar.
     FRouter.HandleMessage(Self, 1,
       PipeEncodeCommandPayload('SAVE_ORDER', nil));
-    AssertFalse(FHandlerCalled);
+    TAssert.AssertFalse(FHandlerCalled);
   finally
     FRouter.Free;
   end;
@@ -402,9 +403,9 @@ begin
     FRouter.OnInvalidPayload := OnInvalid;
     FRouter.HandleMessage(Self, 1,
       PipeEncodeCommandPayload('PING', MakeBytes([1, 2])));
-    AssertTrue(FInvalidCalled);
-    AssertFalse(FHandlerCalled);
-    AssertEquals('PING', FLastCommand);
+    TAssert.AssertTrue(FInvalidCalled);
+    TAssert.AssertFalse(FHandlerCalled);
+    TAssert.AssertEquals('PING', FLastCommand);
   finally
     FRouter.Free;
   end;
@@ -419,8 +420,8 @@ begin
     FRouter.OnInvalidPayload := OnInvalid;
     FRouter.HandleMessage(Self, 1,
       PipeEncodeCommandPayload('PING', MakeBytes([1, 2, 3])));
-    AssertTrue(FInvalidCalled);
-    AssertFalse(FHandlerCalled);
+    TAssert.AssertTrue(FInvalidCalled);
+    TAssert.AssertFalse(FHandlerCalled);
   finally
     FRouter.Free;
   end;
@@ -434,8 +435,8 @@ begin
     FRouter.RegisterCommand('PING', OnPing, 2, 2);
     FRouter.HandleMessage(Self, 1,
       PipeEncodeCommandPayload('PING', MakeBytes([1, 2])));
-    AssertTrue(FHandlerCalled);
-    EqualInt(2, Length(FLastPayload));
+    TAssert.AssertTrue(FHandlerCalled);
+    TAssert.AssertEquals(2, Length(FLastPayload));
   finally
     FRouter.Free;
   end;
@@ -448,8 +449,8 @@ begin
   try
     FRouter.RegisterCommand('PING', OnPing);
     FRouter.HandleMessage(Self, 1, PipeEncodeCommandPayload('PING', nil));
-    AssertTrue(FHandlerCalled);
-    EqualInt(0, Length(FLastPayload));
+    TAssert.AssertTrue(FHandlerCalled);
+    TAssert.AssertEquals(0, Length(FLastPayload));
   finally
     FRouter.Free;
   end;
@@ -462,8 +463,8 @@ begin
   try
     FRouter.OnInvalidPayload := OnInvalid;
     FRouter.HandleMessage(Self, 1, MakeBytes([5])); // nem o u16 cabe
-    AssertTrue(FInvalidCalled);
-    AssertEquals('', FLastCommand);
+    TAssert.AssertTrue(FInvalidCalled);
+    TAssert.AssertEquals('', FLastCommand);
   finally
     FRouter.Free;
   end;
@@ -478,23 +479,24 @@ var
 begin
   FPayload := PipeEncodeCommandPayload('SAVE_ORDER', MakeBytes([10, 20, 30, 40]));
   PipeDecodeCommandPayload(FPayload, LCommand, LBody);
-  AssertEquals('SAVE_ORDER', LCommand);
-  EqualInt(4, Length(LBody));
-  EqualByte(10, LBody[0]);
-  EqualByte(40, LBody[3]);
+  TAssert.AssertEquals('SAVE_ORDER', LCommand);
+  TAssert.AssertEquals(4, Length(LBody));
+  TAssert.AssertEquals(10, LBody[0]);
+  TAssert.AssertEquals(40, LBody[3]);
 end;
 
 procedure TPipeCommandsTests.Envelope_LayoutBinario;
 var
   LBuf: TBytes;
 begin
+  // Layout no fio: u16 LE com o tamanho do nome, nome UTF-8, corpo.
   LBuf := PipeEncodeCommandPayload('ab', MakeBytes([99]));
-  EqualInt(5, Length(LBuf));
-  EqualByte(2, LBuf[0]);
-  EqualByte(0, LBuf[1]);
-  EqualByte(Ord('a'), LBuf[2]);
-  EqualByte(Ord('b'), LBuf[3]);
-  EqualByte(99, LBuf[4]);
+  TAssert.AssertEquals(5, Length(LBuf));
+  TAssert.AssertEquals(2, LBuf[0]);
+  TAssert.AssertEquals(0, LBuf[1]);
+  TAssert.AssertEquals(Ord('a'), LBuf[2]);
+  TAssert.AssertEquals(Ord('b'), LBuf[3]);
+  TAssert.AssertEquals(99, LBuf[4]);
 end;
 
 procedure TPipeCommandsTests.Envelope_CorpoVazio;
@@ -504,8 +506,8 @@ var
 begin
   FPayload := PipeEncodeCommandPayload('PING', nil);
   PipeDecodeCommandPayload(FPayload, LCommand, LBody);
-  AssertEquals('PING', LCommand);
-  EqualInt(0, Length(LBody));
+  TAssert.AssertEquals('PING', LCommand);
+  TAssert.AssertEquals(0, Length(LBody));
 end;
 
 procedure TPipeCommandsTests.Envelope_ComandoNaoAscii;
@@ -514,33 +516,36 @@ var
   LBody, LIn, LOut: TBytes;
   I: Integer;
 begin
+  // O tamanho no envelope e' em BYTES UTF-8, nao em caracteres (mesmo caso de
+  // Pipes.TopicsTests.Envelope_TopicoNaoAscii).
   LIn := MakeBytes([Ord('s'), Ord('e'), $C3, $A7, $C3, $A3, Ord('o')]);
   FPayload := PipeEncodeCommandPayload(PipeUtf8Decode(LIn), MakeBytes([1]));
-  EqualByte(7, FPayload[0]);
-  EqualByte(0, FPayload[1]);
+  TAssert.AssertEquals(7, FPayload[0]); // 7 bytes, nao 5 caracteres
+  TAssert.AssertEquals(0, FPayload[1]);
   PipeDecodeCommandPayload(FPayload, LCommand, LBody);
   LOut := PipeUtf8Encode(LCommand);
-  EqualInt(Length(LIn), Length(LOut));
+  TAssert.AssertEquals(Length(LIn), Length(LOut));
   for I := 0 to High(LIn) do
-    EqualByte(LIn[I], LOut[I]);
-  EqualInt(1, Length(LBody));
+    TAssert.AssertEquals(LIn[I], LOut[I]);
+  TAssert.AssertEquals(1, Length(LBody));
 end;
 
 procedure TPipeCommandsTests.Envelope_PayloadCurto_Levanta;
 begin
-  FPayload := MakeBytes([5]);
-  AssertException(EPipeProtocol, DoDecodeTruncado);
+  FPayload := MakeBytes([5]); // 1 byte: nem o u16 do tamanho cabe
+  TAssert.AssertException(EPipeProtocol, DoDecodeTruncado);
 end;
 
 procedure TPipeCommandsTests.Envelope_CommandLenMaiorQuePayload_Levanta;
 begin
+  // Vem da rede: entrada hostil por definicao, o decode nao pode ler alem.
   FPayload := MakeBytes([200, 0, Ord('a')]);
-  AssertException(EPipeProtocol, DoDecodeLenMaiorQuePayload);
+  TAssert.AssertException(EPipeProtocol, DoDecodeLenMaiorQuePayload);
 end;
 
 procedure TPipeCommandsTests.Envelope_NomeAcimaDoMaximo_Levanta;
 begin
-  AssertException(EPipeProtocol, DoEncodeNomeAcimaDoMaximo);
+  TAssert.AssertException(EPipeProtocol, DoEncodeNomeAcimaDoMaximo);
 end;
 
 { --- registro (request) --- }
@@ -559,7 +564,7 @@ procedure TPipeCommandsTests.RegistroRequest_NomeVazio_Levanta;
 begin
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeCommandError, DoRegisterRequestNomeVazio);
+    TAssert.AssertException(EPipeCommandError, DoRegisterRequestNomeVazio);
   finally
     FRouter.Free;
   end;
@@ -570,7 +575,7 @@ begin
   FRouter := TPipeCommandRouter.Create;
   try
     FRouter.RegisterRequestCommand('SOMA', OnSomaRequest);
-    AssertException(EPipeCommandError, DoRegisterRequestDuplicado);
+    TAssert.AssertException(EPipeCommandError, DoRegisterRequestDuplicado);
   finally
     FRouter.Free;
   end;
@@ -603,13 +608,13 @@ begin
     FRouter.RegisterRequestCommand('SOMA', OnSomaRequest);
     FRouter.HandleRequest(LSender, 7,
       PipeEncodeCommandPayload('SOMA', MakeBytes([1, 2, 3])), LReply);
-    AssertTrue(FHandlerCalled);
-    AssertTrue(LSender = FLastSender);
-    EqualInt(7, FLastConnId);
-    AssertEquals('SOMA', FLastCommand);
-    EqualInt(3, Length(FLastPayload));
-    EqualInt(1, Length(LReply));
-    EqualByte(3, LReply[0]);
+    TAssert.AssertTrue(FHandlerCalled);
+    TAssert.AssertTrue(LSender = FLastSender);
+    TAssert.AssertEquals(7, FLastConnId);
+    TAssert.AssertEquals('SOMA', FLastCommand);
+    TAssert.AssertEquals(3, Length(FLastPayload));
+    TAssert.AssertEquals(1, Length(LReply));
+    TAssert.AssertEquals(3, LReply[0]);
   finally
     FRouter.Free;
     LSender.Free;
@@ -621,8 +626,8 @@ begin
   Reset;
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeProtocol, DoHandleRequestComandoDesconhecido);
-    AssertFalse(FHandlerCalled);
+    TAssert.AssertException(EPipeProtocol, DoHandleRequestComandoDesconhecido);
+    TAssert.AssertFalse(FHandlerCalled);
   finally
     FRouter.Free;
   end;
@@ -634,8 +639,8 @@ begin
   FRouter := TPipeCommandRouter.Create;
   try
     FRouter.RegisterRequestCommand('SOMA', OnSomaRequest, 3, PIPE_COMMAND_NO_LIMIT);
-    AssertException(EPipeProtocol, DoHandleRequestPayloadAbaixoDoMinimo);
-    AssertFalse(FHandlerCalled);
+    TAssert.AssertException(EPipeProtocol, DoHandleRequestPayloadAbaixoDoMinimo);
+    TAssert.AssertFalse(FHandlerCalled);
   finally
     FRouter.Free;
   end;
@@ -651,8 +656,8 @@ begin
     FRouter.RegisterRequestCommand('SOMA', OnSomaRequest, 2, 2);
     FRouter.HandleRequest(Self, 1,
       PipeEncodeCommandPayload('SOMA', MakeBytes([1, 2])), LReply);
-    AssertTrue(FHandlerCalled);
-    EqualInt(2, Length(FLastPayload));
+    TAssert.AssertTrue(FHandlerCalled);
+    TAssert.AssertEquals(2, Length(FLastPayload));
   finally
     FRouter.Free;
   end;
@@ -663,8 +668,8 @@ begin
   Reset;
   FRouter := TPipeCommandRouter.Create;
   try
-    AssertException(EPipeProtocol, DoHandleRequestEnvelopeMalformado);
-    AssertFalse(FHandlerCalled);
+    TAssert.AssertException(EPipeProtocol, DoHandleRequestEnvelopeMalformado);
+    TAssert.AssertFalse(FHandlerCalled);
   finally
     FRouter.Free;
   end;

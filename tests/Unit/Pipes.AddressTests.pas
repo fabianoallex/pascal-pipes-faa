@@ -1,14 +1,15 @@
-unit Pipes.AddressTests;
+﻿unit Pipes.AddressTests;
 
 { Testes do parsing de endereco TCP (PipeParseHostPort) e da validacao de
   coerencia entre Address e Transport (PipeValidateAddress), ambos em
-  Pipes.Transport. Versao DUnitX/Delphi; a versao FPCUnit em tests/Unit/fpc
-  espelha a mesma cobertura. }
+  Pipes.Transport. Mestre DUnitX; o espelho FPCUnit em tests/Unit/fpc e' gerado
+  por tools/gen_fpc_mirror.py. }
 
 interface
 
 uses
   DUnitX.TestFramework,
+  Pipes.DUnitXCompat,
   SysUtils,
   Pipes.Types,
   Pipes.Transport;
@@ -29,7 +30,7 @@ type
     procedure CheckInvalid(const AAddress: string; ATransport: TPipeTransport);
     /// Afirma que o par (AAddress, ATransport) e' aceito.
     procedure CheckValid(const AAddress: string; ATransport: TPipeTransport);
-  published
+  public
     [Test] procedure ParseHostPort_IPv4;
     [Test] procedure ParseHostPort_NomeDeHost;
     [Test] procedure ParseHostPort_PortasLimite;
@@ -51,13 +52,6 @@ type
   end;
 
 implementation
-
-// Compara portas como Integer: Word vs Integer nao infere T em AreEqual<T>
-// (E2532), mesma razao do EqualInt em Pipes.FramingTests.
-procedure EqualPort(AExpected, AActual: Word; const AMsg: string);
-begin
-  Assert.AreEqual(Integer(AExpected), Integer(AActual), AMsg);
-end;
 
 { TPipeAddressTests }
 
@@ -81,14 +75,14 @@ var
   LPort: Word;
 begin
   PipeParseHostPort(AAddress, LHost, LPort);
-  Assert.AreEqual(AHost, LHost, 'host de ' + AAddress);
-  EqualPort(APort, LPort, 'porta de ' + AAddress);
+  TAssert.AssertEquals('host de ' + AAddress, AHost, LHost);
+  TAssert.AssertEquals('porta de ' + AAddress, Integer(APort), Integer(LPort));
 end;
 
 procedure TPipeAddressTests.CheckParseFails(const AAddress: string);
 begin
   FAddress := AAddress;
-  Assert.WillRaise(DoParse, EPipeError, 'deveria recusar "' + AAddress + '"');
+  TAssert.AssertException('deveria recusar "' + AAddress + '"', EPipeError, DoParse);
 end;
 
 procedure TPipeAddressTests.CheckInvalid(const AAddress: string;
@@ -96,15 +90,14 @@ procedure TPipeAddressTests.CheckInvalid(const AAddress: string;
 begin
   FAddress := AAddress;
   FTransport := ATransport;
-  Assert.WillRaise(DoValidate, EPipeError,
-    'deveria recusar "' + AAddress + '"');
+  TAssert.AssertException('deveria recusar "' + AAddress + '"', EPipeError, DoValidate);
 end;
 
 procedure TPipeAddressTests.CheckValid(const AAddress: string;
   ATransport: TPipeTransport);
 begin
   PipeValidateAddress(AAddress, ATransport); // nao deve levantar
-  Assert.IsTrue(True, '"' + AAddress + '" deveria ser aceito');
+  TAssert.AssertTrue('"' + AAddress + '" deveria ser aceito', True);
 end;
 
 procedure TPipeAddressTests.ParseHostPort_IPv4;

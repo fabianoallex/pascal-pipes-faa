@@ -1,4 +1,6 @@
-# Scripts de shell sempre com LF: com core.autocrlf=true um checkout no Windows
-# gravaria CRLF, e o sh (Git Bash ou o container do test_fpc_docker.sh) quebra
-# com o CR no fim de cada linha.
-*.sh text eol=lf
+# LF em todo arquivo de texto, no repositorio e na arvore de trabalho,
+# independente do core.autocrlf da maquina. FPC e Delphi 12+ leem LF sem
+# problema, e tools/gen_fpc_mirror.py gera os espelhos FPCUnit em LF: com
+# CRLF na arvore o --check acusaria todo espelho de desatualizado (padrao da
+# skill dual-compiler-delphi-lazarus, o mesmo dos outros repositorios *-faa).
+* text=auto eol=lf

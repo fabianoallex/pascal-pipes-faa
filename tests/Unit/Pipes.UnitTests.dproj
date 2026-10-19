@@ -164,6 +164,7 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="Pipes.DUnitXCompat.pas"/>
         <DCCReference Include="Pipes.FinalizationCheck.pas"/>
         <DCCReference Include="..\..\src\Pipes.Threading.pas"/>
         <DCCReference Include="..\..\src\Pipes.Types.pas"/>

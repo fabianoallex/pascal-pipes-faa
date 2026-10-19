@@ -1,9 +1,13 @@
-unit Pipes.CompressionTests;
+﻿unit Pipes.CompressionTests;
 
 {$mode delphi}{$H+}
 
-{ Testes do envelope de compressao (Pipes.Compression). Versao FPCUnit;
-  espelha a cobertura da versao DUnitX em tests/Unit. }
+{ GENERATED FILE — produced by tools/gen_fpc_mirror.py from
+  tests/Unit/Pipes.CompressionTests.pas (DUnitX). Do not edit by hand: edit the DUnitX
+  master and run the script again. }
+
+{ Testes do envelope de compressao (Pipes.Compression). Mestre DUnitX; o
+  espelho FPCUnit em tests/Unit/fpc e' gerado por tools/gen_fpc_mirror.py. }
 
 interface
 
@@ -41,9 +45,9 @@ implementation
 // Random/RandSeed): dado incompressivel de proposito, para testar o
 // caminho "nao compensou".
 {$Q-} // LCG depende do overflow (wraparound mod 2^32) ser SILENCIOSO; com
-       // overflow checking ligado a multiplicacao levantaria EIntOverflow num
-       // calculo correto por definicao — mesma armadilha do FNV-1a em
-       // Pipes.Framing.PipeGroupKeyHash.
+       // overflow checking ligado (padrao no Debug do Delphi) a multiplicacao
+       // levantaria EIntOverflow num calculo correto por definicao — mesma
+       // armadilha do FNV-1a em Pipes.Framing.PipeGroupKeyHash.
 function MakeRandomBytes(ACount: Integer; ASeed: Cardinal): TBytes;
 var
   I: Integer;
@@ -89,10 +93,10 @@ var
 begin
   LOriginal := MakeRepeatedBytes(5000, 42);
   LDeflated := PipeDeflate(LOriginal);
-  AssertTrue('dado repetitivo devia comprimir', Length(LDeflated) < Length(LOriginal));
+  TAssert.AssertTrue('dado repetitivo devia comprimir', Length(LDeflated) < Length(LOriginal));
   LResult := PipeInflate(LDeflated, 1024 * 1024);
-  AssertEquals(Length(LOriginal), Length(LResult));
-  AssertTrue('bytes divergem depois do round-trip deflate/inflate',
+  TAssert.AssertEquals(Length(LOriginal), Length(LResult));
+  TAssert.AssertTrue('bytes divergem depois do round-trip deflate/inflate',
     CompareMem(@LOriginal[0], @LResult[0], Length(LOriginal)));
 end;
 
@@ -102,7 +106,7 @@ var
 begin
   LDeflated := PipeDeflate(nil);
   LResult := PipeInflate(LDeflated, 1024);
-  AssertEquals(0, Length(LResult));
+  TAssert.AssertEquals(0, Length(LResult));
 end;
 
 procedure TPipeCompressionTests.MaybeCompress_MinSizeZero_DevolveOriginalSemMudar;
@@ -111,8 +115,8 @@ var
 begin
   LFrame := TPipeFrame.Msg(MakeRepeatedBytes(5000, 7));
   LResult := PipeMaybeCompress(LFrame, PIPE_COMPRESSION_DISABLED);
-  AssertTrue('AMinSize=0 devia desligar a producao', LResult.Kind = pfkMessage);
-  AssertEquals(Length(LFrame.Payload), Length(LResult.Payload));
+  TAssert.AssertTrue('AMinSize=0 devia desligar a producao', LResult.Kind = pfkMessage);
+  TAssert.AssertEquals(Length(LFrame.Payload), Length(LResult.Payload));
 end;
 
 procedure TPipeCompressionTests.MaybeCompress_AbaixoDoMinimo_DevolveOriginalSemMudar;
@@ -121,8 +125,8 @@ var
 begin
   LFrame := TPipeFrame.Msg(MakeRepeatedBytes(100, 7)); // < 512
   LResult := PipeMaybeCompress(LFrame, 512);
-  AssertTrue(LResult.Kind = pfkMessage);
-  AssertEquals(100, Length(LResult.Payload));
+  TAssert.AssertTrue(LResult.Kind = pfkMessage);
+  TAssert.AssertEquals(100, Length(LResult.Payload));
 end;
 
 procedure TPipeCompressionTests.MaybeCompress_KindNaoElegivel_DevolveOriginalSemMudar;
@@ -137,7 +141,7 @@ begin
   LFrame.CorrId := 0;
   LFrame.Payload := MakeRepeatedBytes(5000, 9);
   LResult := PipeMaybeCompress(LFrame, 512);
-  AssertTrue('kind nao elegivel nunca deve virar pfkCompressed',
+  TAssert.AssertTrue('kind nao elegivel nunca deve virar pfkCompressed',
     LResult.Kind = pfkSubscribe);
 end;
 
@@ -147,9 +151,9 @@ var
 begin
   LFrame := TPipeFrame.Msg(MakeRepeatedBytes(5000, 123));
   LResult := PipeMaybeCompress(LFrame, 512);
-  AssertTrue('payload compressivel acima do minimo devia empacotar',
+  TAssert.AssertTrue('payload compressivel acima do minimo devia empacotar',
     LResult.Kind = pfkCompressed);
-  AssertTrue('envelope comprimido devia ser menor que o payload original',
+  TAssert.AssertTrue('envelope comprimido devia ser menor que o payload original',
     Length(LResult.Payload) < Length(LFrame.Payload));
 end;
 
@@ -159,9 +163,9 @@ var
 begin
   LFrame := TPipeFrame.Msg(MakeRandomBytes(2000, 999));
   LResult := PipeMaybeCompress(LFrame, 512);
-  AssertTrue('dado incompressivel nao devia virar pfkCompressed (overhead nao compensa)',
+  TAssert.AssertTrue('dado incompressivel nao devia virar pfkCompressed (overhead nao compensa)',
     LResult.Kind = pfkMessage);
-  AssertEquals(Length(LFrame.Payload), Length(LResult.Payload));
+  TAssert.AssertEquals(Length(LFrame.Payload), Length(LResult.Payload));
 end;
 
 procedure TPipeCompressionTests.MaybeCompress_PreservaCorrId;
@@ -170,8 +174,8 @@ var
 begin
   LFrame := TPipeFrame.Msg(MakeRepeatedBytes(5000, 1), $1122334455667788);
   LResult := PipeMaybeCompress(LFrame, 512);
-  AssertTrue(LResult.Kind = pfkCompressed);
-  AssertTrue('CorrId (hash de AGroupKey / correlacao) tem que atravessar sem mudanca',
+  TAssert.AssertTrue(LResult.Kind = pfkCompressed);
+  TAssert.AssertTrue('CorrId (hash de AGroupKey / correlacao) tem que atravessar sem mudanca',
     LResult.CorrId = $1122334455667788);
 end;
 
@@ -181,14 +185,15 @@ var
 begin
   LOriginal := TPipeFrame.Request(77, MakeRepeatedBytes(5000, 55));
   LCompressed := PipeMaybeCompress(LOriginal, 512);
-  AssertTrue(LCompressed.Kind = pfkCompressed);
+  TAssert.AssertTrue(LCompressed.Kind = pfkCompressed);
   LRestored := PipeUndoCompress(LCompressed, 1024 * 1024);
-  AssertTrue(LRestored.Kind = pfkRequest);
-  AssertTrue(LRestored.CorrId = 77);
-  AssertEquals(0, Integer(LRestored.Flags));
-  AssertEquals(Length(LOriginal.Payload), Length(LRestored.Payload));
-  AssertTrue('payload divergiu depois do round-trip do envelope',
-    CompareMem(@LOriginal.Payload[0], @LRestored.Payload[0], Length(LOriginal.Payload)));
+  TAssert.AssertTrue(LRestored.Kind = pfkRequest);
+  TAssert.AssertTrue(LRestored.CorrId = 77);
+  TAssert.AssertEquals(0, Integer(LRestored.Flags));
+  TAssert.AssertEquals(Length(LOriginal.Payload), Length(LRestored.Payload));
+  TAssert.AssertTrue('payload divergiu depois do round-trip do envelope',
+    CompareMem(@LOriginal.Payload[0], @LRestored.Payload[0],
+    Length(LOriginal.Payload)));
 end;
 
 procedure TPipeCompressionTests.UndoCompress_PreservaFlagDeErro;
@@ -197,33 +202,33 @@ var
 begin
   LOriginal := TPipeFrame.ErrorReply(9, StringOfChar('x', 2000));
   LCompressed := PipeMaybeCompress(LOriginal, 512);
-  AssertTrue(LCompressed.Kind = pfkCompressed);
+  TAssert.AssertTrue(LCompressed.Kind = pfkCompressed);
   LRestored := PipeUndoCompress(LCompressed, 1024 * 1024);
-  AssertTrue(LRestored.Kind = pfkReply);
-  AssertTrue('PIPE_FLAG_ERROR tem que sobreviver ao envelope', LRestored.IsError);
-  AssertEquals(LOriginal.PayloadAsText, LRestored.PayloadAsText);
+  TAssert.AssertTrue(LRestored.Kind = pfkReply);
+  TAssert.AssertTrue('PIPE_FLAG_ERROR tem que sobreviver ao envelope', LRestored.IsError);
+  TAssert.AssertEquals(LOriginal.PayloadAsText, LRestored.PayloadAsText);
 end;
 
 procedure TPipeCompressionTests.UndoCompress_KindNaoCompressed_Levanta;
 begin
-  AssertException(EArgumentException, DoUndoCompressKindErrado);
+  TAssert.AssertException(EArgumentException, DoUndoCompressKindErrado);
 end;
 
 procedure TPipeCompressionTests.Inflate_ZipBomb_ExcedeLimite_Levanta;
 begin
-  AssertException(EPipeProtocol, DoInflateZipBomb);
+  TAssert.AssertException(EPipeProtocol, DoInflateZipBomb);
 end;
 
 procedure TPipeCompressionTests.IsCompressible_KindsCorretos;
 begin
-  AssertTrue(PipeIsCompressible(pfkMessage));
-  AssertTrue(PipeIsCompressible(pfkRequest));
-  AssertTrue(PipeIsCompressible(pfkReply));
-  AssertTrue(PipeIsCompressible(pfkPublish));
-  AssertFalse(PipeIsCompressible(pfkPing));
-  AssertFalse(PipeIsCompressible(pfkSubscribe));
-  AssertFalse(PipeIsCompressible(pfkUnsubscribe));
-  AssertFalse(PipeIsCompressible(pfkCompressed));
+  TAssert.AssertTrue(PipeIsCompressible(pfkMessage));
+  TAssert.AssertTrue(PipeIsCompressible(pfkRequest));
+  TAssert.AssertTrue(PipeIsCompressible(pfkReply));
+  TAssert.AssertTrue(PipeIsCompressible(pfkPublish));
+  TAssert.AssertFalse(PipeIsCompressible(pfkPing));
+  TAssert.AssertFalse(PipeIsCompressible(pfkSubscribe));
+  TAssert.AssertFalse(PipeIsCompressible(pfkUnsubscribe));
+  TAssert.AssertFalse(PipeIsCompressible(pfkCompressed));
 end;
 
 initialization
