@@ -24,8 +24,8 @@ program ServicoLocal;
   Compila nos dois mundos a partir do MESMO fonte:
     FPC (Windows): lazbuild ServicoLocal.lpi
     FPC (Linux):   fpc -MDelphi -Sh -Fu../../src -Fi../../src ServicoLocal.dpr
-                   (este executavel nao usa TLS, entao nao precisa de
-                   -dPIPES_OPENSSL; o gateway e o cliente remoto precisam)
+                   (desde a 0.4.0 nenhum sample precisa de -dPIPES_OPENSSL
+                   no Linux)
     Delphi:        abrir ServicoLocal.dproj no IDE }
 
 {$I pipes.inc}

@@ -6,6 +6,84 @@ uma versão minor pode mudar a API; toda mudança desse tipo aparece aqui.
 
 ## [Unreleased]
 
+O transporte TCP/TLS passou para a pascal-common-faa (`PascalCommon.Transport*`, passo 2 da
+"Migration order" do `docs/transport-design.md` de lá). Depende da branch `transport` da
+common, ainda não lançada (decisão T8 de lá); detalhes em `docs/ARQUITETURA.md` §26.
+
+### Adicionado
+
+- **Backend TLS escolhido em runtime**: `TlsOptions.Backend` (`tbDefault`, `tbSChannel`,
+  `tbOpenSsl`; re-exportados por `Pipes.Types`). No Windows os dois backends estão sempre no
+  executável — OpenSSL não exige mais outro build. `-dPIPES_OPENSSL` continua valendo, mas só
+  troca o que `tbDefault` significa (OpenSSL também no Windows). `PIPES_TLS` passa a estar
+  sempre definido, e `PIPES_OPENSSL` é definido automaticamente fora do Windows (Linux e
+  Android).
+- Testes: `TPipeTlsOpenSslTests` repete a suíte de TLS com `tbOpenSsl` na mesma rodada do
+  Windows (24 testes), se a libssl carregar.
+
+### Alterado
+
+- **Mensagens de transporte em inglês** vindas da common (decisão T6 de lá). As classes
+  continuam `EPipeClosed`/`EPipeTimeout`/`EPipeTls`/`EPipeError`, com a mesma mensagem que a
+  common levantou: a tradução acontece em `TPipeEndpoint`/`TPipeListener`/nas fábricas. Os
+  textos de Named Pipe, UDS e do laço de re-tentativa do connect são os mesmos da 0.3.0
+  (`timeout (N ms) connecting to host:porta`); os de socket/TLS são os da common.
+- **Cliente SChannel com `CaFile` agora valida o servidor contra essa CA**, como o OpenSSL.
+  Até a 0.3.0 ele ignorava `CaFile` e só aceitava servidores do trust store do Windows. Quem
+  preenchia `CaFile` no cliente SChannel e dependia do trust store para OUTRA CA passa a ser
+  recusado; quem desligava a validação só por isso pode religá-la. Os samples `EchoSeguro`,
+  `GatewaySeguro` e `ChatSeguro` passaram a validar o servidor nos dois backends, e
+  `Tls_ValidaServidorPorIp_Aceita`/`PorNome_Aceita` deixaram de ser só OpenSSL.
+- **SChannel, `SEC_I_INCOMPLETE_CREDENTIALS`**: um cliente sem certificado contra um servidor
+  que pede um agora continua o handshake sem certificado, e o servidor o recusa com
+  `EPipeTls`. Antes o cliente desistia e o servidor só via a conexão fechada.
+- **POSIX (UDS e TCP), `MSG_DONTWAIT` em `recv`/`send`** (gotcha 15 da common): sem ele um
+  `send` grande, depois de o `poll` anunciar um pouco de espaço, esperava no kernel até
+  mandar tudo, e o prazo de `SetIoDeadline` (o do handshake TLS, por exemplo) nunca
+  disparava numa escrita. O backend Android recebeu a mesma correção (não verificada em
+  aparelho).
+- Outras correções que vieram com a common: no Windows, leitor e escritor do mesmo socket
+  TCP não roubam mais o aviso um do outro (um evento de acordar por direção); o prazo de IO
+  passa a valer também numa conexão TLS (o adaptador antigo não o repassava); falhas do
+  socket mantêm a classe através do TLS (prazo = `EPipeTimeout`, `CloseAbort` =
+  `EPipeClosed`; antes tudo virava "fechado pelo par"); o certificado do cliente sob mTLS no
+  SChannel é conferido com `AUTHTYPE_CLIENT` (era `AUTHTYPE_SERVER`).
+- `TPipeTlsOptions` e `TPipePeerIdentity` são aliases de `TPcTlsOptions`/`TPcPeerIdentity`
+  (mesmos campos, mais `Backend`). `TPipeEndpoint` e `TPipeListener` viraram fachadas sobre
+  o `TPcEndpoint`/`TPcListener` de baixo (property `Inner`); `TPipeEndpoint` descende de
+  `TPcEndpoint`, `TPipeListener` não (para `Accept` continuar devolvendo `TPipeEndpoint`).
+  `TPipeEndpointStream` e `TPipeRawSockAddr*` são aliases dos `TPc*`.
+
+### Corrigido
+
+- **`MaxReconnectAttempts` contra um par que aceita e derruba** (mTLS recusado no SChannel, ou
+  em TLS 1.3 no OpenSSL): o critério de "sessão durável", que zera o contador, media a
+  duração da sessão DEPOIS da espera entre tentativas, então uma sessão que morria na hora
+  contava ≈ `ReconnectDelayMs` − (connect + handshake). Com o connect abaixo de um tick do
+  relógio (~16 ms no Windows, comum em loopback) isso chegava a `ReconnectDelayMs`, o
+  contador zerava e o teto demorava a valer (o teste
+  `Mtls_MaxReconnectAttempts_AlcancaParQueAceitaEDerruba` via 6 a 16 conexões em vez de 4).
+  Agora a duração é medida até o fim da sessão. Bug anterior a esta versão; o transporte novo,
+  mais rápido no handshake, o tornou frequente.
+
+### Obsoleto (sai na próxima versão minor)
+
+- `TcpPipeConnect`/`TcpPipeCreateListener` (`Pipes.Transport.Tcp`) e `TlsPipeConnect`/
+  `TlsPipeCreateListener` (`Pipes.Transport.Tls`): use `PipeConnect`/`PipeCreateListener`.
+- `Pipes.Transport.Schannel` e `Pipes.Transport.OpenSSL`: ficaram vazias, só para não quebrar
+  um `uses` ou um `.dproj`.
+- `PipeParseHostPort` com IPv6 sem colchetes e com porta (`'::1:5000'`): continua aceito
+  nesta versão (a common recusa, por ser ambíguo — também é um IPv6 válido sem porta); use
+  `'[::1]:5000'`.
+
+### Removido
+
+- As classes de backend que eram públicas nas units de transporte: `TPipeTcpWinEndpoint`/
+  `Listener`, `TPipePosixEndpoint`/`Listener`, `TPipeTlsEndpoint`/`Listener`,
+  `TPipeSchannelStream`/`ServerStream`, `TPipeOpenSslStream`/`ServerStream` e as funções
+  `PipeSchannelLoadPfx`/`LoadCaStore`/`FreeCert`/`FreeCaStore`. O equivalente está na common
+  (`PascalCommon.Transport.Tcp`/`.Posix`/`.Tls`).
+
 ## [0.3.0] - 2026-10-15
 
 ### Alterado

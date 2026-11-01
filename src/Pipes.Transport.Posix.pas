@@ -2,25 +2,26 @@ unit Pipes.Transport.Posix;
 
 {$I pipes.inc}
 
-{ Transporte POSIX: Unix Domain Sockets (AF_UNIX, SOCK_STREAM).
+{ Transporte POSIX local (ptLocal): Unix Domain Sockets (AF_UNIX, SOCK_STREAM).
 
-  Interrupcao de IO blocante = self-pipe: cada endpoint/listener tem um par
-  fpPipe proprio e toda espera e' um fpPoll no par [fd da operacao, lado de
-  leitura do self-pipe]. CloseAbort/Close escrevem 1 byte no self-pipe (acorda
-  o poll) e, no endpoint, fpShutdown(SHUT_RDWR) desarma qualquer read/write
-  residual no kernel. Nenhuma espera usa timeout de polling: acordar e' sempre
-  por evento.
+  Desde a 0.4.0 esta unit so' MONTA o socket (caminho, unlink, bind/listen ou
+  connect com re-tentativa) e entrega o fd a TPcPosixSocketEndpoint/
+  TPcPosixSocketListener da pascal-common-faa (PascalCommon.Transport.Posix),
+  as mesmas classes que servem o TCP de la — o fd de um UDS e o de um socket
+  TCP sao o mesmo objeto para poll/recv/send. Antes havia uma copia dessas
+  classes aqui; a da common traz de quebra o MSG_DONTWAIT em recv/send, sem o
+  qual um prazo de escrita nunca disparava numa escrita grande (gotcha 15 da
+  common).
 
-  Invariantes (alem do contrato de Pipes.Transport):
-  - FClosed atomico; o self-pipe nunca e' drenado apos o CloseAbort, entao
-    qualquer espera futura acorda na hora e levanta EPipeClosed.
-  - O fd so e' fechado no destructor (apos o join da reader/acceptor thread
-    na camada de cima) — fechar um fd com outra thread ainda dentro de um
-    fpPoll arriscaria IO num fd reciclado pelo kernel.
-  - Escritas sempre com MSG_NOSIGNAL: par que morre gera EPIPE (tratado como
-    EPipeClosed), nunca SIGPIPE (que mataria o processo inteiro).
-  - O listener e' o dono do arquivo de socket: unlink antes do bind (limpa
-    socket orfao de crash anterior) e de novo no destructor.
+  Invariantes que valem para o fd (implementadas na common):
+  - Interrupcao de IO blocante = self-pipe + fpPoll; CloseAbort/Close
+    escrevem 1 byte no self-pipe, e o endpoint faz fpShutdown(SHUT_RDWR).
+  - O fd so e' fechado no destructor (apos o join da reader/acceptor thread).
+  - Escritas sempre com MSG_NOSIGNAL: par que morre gera EPIPE (EPipeClosed na
+    fronteira), nunca SIGPIPE.
+  - O listener e' dono do arquivo de socket: unlink antes do bind (aqui; limpa
+    socket orfao de crash anterior) e de novo no destructor (na common, pelo
+    AUnlinkPath).
 
   Seguranca: o socket e' criado com a umask do processo no diretorio escolhido
   (padrao /tmp). Restringir o acesso = criar em diretorio proprio com
@@ -31,60 +32,15 @@ interface
 {$IFDEF PIPES_POSIX}
 
 uses
-  UnixType,
-  BaseUnix,
-  Sockets,
   SysUtils,
-  Pipes.Types,
-  PascalCommon.Threading,
-  Pipes.Transport;
+  PascalCommon.Transport;
 
-type
-  TPipePosixEndpoint = class(TPipeEndpoint)
-  private
-    FFd: cint;
-    FStopR: cint;     // self-pipe: lado de leitura (entra em todo fpPoll)
-    FStopW: cint;     // self-pipe: lado de escrita (CloseAbort escreve 1 byte)
-    FClosed: Integer; // atomico: 1 apos CloseAbort
-    FIoTimeoutMs: Cardinal; // 0 = espera sem prazo (ver SetIoDeadline)
-    /// Espera o fd ficar pronto (AEvents) ou o stop sinalizar (EPipeClosed).
-    procedure WaitReadyOrStop(AEvents: SmallInt; const AOp: string);
-  public
-    /// Assume a posse de AFd (socket conectado).
-    constructor Create(AFd: cint);
-    destructor Destroy; override;
-    function Read(var ABuffer; ACount: Integer): Integer; override;
-    procedure WriteExactly(const ABuffer; ACount: Integer); override;
-    procedure CloseAbort; override;
-    procedure SetIoDeadline(ATimeoutMs: Cardinal); override;
-    /// So' devolve True para um fd de socket de rede (AF_INET/AF_INET6); esta
-    /// classe tambem serve o AF_UNIX de ptLocal, e um UDS nao tem endereco IP
-    /// — a checagem de familia abaixo e' o que distingue os dois casos sem
-    /// precisar de uma segunda classe so' para isso.
-    function TryPeerAddress(out AAddress: string): Boolean; override;
-  end;
-
-  TPipePosixListener = class(TPipeListener)
-  private
-    FNativePath: string;
-    FFd: cint;        // socket de escuta
-    FStopR: cint;     // self-pipe: lado de leitura
-    FStopW: cint;     // self-pipe: lado de escrita (Close escreve 1 byte)
-    FClosed: Integer; // atomico
-  public
-    /// Cria o socket AF_UNIX a partir do nome/caminho (bind + listen).
-    constructor Create(const AAddress: string);
-    /// Assume a posse de um socket JA em listen (usado pelo transporte TCP,
-    /// que monta o socket AF_INET/AF_INET6 por conta propria). ANativePath
-    /// vazio = nao ha arquivo de socket para remover no destructor.
-    constructor CreateFromFd(AFd: cint; const ANativePath: string);
-    destructor Destroy; override;
-    function Accept: TPipeEndpoint; override;
-    procedure Close; override;
-  end;
-
-function PosixPipeCreateListener(const AAddress: string): TPipeListener;
-function PosixPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+/// Socket AF_UNIX em listen no caminho de PipeNativeName(AAddress).
+function PosixPipeCreateListener(const AAddress: string): TPcListener;
+/// Conecta, re-tentando ate ATimeoutMs enquanto o socket nao existir
+/// (ENOENT) ou ninguem escutar (ECONNREFUSED). EPcTransportTimeout no prazo.
+function PosixPipeConnect(const AAddress: string;
+  ATimeoutMs: Cardinal): TPcEndpoint;
 
 {$ENDIF}
 
@@ -92,38 +48,16 @@ implementation
 
 {$IFDEF PIPES_POSIX}
 
+uses
+  UnixType,
+  BaseUnix,
+  Sockets,
+  PascalCommon.Threading,
+  PascalCommon.Transport.Posix,
+  Pipes.Transport;
+
 const
-  // Declaradas localmente (valores Linux): a unit Sockets do FPC 3.2.2 nao
-  // expoe SHUT_*/MSG_NOSIGNAL de forma uniforme em todos os alvos.
-  PIPE_SHUT_RDWR = 2;
-  PIPE_MSG_NOSIGNAL = $4000;
   PIPE_LISTEN_BACKLOG = 128;
-  PIPE_AF_INET6 = 10; // valor do Linux; o Windows usa 23 (ver Pipes.Transport.Tcp)
-
-// getpeername declarado localmente (mesmo motivo do bind/connect em
-// Pipes.Transport.Tcp.pas): o endereco trafega como ponteiro opaco + tamanho
-// para o buffer de Pipes.TPipeRawSockAddrStorage caber, seja qual for a
-// familia devolvida pelo kernel.
-function pipe_getpeername(AFd: cint; AAddr: Pointer;
-  var ANameLen: LongWord): cint; cdecl; external 'c' name 'getpeername';
-
-procedure RaiseIoError(const AOp: string; AErr: cint);
-begin
-  raise EPipeError.CreateFmt('%s failed (error %d: %s)',
-    [AOp, AErr, SysErrorMessage(AErr)]);
-end;
-
-procedure NewSelfPipe(out AReadFd, AWriteFd: cint);
-var
-  LFds: TFilDes;
-begin
-  AReadFd := -1;
-  AWriteFd := -1;
-  if fpPipe(LFds) <> 0 then
-    RaiseIoError('fppipe', fpgeterrno);
-  AReadFd := LFds[0];
-  AWriteFd := LFds[1];
-end;
 
 // Caminho -> sockaddr_un; valida o limite de sun_path (107 chars + #0).
 // Preenchimento manual: o helper Str2UnixSockAddr esta deprecated no FPC.
@@ -131,7 +65,7 @@ procedure BuildUnixAddr(const APath: string; out AAddr: TUnixSockAddr;
   out ALen: Longint);
 begin
   if Length(APath) >= SizeOf(AAddr.path) then
-    raise EPipeError.CreateFmt(
+    raise EPcTransport.CreateFmt(
       'socket path too long (%d chars; maximum %d): %s',
       [Length(APath), SizeOf(AAddr.path) - 1, APath]);
   FillChar(AAddr, SizeOf(AAddr), 0);
@@ -140,274 +74,39 @@ begin
   ALen := SizeOf(AAddr.family) + Length(APath) + 1; // familia + path + #0
 end;
 
-{ TPipePosixEndpoint }
-
-constructor TPipePosixEndpoint.Create(AFd: cint);
-begin
-  inherited Create;
-  FFd := AFd;
-  NewSelfPipe(FStopR, FStopW); // se falhar, o destructor fecha AFd
-end;
-
-destructor TPipePosixEndpoint.Destroy;
-begin
-  CloseAbort; // idempotente
-  if FFd >= 0 then
-    fpClose(FFd);
-  if FStopR >= 0 then
-    fpClose(FStopR);
-  if FStopW >= 0 then
-    fpClose(FStopW);
-  inherited;
-end;
-
-procedure TPipePosixEndpoint.CloseAbort;
+function PosixPipeCreateListener(const AAddress: string): TPcListener;
 var
-  LByte: Byte;
-begin
-  if PcAtomicSet(FClosed, 1) = 1 then
-    Exit; // ja abortado
-  LByte := 1;
-  if FStopW >= 0 then
-    fpWrite(FStopW, LByte, 1);    // acorda esperas atuais e futuras (nunca drenado)
-  fpShutdown(FFd, PIPE_SHUT_RDWR); // desarma read/write residual no kernel
-end;
-
-procedure TPipePosixEndpoint.SetIoDeadline(ATimeoutMs: Cardinal);
-begin
-  FIoTimeoutMs := ATimeoutMs;
-end;
-
-function TPipePosixEndpoint.TryPeerAddress(out AAddress: string): Boolean;
-var
-  LStorage: TPipeRawSockAddrStorage;
-  LLen: LongWord;
-begin
-  AAddress := '';
-  Result := False;
-  if PcAtomicGet(FClosed) <> 0 then
-    Exit;
-  FillChar(LStorage, SizeOf(LStorage), 0);
-  LLen := SizeOf(LStorage);
-  if pipe_getpeername(FFd, @LStorage, LLen) <> 0 then
-    Exit; // melhor esforco: fd num estado que nao responde, log segue sem IP
-  case LStorage.Family of
-    PIPE_AF_INET:
-      AAddress := Format('%d.%d.%d.%d:%d',
-        [LStorage.V4.sin_addr[0], LStorage.V4.sin_addr[1],
-         LStorage.V4.sin_addr[2], LStorage.V4.sin_addr[3],
-         Swap(LStorage.V4.sin_port)]);
-    PIPE_AF_INET6:
-      AAddress := Format('[%s]:%d',
-        [PipeFormatIPv6(LStorage.V6.sin6_addr), Swap(LStorage.V6.sin6_port)]);
-  else
-    Exit; // AF_UNIX (ptLocal sobre esta mesma classe): sem endereco IP
-  end;
-  Result := True;
-end;
-
-procedure TPipePosixEndpoint.WaitReadyOrStop(AEvents: SmallInt; const AOp: string);
-var
-  LFds: array[0..1] of pollfd;
-  LRc: cint;
-  LDeadline: UInt64;
-  LWait: Int64;
-begin
-  if PcAtomicGet(FClosed) <> 0 then
-    raise EPipeClosed.Create(AOp + ' on a closed endpoint');
-  LDeadline := 0;
-  if FIoTimeoutMs <> 0 then
-    LDeadline := PcTickMs + FIoTimeoutMs;
-  repeat
-    if FIoTimeoutMs = 0 then
-      LWait := -1
-    else
-    begin
-      // Recalculado a cada volta: sem isso um EINTR reiniciaria o prazo, e uma
-      // rajada de sinais esticaria a espera indefinidamente.
-      LWait := Int64(LDeadline) - Int64(PcTickMs);
-      if LWait < 0 then
-        LWait := 0;
-    end;
-    LFds[0].fd := FFd;
-    LFds[0].events := AEvents;
-    LFds[0].revents := 0;
-    LFds[1].fd := FStopR;
-    LFds[1].events := POLLIN;
-    LFds[1].revents := 0;
-    LRc := fpPoll(@LFds[0], 2, LWait);
-  until (LRc >= 0) or (fpgeterrno <> ESysEINTR);
-  if LRc < 0 then
-    RaiseIoError(AOp + ' (poll)', fpgeterrno);
-  if (LRc = 0) and (FIoTimeoutMs <> 0) then
-    raise EPipeTimeout.CreateFmt('%s: the peer did not respond within %u ms',
-      [AOp, FIoTimeoutMs]);
-  if ((LFds[1].revents and POLLIN) <> 0) or (PcAtomicGet(FClosed) <> 0) then
-    raise EPipeClosed.Create(AOp + ' aborted (CloseAbort)');
-  // POLLERR/POLLHUP no fd da operacao: deixa o recv/send reportar — ainda
-  // pode haver dados enfileirados para ler apos o HUP.
-end;
-
-function TPipePosixEndpoint.Read(var ABuffer; ACount: Integer): Integer;
-var
-  LGot: NativeInt;
-  LErr: cint;
-begin
-  while True do
-  begin
-    WaitReadyOrStop(POLLIN, 'read');
-    LGot := NativeInt(fpRecv(FFd, @ABuffer, ACount, 0));
-    if LGot > 0 then
-      Exit(Integer(LGot));
-    if LGot = 0 then
-      raise EPipeClosed.Create('connection closed by the peer');
-    LErr := fpgeterrno;
-    case LErr of
-      ESysEINTR, ESysEAGAIN:
-        ; // re-tenta (volta ao poll)
-      ESysECONNRESET, ESysEPIPE:
-        raise EPipeClosed.CreateFmt('read: connection closed (error %d)', [LErr]);
-    else
-      RaiseIoError('read', LErr);
-    end;
-  end;
-end;
-
-procedure TPipePosixEndpoint.WriteExactly(const ABuffer; ACount: Integer);
-var
-  P: PByte;
-  LWrote: NativeInt;
-  LErr: cint;
-begin
-  P := @ABuffer;
-  while ACount > 0 do
-  begin
-    WaitReadyOrStop(POLLOUT, 'write');
-    LWrote := NativeInt(fpSend(FFd, P, ACount, PIPE_MSG_NOSIGNAL));
-    if LWrote > 0 then
-    begin
-      Inc(P, LWrote);
-      Dec(ACount, Integer(LWrote));
-      Continue;
-    end;
-    LErr := fpgeterrno;
-    case LErr of
-      ESysEINTR, ESysEAGAIN:
-        ; // re-tenta (volta ao poll)
-      ESysEPIPE, ESysECONNRESET:
-        raise EPipeClosed.CreateFmt('write: connection closed (error %d)', [LErr]);
-    else
-      RaiseIoError('write', LErr);
-    end;
-  end;
-end;
-
-{ TPipePosixListener }
-
-constructor TPipePosixListener.Create(const AAddress: string);
-var
+  LNative: string;
   LAddr: TUnixSockAddr;
   LLen: Longint;
+  LFd, LErr: cint;
 begin
-  inherited Create;
-  FFd := -1;
-  FStopR := -1;
-  FStopW := -1;
-  FNativePath := PipeNativeName(AAddress);
-  BuildUnixAddr(FNativePath, LAddr, LLen);
-  NewSelfPipe(FStopR, FStopW);
-  FFd := fpSocket(AF_UNIX, SOCK_STREAM, 0);
-  if FFd < 0 then
-    RaiseIoError('socket(AF_UNIX)', fpgeterrno);
-  fpUnlink(FNativePath); // socket orfao de execucao anterior (crash sem unlink)
-  if fpBind(FFd, psockaddr(@LAddr), LLen) <> 0 then
-    RaiseIoError(Format('bind(%s)', [FNativePath]), fpgeterrno);
-  if fpListen(FFd, PIPE_LISTEN_BACKLOG) <> 0 then
-    RaiseIoError(Format('listen(%s)', [FNativePath]), fpgeterrno);
-end;
-
-constructor TPipePosixListener.CreateFromFd(AFd: cint;
-  const ANativePath: string);
-begin
-  inherited Create;
-  FFd := AFd;
-  FStopR := -1;
-  FStopW := -1;
-  FNativePath := ANativePath;
-  NewSelfPipe(FStopR, FStopW); // se falhar, o destructor fecha AFd
-end;
-
-destructor TPipePosixListener.Destroy;
-begin
-  Close; // idempotente
-  // Assume acceptor thread ja joinada (contrato de Pipes.Transport).
-  if FFd >= 0 then
-    fpClose(FFd);
-  if FStopR >= 0 then
-    fpClose(FStopR);
-  if FStopW >= 0 then
-    fpClose(FStopW);
-  if FNativePath <> '' then
-    fpUnlink(FNativePath);
-  inherited;
-end;
-
-procedure TPipePosixListener.Close;
-var
-  LByte: Byte;
-begin
-  if PcAtomicSet(FClosed, 1) = 1 then
-    Exit;
-  LByte := 1;
-  if FStopW >= 0 then
-    fpWrite(FStopW, LByte, 1); // desbloqueia o Accept pendente (devolve nil)
-end;
-
-function TPipePosixListener.Accept: TPipeEndpoint;
-var
-  LFds: array[0..1] of pollfd;
-  LRc, LConn, LErr: cint;
-begin
-  Result := nil;
-  // Loop: um cliente que conecta e cai antes do fpAccept recicla a espera,
-  // sem devolver endpoint morto (paridade com o listener Windows).
-  while True do
+  LNative := PipeNativeName(AAddress);
+  BuildUnixAddr(LNative, LAddr, LLen);
+  LFd := fpSocket(AF_UNIX, SOCK_STREAM, 0);
+  if LFd < 0 then
+    PcRaisePosixError('socket(AF_UNIX)', fpgeterrno);
+  fpUnlink(LNative); // socket orfao de execucao anterior (crash sem unlink)
+  if fpBind(LFd, psockaddr(@LAddr), LLen) <> 0 then
   begin
-    if PcAtomicGet(FClosed) <> 0 then
-      Exit;
-    LFds[0].fd := FFd;
-    LFds[0].events := POLLIN;
-    LFds[0].revents := 0;
-    LFds[1].fd := FStopR;
-    LFds[1].events := POLLIN;
-    LFds[1].revents := 0;
-    LRc := fpPoll(@LFds[0], 2, -1);
-    if LRc < 0 then
-    begin
-      if fpgeterrno = ESysEINTR then
-        Continue;
-      RaiseIoError('accept (poll)', fpgeterrno);
-    end;
-    if ((LFds[1].revents and POLLIN) <> 0) or (PcAtomicGet(FClosed) <> 0) then
-      Exit; // Close: devolve nil
-    LConn := fpAccept(FFd, nil, nil);
-    if LConn >= 0 then
-      Exit(TPipePosixEndpoint.Create(LConn));
     LErr := fpgeterrno;
-    if (LErr = ESysEINTR) or (LErr = ESysECONNABORTED) or (LErr = ESysEAGAIN) then
-      Continue; // cliente caiu entre o poll e o accept: volta a esperar
-    RaiseIoError('accept', LErr);
+    fpClose(LFd);
+    PcRaisePosixError(Format('bind(%s)', [LNative]), LErr);
   end;
+  if fpListen(LFd, PIPE_LISTEN_BACKLOG) <> 0 then
+  begin
+    LErr := fpgeterrno;
+    fpClose(LFd);
+    fpUnlink(LNative);
+    PcRaisePosixError(Format('listen(%s)', [LNative]), LErr);
+  end;
+  // A partir daqui o fd e o arquivo sao do listener (inclusive se o
+  // construtor levantar: o destructor dele fecha e remove).
+  Result := TPcPosixSocketListener.Create(LFd, LNative);
 end;
 
-{ --- fabricas --- }
-
-function PosixPipeCreateListener(const AAddress: string): TPipeListener;
-begin
-  Result := TPipePosixListener.Create(AAddress);
-end;
-
-function PosixPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function PosixPipeConnect(const AAddress: string;
+  ATimeoutMs: Cardinal): TPcEndpoint;
 var
   LNative: string;
   LAddr: TUnixSockAddr;
@@ -422,9 +121,9 @@ begin
   begin
     LFd := fpSocket(AF_UNIX, SOCK_STREAM, 0);
     if LFd < 0 then
-      RaiseIoError('socket(AF_UNIX)', fpgeterrno);
+      PcRaisePosixError('socket(AF_UNIX)', fpgeterrno);
     if fpConnect(LFd, psockaddr(@LAddr), LLen) = 0 then
-      Exit(TPipePosixEndpoint.Create(LFd));
+      Exit(TPcPosixSocketEndpoint.Create(LFd));
     LErr := fpgeterrno;
     fpClose(LFd);
     // ENOENT = servidor ainda nao criou o socket; ECONNREFUSED = arquivo
@@ -432,10 +131,10 @@ begin
     // Ambos re-tentam ate o prazo — e' o que da semantica uniforme de
     // Connect(timeout) nas duas plataformas.
     if (LErr <> ESysENOENT) and (LErr <> ESysECONNREFUSED) then
-      RaiseIoError(Format('connect to socket %s', [LNative]), LErr);
+      PcRaisePosixError(Format('connect to socket %s', [LNative]), LErr);
     if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
-      raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to socket %s',
-        [ATimeoutMs, LNative]);
+      raise EPcTransportTimeout.CreateFmt(
+        'timeout (%u ms) connecting to socket %s', [ATimeoutMs, LNative]);
     Sleep(25); // servidor ausente/ocupado: polling curto
   end;
 end;

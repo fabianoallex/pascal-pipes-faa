@@ -2,13 +2,32 @@ unit Pipes.Transport;
 
 {$I pipes.inc}
 
-{ Camada de transporte abstrata: o contrato que os backends por plataforma
-  (Pipes.Transport.Windows = Named Pipe overlapped; Pipes.Transport.Posix =
-  Unix Domain Socket, milestone M4; Pipes.Transport.Android = socket TCP sobre
-  as units Posix.* da RTL do Delphi, milestone A1) implementam.
+{ Camada de transporte: o contrato que a camada de cima (Pipes.Server/
+  Pipes.Client) usa, as fabricas por TPipeTransport e os helpers de endereco.
 
-  O Android e' o unico dos tres sem transporte LOCAL: la ptLocal e' recusado
-  com mensagem propria (RaiseLocalUnsupported), nao cai em backend nenhum.
+  Desde a 0.4.0 o contrato e' o da pascal-common-faa (PascalCommon.Transport,
+  que nasceu desta unit — docs/transport-design.md la): TPcEndpoint/
+  TPcListener, implementados por
+
+    ptLocal  Windows .... Pipes.Transport.Windows (Named Pipe overlapped,
+                          subclasse de TPcEndpoint mantida aqui)
+             POSIX ...... Pipes.Transport.Posix (monta o socket AF_UNIX e o
+                          entrega a TPcPosixSocketEndpoint/Listener da common)
+    ptTcp    Windows/POSIX PcTcpConnect/PcTcpListen (common), com o laco de
+                          re-tentativa do connect em Pipes.Transport.Tcp
+             Android .... Pipes.Transport.Android (subclasse mantida aqui)
+    ptTls    todos ...... PcTlsWrap/PcTlsListen/PcTlsListenOver (common) sobre
+                          o endpoint TCP acima, backend em runtime
+
+  O Android e' o unico sem transporte LOCAL: la ptLocal e' recusado com
+  mensagem propria (RaiseLocalUnsupported), nao cai em backend nenhum.
+
+  FRONTEIRA DE EXCECOES: o transporte levanta EPcTransport* (contrato da
+  common); a aplicacao continua vendo EPipeClosed/EPipeTimeout/EPipeTls/
+  EPipeError, com a MESMA mensagem. A traducao acontece num lugar so':
+  TPipeEndpoint e TPipeListener sao fachadas que embrulham o TPcEndpoint/
+  TPcListener de baixo (sao donas dele), e as fabricas daqui ja devolvem a
+  fachada. Excecoes que ja sao EPipe* (ex.: PipeParseHostPort) passam intactas.
 
   Contrato de threads (herdado pela camada de cima):
   - Por endpoint: no maximo UMA thread em Read (a reader thread) e escritas
@@ -25,129 +44,89 @@ interface
 uses
   SysUtils,
   Classes,
-  Pipes.Types;
+  Pipes.Types,
+  PascalCommon.Transport;
 
 type
-  { Uma conexao bidirecional estabelecida (lado cliente ou lado servidor). }
-  TPipeEndpoint = class
+  { Uma conexao bidirecional estabelecida (lado cliente ou lado servidor):
+    fachada sobre o TPcEndpoint de baixo, que traduz as excecoes. Dona dele. }
+  TPipeEndpoint = class(TPcEndpoint)
+  private
+    FInner: TPcEndpoint;
   public
+    /// Assume a posse de AInner.
+    constructor Create(AInner: TPcEndpoint);
+    destructor Destroy; override;
     /// Conclui a negociacao que o endpoint exigir antes do primeiro Read/Write
     /// (hoje so o TLS do lado servidor). Vazio nos transportes que nao
     /// negociam nada, que e' o caso de todos os locais e do TCP puro.
     ///
     /// Existe para tirar o handshake da thread de accept: quem chama e' a
     /// reader thread DA CONEXAO, entao um par que trave no meio da negociacao
-    /// prende so a si mesmo. Feito no Accept, prenderia o loop de accept
-    /// inteiro e um unico cliente ruim derrubaria o servidor para todos.
-    procedure Handshake; virtual;
+    /// prende so a si mesmo.
+    procedure Handshake; override;
     /// Le ate ACount bytes (bloqueia ate haver pelo menos 1); devolve quantos
     /// leu (1..ACount). EPipeClosed se o par encerrou ou CloseAbort foi chamado.
-    function Read(var ABuffer; ACount: Integer): Integer; virtual; abstract;
+    function Read(var ABuffer; ACount: Integer): Integer; override;
     /// Escreve exatamente ACount bytes (bloqueia ate concluir).
-    procedure WriteExactly(const ABuffer; ACount: Integer); virtual; abstract;
+    procedure WriteExactly(const ABuffer; ACount: Integer); override;
     /// Aborta IO pendente e marca o endpoint como fechado. Thread-safe e
     /// idempotente; chamavel de qualquer thread. O handle/fd e' liberado de
     /// fato no destructor (apos o join da reader thread).
-    procedure CloseAbort; virtual; abstract;
-    /// Impoe um prazo as esperas de IO deste endpoint: passado ATimeoutMs sem
-    /// o socket ficar pronto, Read/WriteExactly levantam EPipeTimeout em vez de
-    /// esperar para sempre. 0 remove o prazo.
-    ///
-    /// Vale a partir da proxima espera e conta por espera, nao pela operacao
-    /// inteira — serve para "o par parou de falar", nao como orcamento total.
-    /// Chamar da propria thread que le/escreve.
-    ///
-    /// Existe para o handshake TLS (ver TPipeTlsEndpoint.Handshake), a unica
-    /// fase em que o par ainda nao provou nada e ja consome uma thread. Fora
-    /// dela o padrao continua sendo esperar indefinidamente e depender de
-    /// CloseAbort/keepalive.
-    ///
-    /// O padrao NAO FAZ NADA: transportes que nao implementam simplesmente
-    /// esperam sem prazo. Hoje so o TCP implementa, que e' o unico que o TLS
-    /// envolve — um backend novo sob TLS precisa implementar isto tambem, ou o
-    /// prazo some em silencio.
-    procedure SetIoDeadline(ATimeoutMs: Cardinal); virtual;
-    /// Quem e' o par, segundo o certificado que ele apresentou e que ja foi
-    /// validado. False quando nao ha identidade verificada — o caso de todos
-    /// os transportes sem TLS e do ptTls sem mTLS.
-    ///
-    /// So faz sentido chamar DEPOIS de Handshake: antes dele o par ainda nao
-    /// apresentou nada.
-    function TryPeerIdentity(out AIdentity: TPipePeerIdentity): Boolean; virtual;
-    /// Endereco IP:porta do par do outro lado, formato 'host:porta' (IPv6
-    /// entre colchetes, mesma convencao de PipeParseHostPort). False nos
-    /// transportes sem rede — Named Pipe/UDS (ptLocal) nao tem endereco IP,
-    /// so' um handle/fd local; nao ha "ainda nao chegou" aqui, e' sempre
-    /// assim para esse transporte.
-    function TryPeerAddress(out AAddress: string): Boolean; virtual;
+    procedure CloseAbort; override;
+    /// Prazo por espera de IO (EPipeTimeout ao estourar); 0 remove. Ver
+    /// TPcEndpoint.SetIoDeadline. Os transportes locais nao implementam (nao
+    /// ha TLS sobre eles).
+    procedure SetIoDeadline(ATimeoutMs: Cardinal); override;
+    /// Quem e' o par segundo o certificado validado (so' servidor sob mTLS,
+    /// depois de Handshake). False em todo o resto.
+    function TryPeerIdentity(out AIdentity: TPcPeerIdentity): Boolean; override;
+    /// 'host:porta' do par (IPv6 entre colchetes). False em ptLocal.
+    function TryPeerAddress(out AAddress: string): Boolean; override;
+    property Inner: TPcEndpoint read FInner;
   end;
 
-  { Ponto de escuta do servidor. }
+  { Ponto de escuta do servidor: fachada sobre o TPcListener de baixo; cada
+    Accept devolve um TPipeEndpoint. Dona do listener de baixo. Classe propria,
+    e nao descendente de TPcListener, para Accept continuar devolvendo
+    TPipeEndpoint (um override teria de devolver TPcEndpoint). }
   TPipeListener = class
+  private
+    FInner: TPcListener;
   public
-    /// Espera a proxima conexao. Devolve nil (sem excecao) quando Close foi
-    /// chamado. Chamar de UMA unica thread (a acceptor thread).
-    function Accept: TPipeEndpoint; virtual; abstract;
+    /// Assume a posse de AInner.
+    constructor Create(AInner: TPcListener);
+    destructor Destroy; override;
+    /// Espera a proxima conexao (um TPipeEndpoint). Devolve nil (sem
+    /// excecao) quando Close foi chamado. Chamar de UMA unica thread.
+    function Accept: TPipeEndpoint;
     /// Desbloqueia um Accept pendente e impede novos. Thread-safe e
     /// idempotente. Destruir o listener so apos o join da acceptor thread.
-    procedure Close; virtual; abstract;
+    procedure Close;
+    /// Porta TCP de fato (a que o SO escolheu quando pedida a 0); 0 em ptLocal.
+    function Port: Word;
+    property Inner: TPcListener read FInner;
   end;
 
-  { Buffer cru para getpeername (TryPeerAddress dos backends TCP/TLS):
-    sockaddr_in/sockaddr_in6 tem o MESMO layout de campos no Windows e no
-    POSIX (familia + porta em network byte order + endereco) — so' a
-    constante da familia do IPv6 diverge entre eles (23 no Windows, 10 no
-    Linux), e cada backend usa a sua. Declarado aqui, e nao importado da unit
-    de socket de cada compilador, pelo mesmo motivo de TPipeAddrInfo em
-    Pipes.Transport.Tcp.pas: layout que precisa ser IGUAL nos dois lados nao
-    pode depender de como cada unit o tipa — e fica AQUI (nao em cada backend)
-    justamente para servir aos dois sem duplicar a struct. }
-  TPipeRawSockAddrIn = record
-    sin_family: Word;
-    sin_port: Word;               // network byte order (big-endian)
-    sin_addr: array[0..3] of Byte;
-    sin_zero: array[0..7] of Byte;
-  end;
-
-  TPipeRawSockAddrIn6 = record
-    sin6_family: Word;
-    sin6_port: Word;               // network byte order
-    sin6_flowinfo: LongWord;
-    sin6_addr: array[0..15] of Byte;
-    sin6_scope_id: LongWord;
-  end;
-
-  TPipeRawSockAddrStorage = record
-  case Integer of
-    0: (Family: Word);
-    1: (V4: TPipeRawSockAddrIn);
-    2: (V6: TPipeRawSockAddrIn6);
-    3: (Pad: array[0..127] of Byte); // folga (sockaddr_storage real e' assim)
-  end;
-
-  { Adapta um TPipeEndpoint como TStream para PipeReadFrame/PipeWriteFrame.
-    Nao e' dono do endpoint. Nao-seekable (Seek devolve 0). }
-  TPipeEndpointStream = class(TStream)
-  private
-    FEndpoint: TPipeEndpoint;
-  public
-    constructor Create(AEndpoint: TPipeEndpoint);
-    function Read(var Buffer; Count: Longint): Longint; override;
-    function Write(const Buffer; Count: Longint): Longint; override;
-    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
-  end;
+  { Nomes anteriores a 0.4.0, mantidos como alias. }
+  TPipeEndpointStream = TPcEndpointStream;
+  TPipeRawSockAddrIn = TPcRawSockAddrIn;
+  TPipeRawSockAddrIn6 = TPcRawSockAddrIn6;
+  TPipeRawSockAddrStorage = TPcRawSockAddrStorage;
 
 const
-  /// Familia IPv4 do socket: mesmo valor no Windows e no POSIX, ao contrario
-  /// de IPv6 (23 no Windows, 10 no Linux — por isso cada backend declara a
-  /// sua propria constante de familia v6).
-  PIPE_AF_INET = 2;
+  /// Familia IPv4 do socket: mesmo valor no Windows e no POSIX.
+  PIPE_AF_INET = PC_AF_INET;
 
-/// 'aaaa:bbbb:...' (8 grupos hex, sem zeros a esquerda), sem a compressao de
-/// zeros ('::') do formato canonico — mais verboso, mas continua um IPv6
-/// valido e reconectavel, o suficiente para log/exibicao em TryPeerAddress
-/// sem o codigo extra de achar o maior grupo de zeros consecutivos.
+/// Ver PcFormatIPv6 (alias mantido).
 function PipeFormatIPv6(const AAddr: array of Byte): string;
+
+/// A excecao EPipe* equivalente a E (uma EPcTransport*), com a mesma mensagem:
+/// EPcTransportClosed -> EPipeClosed, EPcTransportTimeout -> EPipeTimeout,
+/// EPcTls -> EPipeTls, o resto -> EPipeError. Para "raise
+/// PipeTransportError(E)" dentro de um except; a original e' liberada pelo
+/// proprio mecanismo de excecao.
+function PipeTransportError(E: EPcTransport): EPipeError;
 
 // --- Fabricas por plataforma -------------------------------------------------
 
@@ -185,6 +164,11 @@ function PipeNativeName(const AAddress: string): string;
 /// Quebra 'host:porta' em partes. Aceita IPv6 entre colchetes ('[::1]:5000')
 /// e '*' como atalho de '0.0.0.0'. EPipeError se malformado. So faz sentido
 /// para ptTcp.
+///
+/// Diferente de PcParseHostPort, ainda aceita IPv6 SEM colchetes com porta
+/// ('::1:5000' = host '::1', porta 5000: o ultimo ':' separa), como ate a
+/// 0.3.0 — pode haver configuracao gravada assim. A forma e' ambigua (tambem
+/// e' um IPv6 valido sem porta) e esta obsoleta: use colchetes.
 procedure PipeParseHostPort(const AAddress: string; out AHost: string;
   out APort: Word);
 
@@ -197,8 +181,8 @@ procedure PipeValidateAddress(const AAddress: string;
 implementation
 
 uses
-  // Pipes.Transport.Tls usa ESTA unit na interface; a dependencia so' fecha
-  // porque aqui e' na implementation.
+  // Pipes.Transport.Tcp/Tls usam ESTA unit na interface; a dependencia so'
+  // fecha porque aqui e' na implementation.
   Pipes.Transport.Tcp,
   Pipes.Transport.Tls
 {$IFDEF PIPES_WINDOWS}
@@ -212,72 +196,128 @@ uses
 {$ENDIF}
   ;
 
+function PipeTransportError(E: EPcTransport): EPipeError;
+begin
+  // EPcTls e EPcTransportRefused sao irmas de Closed/Timeout, nao filhas.
+  if E is EPcTransportClosed then
+    Result := EPipeClosed.Create(E.Message)
+  else if E is EPcTransportTimeout then
+    Result := EPipeTimeout.Create(E.Message)
+  else if E is EPcTls then
+    Result := EPipeTls.Create(E.Message)
+  else
+    Result := EPipeError.Create(E.Message);
+end;
+
 { TPipeEndpoint }
+
+constructor TPipeEndpoint.Create(AInner: TPcEndpoint);
+begin
+  inherited Create;
+  FInner := AInner;
+end;
+
+destructor TPipeEndpoint.Destroy;
+begin
+  FInner.Free;
+  inherited;
+end;
 
 procedure TPipeEndpoint.Handshake;
 begin
-  // Nada a negociar por padrao.
+  try
+    FInner.Handshake;
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+end;
+
+function TPipeEndpoint.Read(var ABuffer; ACount: Integer): Integer;
+begin
+  try
+    Result := FInner.Read(ABuffer, ACount);
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+end;
+
+procedure TPipeEndpoint.WriteExactly(const ABuffer; ACount: Integer);
+begin
+  try
+    FInner.WriteExactly(ABuffer, ACount);
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+end;
+
+procedure TPipeEndpoint.CloseAbort;
+begin
+  if Assigned(FInner) then
+    FInner.CloseAbort; // idempotente embaixo
 end;
 
 procedure TPipeEndpoint.SetIoDeadline(ATimeoutMs: Cardinal);
 begin
-  // Sem prazo por padrao (ver o comentario da declaracao).
+  FInner.SetIoDeadline(ATimeoutMs);
 end;
 
 function TPipeEndpoint.TryPeerIdentity(
-  out AIdentity: TPipePeerIdentity): Boolean;
+  out AIdentity: TPcPeerIdentity): Boolean;
 begin
-  // Transporte sem TLS nao tem certificado do par. Identidade por credencial
-  // do SO (SO_PEERCRED, GetNamedPipeClientProcessId) e' outra coisa — uid/pid,
-  // nao um nome — e ficaria errada atras desta mesma API.
-  Finalize(AIdentity);
-  FillChar(AIdentity, SizeOf(AIdentity), 0);
-  Result := False;
+  Result := FInner.TryPeerIdentity(AIdentity);
 end;
 
 function TPipeEndpoint.TryPeerAddress(out AAddress: string): Boolean;
 begin
-  AAddress := '';
-  Result := False;
+  Result := FInner.TryPeerAddress(AAddress);
+end;
+
+{ TPipeListener }
+
+constructor TPipeListener.Create(AInner: TPcListener);
+begin
+  inherited Create;
+  FInner := AInner;
+end;
+
+destructor TPipeListener.Destroy;
+begin
+  FInner.Free;
+  inherited;
+end;
+
+function TPipeListener.Accept: TPipeEndpoint;
+var
+  LInner: TPcEndpoint;
+begin
+  try
+    LInner := FInner.Accept;
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+  if LInner = nil then
+    Exit(nil); // Close
+  Result := TPipeEndpoint.Create(LInner);
+end;
+
+procedure TPipeListener.Close;
+begin
+  if Assigned(FInner) then
+    FInner.Close;
+end;
+
+function TPipeListener.Port: Word;
+begin
+  Result := FInner.Port;
 end;
 
 function PipeFormatIPv6(const AAddr: array of Byte): string;
-var
-  I: Integer;
-  LGroup: Word;
 begin
-  Result := '';
-  for I := 0 to 7 do
-  begin
-    LGroup := (Word(AAddr[I * 2]) shl 8) or AAddr[I * 2 + 1];
-    if I > 0 then
-      Result := Result + ':';
-    Result := Result + LowerCase(IntToHex(LGroup, 1));
-  end;
-end;
-
-{ TPipeEndpointStream }
-
-constructor TPipeEndpointStream.Create(AEndpoint: TPipeEndpoint);
-begin
-  inherited Create;
-  FEndpoint := AEndpoint;
-end;
-
-function TPipeEndpointStream.Read(var Buffer; Count: Longint): Longint;
-begin
-  Result := FEndpoint.Read(Buffer, Count);
-end;
-
-function TPipeEndpointStream.Write(const Buffer; Count: Longint): Longint;
-begin
-  FEndpoint.WriteExactly(Buffer, Count);
-  Result := Count;
-end;
-
-function TPipeEndpointStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
-begin
-  Result := 0; // nao-seekable (mesmo contrato do TAMQPSocketStream)
+  Result := PcFormatIPv6(AAddr);
 end;
 
 { --- fabricas --- }
@@ -399,16 +439,10 @@ begin
     'policy); use the overload that takes TPipeTlsOptions');
 end;
 
-function PipeCreateListener(const AAddress: string;
-  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeListener;
+// ptLocal da plataforma. No Android e' inalcancavel (PipeValidateAddress ja
+// recusou), mas ainda precisa compilar.
+function NewLocalListener(const AAddress: string): TPcListener;
 begin
-  if ATransport = ptTls then
-    RaiseTlsNeedsOptions;
-  PipeValidateAddress(AAddress, ATransport);
-  if ATransport = ptTcp then
-    Exit(TcpPipeCreateListener(AAddress, AKeepAliveSeconds));
-  // Daqui para baixo so' resta ptLocal. No Android e' inalcancavel (o
-  // PipeValidateAddress acima ja recusou), mas ainda precisa compilar.
   {$IFDEF PIPES_ANDROID}
   Result := nil;
   RaiseLocalUnsupported;
@@ -421,25 +455,9 @@ begin
   {$ENDIF}
 end;
 
-function PipeCreateListener(const AAddress: string;
-  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal;
-  const ATlsOptions: TPipeTlsOptions): TPipeListener;
+function NewLocalEndpoint(const AAddress: string;
+  ATimeoutMs: Cardinal): TPcEndpoint;
 begin
-  if ATransport <> ptTls then
-    Exit(PipeCreateListener(AAddress, ATransport, AKeepAliveSeconds));
-  PipeValidateAddress(AAddress, ATransport);
-  Result := TlsPipeCreateListener(AAddress, AKeepAliveSeconds, ATlsOptions);
-end;
-
-function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
-  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeEndpoint;
-begin
-  if ATransport = ptTls then
-    RaiseTlsNeedsOptions;
-  PipeValidateAddress(AAddress, ATransport);
-  if ATransport = ptTcp then
-    Exit(TcpPipeConnect(AAddress, ATimeoutMs, AKeepAliveSeconds));
-  // Idem ao listener: inalcancavel no Android, mas precisa compilar.
   {$IFDEF PIPES_ANDROID}
   Result := nil;
   RaiseLocalUnsupported;
@@ -452,14 +470,81 @@ begin
   {$ENDIF}
 end;
 
+function PipeCreateListener(const AAddress: string;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeListener;
+var
+  LInner: TPcListener;
+begin
+  if ATransport = ptTls then
+    RaiseTlsNeedsOptions;
+  PipeValidateAddress(AAddress, ATransport);
+  try
+    if ATransport = ptTcp then
+      LInner := PipeTcpListenRaw(AAddress, AKeepAliveSeconds)
+    else
+      LInner := NewLocalListener(AAddress);
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+  Result := TPipeListener.Create(LInner);
+end;
+
+function PipeCreateListener(const AAddress: string;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal;
+  const ATlsOptions: TPipeTlsOptions): TPipeListener;
+var
+  LInner: TPcListener;
+begin
+  if ATransport <> ptTls then
+    Exit(PipeCreateListener(AAddress, ATransport, AKeepAliveSeconds));
+  PipeValidateAddress(AAddress, ATransport);
+  try
+    LInner := PipeTlsListenRaw(AAddress, AKeepAliveSeconds, ATlsOptions);
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+  Result := TPipeListener.Create(LInner);
+end;
+
+function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
+  ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal): TPipeEndpoint;
+var
+  LInner: TPcEndpoint;
+begin
+  if ATransport = ptTls then
+    RaiseTlsNeedsOptions;
+  PipeValidateAddress(AAddress, ATransport);
+  try
+    if ATransport = ptTcp then
+      LInner := PipeTcpConnectRaw(AAddress, ATimeoutMs, AKeepAliveSeconds)
+    else
+      LInner := NewLocalEndpoint(AAddress, ATimeoutMs);
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+  Result := TPipeEndpoint.Create(LInner);
+end;
+
 function PipeConnect(const AAddress: string; ATimeoutMs: Cardinal;
   ATransport: TPipeTransport; AKeepAliveSeconds: Cardinal;
   const ATlsOptions: TPipeTlsOptions): TPipeEndpoint;
+var
+  LInner: TPcEndpoint;
 begin
   if ATransport <> ptTls then
     Exit(PipeConnect(AAddress, ATimeoutMs, ATransport, AKeepAliveSeconds));
   PipeValidateAddress(AAddress, ATransport);
-  Result := TlsPipeConnect(AAddress, ATimeoutMs, AKeepAliveSeconds, ATlsOptions);
+  try
+    LInner := PipeTlsConnectRaw(AAddress, ATimeoutMs, AKeepAliveSeconds,
+      ATlsOptions);
+  except
+    on E: EPcTransport do
+      raise PipeTransportError(E);
+  end;
+  Result := TPipeEndpoint.Create(LInner);
 end;
 
 end.

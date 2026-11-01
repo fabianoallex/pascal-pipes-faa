@@ -30,13 +30,25 @@ unit Pipes.Transport.Android;
   mesmo desbloqueio sem essa aposta, e de quebra deixa o backend Android com o
   MESMO desenho do Linux em vez de um terceiro modelo para manter.
 
-  Invariantes (alem do contrato de Pipes.Transport):
+  Desde a 0.4.0 as classes daqui descendem de TPcEndpoint/TPcListener da
+  pascal-common-faa (PascalCommon.Transport) e levantam EPcTransport*;
+  Pipes.Transport traduz para EPipe* na fronteira, e o TLS chega por cima via
+  PcTlsWrap/PcTlsListenOver. O backend continua no pipes porque a common nao
+  tem Android (docs/transport-design.md la, decisao T4).
+
+  recv/send levam MSG_DONTWAIT, como no backend POSIX da common (gotcha 15 de
+  la): sem ele um send grande, depois de o poll anunciar um pouco de espaco,
+  espera dentro do kernel ate mandar tudo e o prazo de SetIoDeadline nunca e'
+  olhado de novo. NAO verificado em aparelho (mesma semantica do Linux, de
+  quem o bionic herda os flags).
+
+  Invariantes (alem do contrato de PascalCommon.Transport):
   - FClosed atomico; o self-pipe nunca e' drenado apos o CloseAbort, entao
-    qualquer espera futura acorda na hora e levanta EPipeClosed.
+    qualquer espera futura acorda na hora e levanta EPcTransportClosed.
   - O fd so e' fechado no destructor (apos o join da reader/acceptor thread
     na camada de cima).
   - Escritas sempre com MSG_NOSIGNAL: par que morre gera EPIPE (tratado como
-    EPipeClosed), nunca SIGPIPE (que mataria o processo inteiro).
+    EPcTransportClosed), nunca SIGPIPE (que mataria o processo inteiro).
 
   Duas armadilhas de plataforma que custaram tempo e ficam registradas aqui:
 
@@ -64,19 +76,18 @@ interface
 
 uses
   SysUtils,
-  Pipes.Types,
   PascalCommon.Threading,
-  Pipes.Transport;
+  PascalCommon.Transport;
 
 type
-  TPipeAndroidEndpoint = class(TPipeEndpoint)
+  TPipeAndroidEndpoint = class(TPcEndpoint)
   private
     FFd: Integer;
     FStopR: Integer;  // self-pipe: lado de leitura (entra em todo poll)
     FStopW: Integer;  // self-pipe: lado de escrita (CloseAbort escreve 1 byte)
     FClosed: Integer; // atomico: 1 apos CloseAbort
     FIoTimeoutMs: Cardinal; // 0 = espera sem prazo (ver SetIoDeadline)
-    /// Espera o fd ficar pronto (AEvents) ou o stop sinalizar (EPipeClosed).
+    /// Espera o fd ficar pronto (AEvents) ou o stop sinalizar (EPcTransportClosed).
     procedure WaitReadyOrStop(AEvents: SmallInt; const AOp: string);
   public
     /// Assume a posse de AFd (socket conectado).
@@ -88,7 +99,7 @@ type
     procedure SetIoDeadline(ATimeoutMs: Cardinal); override;
   end;
 
-  TPipeAndroidListener = class(TPipeListener)
+  TPipeAndroidListener = class(TPcListener)
   private
     FFd: Integer;     // socket de escuta
     FStopR: Integer;  // self-pipe: lado de leitura
@@ -98,8 +109,10 @@ type
     /// Assume a posse de um socket JA em listen.
     constructor CreateFromFd(AFd: Integer);
     destructor Destroy; override;
-    function Accept: TPipeEndpoint; override;
+    function Accept: TPcEndpoint; override;
     procedure Close; override;
+    /// A porta de fato (getsockname): a que o SO escolheu se pedida a 0.
+    function Port: Word; override;
   end;
 
 /// Fabricas de ptTcp no Android. Mesma assinatura e semantica das de
@@ -111,9 +124,9 @@ type
 /// unica forma pratica de verificar este backend — nao ha par dual-compiler
 /// aqui, o FPC nao compila para Android neste projeto.
 function AndroidTcpCreateListener(const AAddress: string;
-  AKeepAliveSeconds: Cardinal): TPipeListener;
+  AKeepAliveSeconds: Cardinal): TPcListener;
 function AndroidTcpConnect(const AAddress: string; ATimeoutMs: Cardinal;
-  AKeepAliveSeconds: Cardinal): TPipeEndpoint;
+  AKeepAliveSeconds: Cardinal): TPcEndpoint;
 
 {$ENDIF}
 
@@ -130,7 +143,9 @@ uses
   Posix.NetinetTCP,
   Posix.Unistd,
   Posix.Fcntl,
-  Posix.Errno;
+  Posix.Errno,
+  Pipes.Types,      // PIPES_KEEPALIVE_*
+  Pipes.Transport;  // PipeParseHostPort
 
 { --- poll() e as chamadas de endereco -----------------------------------------
 
@@ -156,6 +171,7 @@ const
   ANDROID_POLLIN  = $0001;
   ANDROID_POLLOUT = $0004;
   ANDROID_LISTEN_BACKLOG = 128;
+  ANDROID_MSG_DONTWAIT = $40; // valor do Linux, herdado pelo bionic
 
 // ANfds e' nfds_t, que no bionic e' 'unsigned long' — 64 bits no Android64 e 32
 // no Android32. Tem que ser NativeUInt, nao LongWord: com LongWord o registro
@@ -168,10 +184,12 @@ function android_bind(ASocket: Integer; AAddr: Pointer;
   ALen: socklen_t): Integer; cdecl; external libc name _PU + 'bind';
 function android_connect(ASocket: Integer; AAddr: Pointer;
   ALen: socklen_t): Integer; cdecl; external libc name _PU + 'connect';
+function android_getsockname(ASocket: Integer; AAddr: Pointer;
+  AAddrLen: Pointer): Integer; cdecl; external libc name _PU + 'getsockname';
 
 procedure RaiseIoError(const AOp: string; AErr: Integer);
 begin
-  raise EPipeError.CreateFmt('%s failed (error %d: %s)',
+  raise EPcTransport.CreateFmt('%s failed (error %d: %s)',
     [AOp, AErr, SysErrorMessage(AErr)]);
 end;
 
@@ -214,7 +232,7 @@ begin
   LRc := getaddrinfo(MarshaledAString(PAnsiChar(LHostA)),
     MarshaledAString(PAnsiChar(LPortA)), LHints, Result);
   if (LRc <> 0) or (Result = nil) then
-    raise EPipeError.CreateFmt('could not resolve "%s" (getaddrinfo=%d)',
+    raise EPcTransport.CreateFmt('could not resolve "%s" (getaddrinfo=%d)',
       [AAddress, LRc]);
 end;
 
@@ -294,7 +312,7 @@ var
   LWait: Int64;
 begin
   if PcAtomicGet(FClosed) <> 0 then
-    raise EPipeClosed.Create(AOp + ' on a closed endpoint');
+    raise EPcTransportClosed.Create(AOp + ' on a closed endpoint');
   LDeadline := 0;
   if FIoTimeoutMs <> 0 then
     LDeadline := PcTickMs + FIoTimeoutMs;
@@ -320,11 +338,11 @@ begin
   if LRc < 0 then
     RaiseIoError(AOp + ' (poll)', errno);
   if (LRc = 0) and (FIoTimeoutMs <> 0) then
-    raise EPipeTimeout.CreateFmt('%s: the peer did not respond within %u ms',
+    raise EPcTransportTimeout.CreateFmt('%s: the peer did not respond within %u ms',
       [AOp, FIoTimeoutMs]);
   if ((LFds[1].revents and ANDROID_POLLIN) <> 0)
     or (PcAtomicGet(FClosed) <> 0) then
-    raise EPipeClosed.Create(AOp + ' aborted (CloseAbort)');
+    raise EPcTransportClosed.Create(AOp + ' aborted (CloseAbort)');
   // POLLERR/POLLHUP no fd da operacao: deixa o recv/send reportar — ainda
   // pode haver dados enfileirados para ler apos o HUP.
 end;
@@ -337,17 +355,17 @@ begin
   while True do
   begin
     WaitReadyOrStop(ANDROID_POLLIN, 'read');
-    LGot := recv(FFd, ABuffer, size_t(ACount), 0);
+    LGot := recv(FFd, ABuffer, size_t(ACount), ANDROID_MSG_DONTWAIT);
     if LGot > 0 then
       Exit(Integer(LGot));
     if LGot = 0 then
-      raise EPipeClosed.Create('connection closed by the peer');
+      raise EPcTransportClosed.Create('connection closed by the peer');
     LErr := errno;
     case LErr of
       EINTR, EAGAIN:
         ; // re-tenta (volta ao poll)
       ECONNRESET, EPIPE:
-        raise EPipeClosed.CreateFmt('read: connection closed (error %d)', [LErr]);
+        raise EPcTransportClosed.CreateFmt('read: connection closed (error %d)', [LErr]);
     else
       RaiseIoError('read', LErr);
     end;
@@ -364,7 +382,7 @@ begin
   while ACount > 0 do
   begin
     WaitReadyOrStop(ANDROID_POLLOUT, 'write');
-    LWrote := send(FFd, P^, size_t(ACount), MSG_NOSIGNAL);
+    LWrote := send(FFd, P^, size_t(ACount), MSG_NOSIGNAL or ANDROID_MSG_DONTWAIT);
     if LWrote > 0 then
     begin
       Inc(P, LWrote);
@@ -376,7 +394,7 @@ begin
       EINTR, EAGAIN:
         ; // re-tenta (volta ao poll)
       EPIPE, ECONNRESET:
-        raise EPipeClosed.CreateFmt('write: connection closed (error %d)', [LErr]);
+        raise EPcTransportClosed.CreateFmt('write: connection closed (error %d)', [LErr]);
     else
       RaiseIoError('write', LErr);
     end;
@@ -407,6 +425,19 @@ begin
   inherited;
 end;
 
+function TPipeAndroidListener.Port: Word;
+var
+  LStorage: TPcRawSockAddrStorage;
+  LLen: socklen_t;
+begin
+  FillChar(LStorage, SizeOf(LStorage), 0);
+  LLen := SizeOf(LStorage);
+  if android_getsockname(FFd, @LStorage, @LLen) <> 0 then
+    RaiseIoError('getsockname', errno);
+  // A porta fica no mesmo deslocamento em sockaddr_in e sockaddr_in6.
+  Result := Swap(LStorage.V4.sin_port);
+end;
+
 procedure TPipeAndroidListener.Close;
 var
   LByte: Byte;
@@ -418,7 +449,7 @@ begin
     __write(FStopW, @LByte, 1); // desbloqueia o Accept pendente (devolve nil)
 end;
 
-function TPipeAndroidListener.Accept: TPipeEndpoint;
+function TPipeAndroidListener.Accept: TPcEndpoint;
 var
   LFds: array[0..1] of TAndroidPollFd;
   LRc, LConn, LErr: Integer;
@@ -459,7 +490,7 @@ end;
 { --- fabricas --- }
 
 function AndroidTcpCreateListener(const AAddress: string;
-  AKeepAliveSeconds: Cardinal): TPipeListener;
+  AKeepAliveSeconds: Cardinal): TPcListener;
 var
   LInfo, LCur: Paddrinfo;
   LFd, LErr, LOn: Integer;
@@ -571,7 +602,7 @@ begin
 end;
 
 function AndroidTcpConnect(const AAddress: string; ATimeoutMs: Cardinal;
-  AKeepAliveSeconds: Cardinal): TPipeEndpoint;
+  AKeepAliveSeconds: Cardinal): TPcEndpoint;
 var
   LInfo, LCur: Paddrinfo;
   LFd, LErr: Integer;
@@ -600,7 +631,7 @@ begin
       if (LErr <> ECONNREFUSED) and (LErr <> ETIMEDOUT) then
         RaiseIoError(Format('connect to %s', [AAddress]), LErr);
       if Int64(LDeadline) - Int64(PcTickMs) <= 0 then
-        raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to %s',
+        raise EPcTransportTimeout.CreateFmt('timeout (%u ms) connecting to %s',
           [ATimeoutMs, AAddress]);
       Sleep(25);
     end;

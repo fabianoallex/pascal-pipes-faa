@@ -12,8 +12,12 @@
   cliente com certificado de outra CA e' o guarda dessa regressao.
 
   As credenciais vem de tests/pki, versionada de proposito (ver o LEIA-ME de
-  la'). Sem backend TLS no build, o fixture inteiro some — daí o include de
-  pipes.inc no topo, para enxergar PIPES_TLS.
+  la'). Desde a 0.4.0 todo build tem TLS (PIPES_TLS sempre definido) e o
+  backend e' escolhido em runtime: TPipeTlsTests roda com o backend PADRAO do
+  build (TlsOptions.Backend = tbDefault), e no Windows com SChannel padrao
+  TPipeTlsOpenSslTests repete tudo com tbOpenSsl na mesma rodada — registrado
+  so' se a libssl carregar (sem ela, um aviso no console). O include de
+  pipes.inc no topo continua para enxergar PIPES_SCHANNEL/PIPES_OPENSSL.
 
   Mestre DUnitX; o espelho FPCUnit em tests/Integration/fpc e' gerado por
   tools/gen_fpc_mirror.py. }
@@ -57,6 +61,13 @@ type
     FErroServidor: string;
     FCliConnCount: Integer; // atomico: quantas vezes o CLIENTE conectou
     FCliDiscCount: Integer; // atomico: quantas vezes o CLIENTE desconectou
+    // Linha do tempo dos eventos do CLIENTE ('c+ms' conectou, 'd+ms' caiu,
+    // relativos ao primeiro), para a mensagem de falha dos testes de
+    // reconexao: diz quanto durou cada sessao que o servidor derrubou.
+    FTimelineLock: TCriticalSection;
+    FTimeline: string;
+    FTimeline0: UInt64;
+    procedure Marca(const AEvento: string);
     procedure OnServerMsg(Sender: TObject; AConnId: TPipeConnectionId;
       const AData: TBytes);
     procedure OnClientMsg(Sender: TObject; AConnId: TPipeConnectionId;
@@ -80,6 +91,7 @@ type
       read FDesligarReconexaoAoCair write FDesligarReconexaoAoCair;
     function CliConnCount: Integer;
     function CliDiscCount: Integer;
+    function Timeline: string;
     property IdentityFromHandler: TPipePeerIdentity read FIdentityFromHandler;
     property IdentityNaSaida: TPipePeerIdentity read FIdentityNaSaida;
     property TinhaIdentidadeNaSaida: Boolean read FTinhaIdentidadeNaSaida;
@@ -125,6 +137,9 @@ type
     procedure DoListenSemCredenciais;
     procedure DoTrocaCertComServidorAtivo;
     procedure DoSendParaConexaoEmHandshake;
+  protected
+    /// O backend dos dois lados; a subclasse troca.
+    function Backend: TPipeTlsBackend; virtual;
   public
     [Setup] procedure SetUp;
     [TearDown] procedure TearDown;
@@ -162,6 +177,15 @@ type
     [Test] procedure Tls_TrocaCertComServidorAtivo_Levanta;
   end;
 
+  {$IFDEF PIPES_SCHANNEL}
+  // Sem [TestFixture]: herda os testes, e o registro explicito abaixo basta ao
+  // DUnitX (o gerador do espelho so' converte fixture sem pai).
+  TPipeTlsOpenSslTests = class(TPipeTlsTests)
+  protected
+    function Backend: TPipeTlsBackend; override;
+  end;
+  {$ENDIF}
+
 /// Caminho de tests/pki (procurado a partir do executavel). '' se nao achou.
 function PkiDir: string;
 {$ENDIF PIPES_TLS}
@@ -171,7 +195,10 @@ implementation
 {$IFDEF PIPES_TLS}
 
 uses
-  PascalCommon.Threading;
+  PascalCommon.Threading
+  {$IFDEF PIPES_SCHANNEL}
+  , PascalCommon.Transport.OpenSSL // PcOpenSslAvailable
+  {$ENDIF};
 
 var
   GPkiDir: string;
@@ -234,6 +261,7 @@ begin
   FConnected := TEvent.Create(nil, True, False, '');
   FSaiuEvt := TEvent.Create(nil, True, False, '');
   FErroEvt := TEvent.Create(nil, True, False, '');
+  FTimelineLock := TCriticalSection.Create;
   FServer := TPipeServer.Create(AAddress, ptTls);
   FClient := TPipeClient.Create(AAddress, ptTls);
   FServer.OnMessage := OnServerMsg;
@@ -255,7 +283,30 @@ begin
   FConnected.Free;
   FSaiuEvt.Free;
   FErroEvt.Free;
+  FTimelineLock.Free;
   inherited;
+end;
+
+procedure TTlsHarness.Marca(const AEvento: string);
+begin
+  FTimelineLock.Enter;
+  try
+    if FTimeline0 = 0 then
+      FTimeline0 := PcTickMs;
+    FTimeline := FTimeline + Format(' %s+%d', [AEvento, PcTickMs - FTimeline0]);
+  finally
+    FTimelineLock.Leave;
+  end;
+end;
+
+function TTlsHarness.Timeline: string;
+begin
+  FTimelineLock.Enter;
+  try
+    Result := FTimeline;
+  finally
+    FTimelineLock.Leave;
+  end;
 end;
 
 procedure TTlsHarness.OnServerMsg(Sender: TObject;
@@ -312,12 +363,14 @@ procedure TTlsHarness.OnClienteConectou(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
   PcAtomicInc(FCliConnCount);
+  Marca('c');
 end;
 
 procedure TTlsHarness.OnClienteDesconectou(Sender: TObject;
   AConnId: TPipeConnectionId);
 begin
   PcAtomicInc(FCliDiscCount);
+  Marca('d');
   if FDesligarReconexaoAoCair then
     FClient.AutoReconnect := False; // decisao tomada DE DENTRO do callback
 end;
@@ -334,15 +387,35 @@ end;
 // o certificado simplesmente nao carrega — e num teste NEGATIVO isso passaria
 // por sucesso, porque o cliente seria recusado de qualquer jeito, pelo motivo
 // errado. Daí a selecao ser explicita aqui.
+//
+// O formato segue o backend que ACfg vai usar (ACfg.Backend, ou o padrao do
+// build para tbDefault): por isso Backend tem de ser atribuido ANTES.
+function UsaPfx(ACfg: TPipeTlsConfig): Boolean;
+begin
+  case ACfg.Backend of
+    tbSChannel: Result := True;
+    tbOpenSsl: Result := False;
+  else
+    {$IFDEF PIPES_SCHANNEL}
+    Result := True;
+    {$ELSE}
+    Result := False;
+    {$ENDIF}
+  end;
+end;
+
 procedure AplicaCredencial(ACfg: TPipeTlsConfig; const ABase: string);
 begin
-  {$IFDEF PIPES_SCHANNEL}
-  ACfg.CertFile := Pki(ABase + '.pfx');
-  ACfg.CertPassword := 'pipestest';
-  {$ELSE}
-  ACfg.CertFile := Pki(ABase + '_cert.pem');
-  ACfg.KeyFile := Pki(ABase + '_key.pem');
-  {$ENDIF}
+  if UsaPfx(ACfg) then
+  begin
+    ACfg.CertFile := Pki(ABase + '.pfx');
+    ACfg.CertPassword := 'pipestest';
+  end
+  else
+  begin
+    ACfg.CertFile := Pki(ABase + '_cert.pem');
+    ACfg.KeyFile := Pki(ABase + '_key.pem');
+  end;
 end;
 
 procedure TTlsHarness.Listen(const ACaFile: string);
@@ -456,6 +529,13 @@ begin
       ' — sem ela os testes de TLS nao tem credenciais');
   FAddr := UniqueAddr;
   FHarness := TTlsHarness.Create(FAddr);
+  FHarness.Server.TlsOptions.Backend := Backend;
+  FHarness.Client.TlsOptions.Backend := Backend;
+end;
+
+function TPipeTlsTests.Backend: TPipeTlsBackend;
+begin
+  Result := tbDefault;
 end;
 
 procedure TPipeTlsTests.TearDown;
@@ -565,17 +645,15 @@ end;
   foi exatamente assim que o bug de IP-SAN atravessou a suite inteira e so'
   apareceu na primeira rodada de ptTls em Android (docs/ARQUITETURA.md 13.9).
 
-  So' rodam sob PIPES_OPENSSL: no Schannel o CaFile do CLIENTE e' ignorado (o
-  Windows valida contra o trust store do SO), e a CA de teste nao esta la. }
+  Rodam nos dois backends desde a 0.4.0: ate ali o cliente SChannel ignorava
+  CaFile (validava so' contra o trust store do SO, onde a CA de teste nao
+  esta), e estes dois casos ficavam restritos a PIPES_OPENSSL. }
 
 procedure TPipeTlsTests.Tls_ValidaServidorPorIp_Aceita;
-{$IFDEF PIPES_OPENSSL}
 var
   LErro: string;
   LOk: Boolean;
-{$ENDIF}
 begin
-{$IFDEF PIPES_OPENSSL}
   // O harness sempre disca 127.0.0.1 — um LITERAL DE IP. O certificado de teste
   // traz IP:127.0.0.1 no SAN, e casar isso exige X509_VERIFY_PARAM_set1_ip_asc:
   // SSL_set1_host olha os SANs de DNS. Na 3.x o set1_host aceita um literal de
@@ -587,17 +665,13 @@ begin
   LOk := FHarness.TryConnectValidandoServidor(LErro);
   TAssert.AssertTrue('cliente RECUSOU um servidor legitimo ao validar por IP: ' + LErro, LOk);
   TAssert.AssertTrue('eco nao voltou apos validacao por IP', FHarness.Eco('ip', 5000));
-{$ENDIF}
 end;
 
 procedure TPipeTlsTests.Tls_ValidaServidorPorNome_Aceita;
-{$IFDEF PIPES_OPENSSL}
 var
   LErro, LPorta: string;
   LOk: Boolean;
-{$ENDIF}
 begin
-{$IFDEF PIPES_OPENSSL}
   // O ramo de HOSTNAME (SSL_set1_host), que o caso por IP nao exercita. O cert
   // de teste traz DNS:localhost no SAN. Guarda contra o oposto do bug de
   // 13.9: alguem "simplificar" o codigo para so' consultar SAN de IP.
@@ -611,7 +685,6 @@ begin
     LErro,
     LOk);
   TAssert.AssertTrue('eco nao voltou apos validacao por nome', FHarness.Eco('nome', 5000));
-{$ENDIF}
 end;
 
 procedure TPipeTlsTests.Mtls_ClienteSemCert_Recusado;
@@ -729,6 +802,7 @@ var
 begin
   LSrv := TPipeServer.Create(UniqueAddr, ptTls);
   try
+    LSrv.TlsOptions.Backend := Backend;
     LSrv.Listen; // sem CertFile: nao ha servidor TLS possivel
   finally
     LSrv.Free;
@@ -899,12 +973,12 @@ begin
   LConns := FHarness.CliConnCount;
   Sleep(1500); // se ainda tentasse, apareceria aqui
   TAssert.AssertEquals('depois de esgotar MaxReconnectAttempts nao deveria haver ' +
-    'novas conexoes',
+    'novas conexoes;' + FHarness.Timeline,
     LConns, FHarness.CliConnCount);
   // Teto de 3: a conexao inicial mais as tentativas. Um teto que nunca dispara
   // produziria dezenas.
   TAssert.AssertTrue('esperava poucas conexoes ate desistir, houve ' +
-    IntToStr(LConns),
+    IntToStr(LConns) + ';' + FHarness.Timeline,
     LConns <= 6);
 end;
 
@@ -1025,6 +1099,7 @@ begin
     LCli := TPipeClient.Create(FAddr, ptTls);
     try
       LCli.TlsOptions.SkipServerVerification := True;
+      LCli.TlsOptions.Backend := Backend;
       AplicaCredencial(LCli.TlsOptions, 'cli');
       LCli.Connect(5000);
       // O Connect volta quando o CLIENTE termina o handshake; o servidor so'
@@ -1072,8 +1147,31 @@ begin
     DoTrocaCertComServidorAtivo);
 end;
 
+{$IFDEF PIPES_SCHANNEL}
+{ TPipeTlsOpenSslTests }
+
+function TPipeTlsOpenSslTests.Backend: TPipeTlsBackend;
+begin
+  Result := tbOpenSsl;
+end;
+
+var
+  GOpenSslErro: string;
+{$ENDIF}
+
 initialization
   TDUnitX.RegisterTestFixture(TPipeTlsTests);
+  {$IFDEF PIPES_SCHANNEL}
+  // begin/end para o registro terminar em ';' (o gerador do espelho so'
+  // reconhece a chamada assim).
+  if PcOpenSslAvailable(GOpenSslErro) then
+  begin
+    TDUnitX.RegisterTestFixture(TPipeTlsOpenSslTests);
+  end
+  else
+    WriteLn('AVISO: TPipeTlsOpenSslTests nao registrado (OpenSSL nao ' +
+      'carregou: ' + GOpenSslErro + ')');
+  {$ENDIF}
 
 {$ENDIF PIPES_TLS}
 

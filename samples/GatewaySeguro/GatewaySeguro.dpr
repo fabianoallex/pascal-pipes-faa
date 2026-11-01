@@ -26,10 +26,10 @@ program GatewaySeguro;
 
   Compila nos dois mundos a partir do MESMO fonte:
     FPC (Windows): lazbuild GatewaySeguro.lpi
-    FPC (Linux):   fpc -MDelphi -Sh -Fu../../src -Fi../../src -dPIPES_OPENSSL \
+    FPC (Linux):   fpc -MDelphi -Sh -Fu../../src -Fi../../src \
                      GatewaySeguro.dpr
-                   (SChannel nao existe fora do Windows; -dPIPES_OPENSSL e'
-                   obrigatorio para ligar o backend TLS no Linux)
+                   (o TLS e' OpenSSL fora do Windows; desde a 0.4.0 nao
+                   precisa mais de -dPIPES_OPENSSL)
     Delphi:        abrir GatewaySeguro.dproj no IDE }
 
 {$I pipes.inc}

@@ -10,11 +10,16 @@ unit Pipes.Transport.Windows;
   e cancelam o IO pendente (CancelIoEx), desbloqueando a thread presa em
   Read/WriteExactly/Accept sem TerminateThread.
 
-  Invariantes (alem do contrato de Pipes.Transport):
+  Desde a 0.4.0 as classes daqui descendem de TPcEndpoint/TPcListener da
+  pascal-common-faa (PascalCommon.Transport) e levantam EPcTransport*, como o
+  contrato de la pede; Pipes.Transport traduz para EPipe* na fronteira. O
+  Named Pipe continua sendo do pipes (docs/transport-design.md da common, T4).
+
+  Invariantes (alem do contrato de PascalCommon.Transport):
   - Os eventos de overlapped (FReadEvent/FWriteEvent) sao reutilizados por
     operacao; isso ASSUME 1 thread lendo e escritas serializadas.
   - FStopEvent e' manual-reset e nunca e' resetado: uma vez abortado, qualquer
-    IO futuro no endpoint acorda na hora e levanta EPipeClosed.
+    IO futuro no endpoint acorda na hora e levanta EPcTransportClosed.
   - O handle so e' fechado no destructor (apos o join da reader thread na
     camada de cima) — fechar um handle com a outra thread ainda dentro de um
     ReadFile arriscaria IO num handle reciclado pelo SO.
@@ -32,12 +37,11 @@ interface
 uses
   Windows,
   SysUtils,
-  Pipes.Types,
   PascalCommon.Threading,
-  Pipes.Transport;
+  PascalCommon.Transport;
 
 type
-  TPipeWinEndpoint = class(TPipeEndpoint)
+  TPipeWinEndpoint = class(TPcEndpoint)
   private
     FHandle: THandle;
     FReadEvent: THandle;   // manual-reset: OVERLAPPED de leitura
@@ -55,7 +59,7 @@ type
     procedure CloseAbort; override;
   end;
 
-  TPipeWinListener = class(TPipeListener)
+  TPipeWinListener = class(TPcListener)
   private
     FNativeName: string;
     FPending: THandle;      // instancia aguardando ConnectNamedPipe (0 = nenhuma)
@@ -66,18 +70,23 @@ type
   public
     constructor Create(const AAddress: string);
     destructor Destroy; override;
-    function Accept: TPipeEndpoint; override;
+    function Accept: TPcEndpoint; override;
     procedure Close; override;
+    /// Named Pipe nao tem porta: sempre 0.
+    function Port: Word; override;
   end;
 
-function WinPipeCreateListener(const AAddress: string): TPipeListener;
-function WinPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function WinPipeCreateListener(const AAddress: string): TPcListener;
+function WinPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPcEndpoint;
 
 {$ENDIF}
 
 implementation
 
 {$IFDEF PIPES_WINDOWS}
+
+uses
+  Pipes.Transport; // PipeNativeName
 
 // Declarado localmente: presente no kernel32 desde o Vista, mas nem toda
 // versao das units Windows (Delphi/FPC) o expoe.
@@ -90,15 +99,16 @@ const
   PIPE_UNLIMITED_INSTANCES = 255;
 
 // GetLastError -> excecao da lib. Codigos de "par sumiu/IO abortado" viram
-// EPipeClosed (a reader thread trata como fim de conexao); o resto, EPipeError.
+// EPcTransportClosed (a reader thread trata como fim de conexao); o resto,
+// EPcTransport.
 procedure RaiseIoErrorCode(const AOp: string; AErr: DWORD);
 begin
   case AErr of
     ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED,
     ERROR_OPERATION_ABORTED, ERROR_HANDLE_EOF:
-      raise EPipeClosed.CreateFmt('%s: connection closed (error %d)', [AOp, AErr]);
+      raise EPcTransportClosed.CreateFmt('%s: connection closed (error %d)', [AOp, AErr]);
   else
-    raise EPipeError.CreateFmt('%s failed (error %d: %s)',
+    raise EPcTransport.CreateFmt('%s failed (error %d: %s)',
       [AOp, AErr, SysErrorMessage(AErr)]);
   end;
 end;
@@ -107,7 +117,7 @@ function NewManualResetEvent: THandle;
 begin
   Result := CreateEvent(nil, True, False, nil);
   if Result = 0 then
-    raise EPipeError.CreateFmt('CreateEvent failed (error %d)', [GetLastError]);
+    raise EPcTransport.CreateFmt('CreateEvent failed (error %d)', [GetLastError]);
 end;
 
 { TPipeWinEndpoint }
@@ -159,7 +169,7 @@ begin
     CancelIoEx(FHandle, @AOv);
     LGot := 0;
     GetOverlappedResult(FHandle, AOv, LGot, True);
-    raise EPipeClosed.Create(AOp + ' aborted (CloseAbort)');
+    raise EPcTransportClosed.Create(AOp + ' aborted (CloseAbort)');
   end;
   LGot := 0;
   if not GetOverlappedResult(FHandle, AOv, LGot, True) then
@@ -173,7 +183,7 @@ var
   LDummy, LGot, LErr: DWORD;
 begin
   if PcAtomicGet(FClosed) <> 0 then
-    raise EPipeClosed.Create('read on a closed endpoint');
+    raise EPcTransportClosed.Create('read on a closed endpoint');
   FillChar(LOv, SizeOf(LOv), 0);
   ResetEvent(FReadEvent);
   LOv.hEvent := FReadEvent;
@@ -186,7 +196,7 @@ begin
   end;
   LGot := WaitIo(LOv, 'read');
   if LGot = 0 then
-    raise EPipeClosed.Create('connection closed by the peer');
+    raise EPcTransportClosed.Create('connection closed by the peer');
   Result := Integer(LGot);
 end;
 
@@ -200,7 +210,7 @@ begin
   while ACount > 0 do
   begin
     if PcAtomicGet(FClosed) <> 0 then
-      raise EPipeClosed.Create('write on a closed endpoint');
+      raise EPcTransportClosed.Create('write on a closed endpoint');
     FillChar(LOv, SizeOf(LOv), 0);
     ResetEvent(FWriteEvent);
     LOv.hEvent := FWriteEvent;
@@ -213,7 +223,7 @@ begin
     end;
     LWrote := WaitIo(LOv, 'write');
     if LWrote = 0 then
-      raise EPipeClosed.Create('connection closed by the peer during a write');
+      raise EPcTransportClosed.Create('connection closed by the peer during a write');
     Inc(P, LWrote);
     Dec(ACount, Integer(LWrote));
   end;
@@ -252,8 +262,13 @@ begin
     PIPE_TYPE_BYTE or PIPE_READMODE_BYTE or PIPE_WAIT,
     PIPE_UNLIMITED_INSTANCES, PIPE_BUFFER_SIZE, PIPE_BUFFER_SIZE, 0, nil);
   if Result = INVALID_HANDLE_VALUE then
-    raise EPipeError.CreateFmt('CreateNamedPipe(%s) failed (error %d: %s)',
+    raise EPcTransport.CreateFmt('CreateNamedPipe(%s) failed (error %d: %s)',
       [FNativeName, GetLastError, SysErrorMessage(GetLastError)]);
+end;
+
+function TPipeWinListener.Port: Word;
+begin
+  Result := 0;
 end;
 
 procedure TPipeWinListener.Close;
@@ -263,7 +278,7 @@ begin
   SetEvent(FStopEvent); // desbloqueia o Accept pendente (que devolve nil)
 end;
 
-function TPipeWinListener.Accept: TPipeEndpoint;
+function TPipeWinListener.Accept: TPcEndpoint;
 var
   LOv: TOverlapped;
   LHandles: array[0..1] of THandle;
@@ -327,12 +342,12 @@ end;
 
 { --- fabricas --- }
 
-function WinPipeCreateListener(const AAddress: string): TPipeListener;
+function WinPipeCreateListener(const AAddress: string): TPcListener;
 begin
   Result := TPipeWinListener.Create(AAddress);
 end;
 
-function WinPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPipeEndpoint;
+function WinPipeConnect(const AAddress: string; ATimeoutMs: Cardinal): TPcEndpoint;
 var
   LNative: string;
   LDeadline: UInt64;
@@ -355,11 +370,11 @@ begin
     // ate o prazo — e' o que da semantica uniforme de Connect(timeout) nas
     // duas plataformas.
     if (LErr <> ERROR_PIPE_BUSY) and (LErr <> ERROR_FILE_NOT_FOUND) then
-      raise EPipeError.CreateFmt('connecting to pipe %s failed (error %d: %s)',
+      raise EPcTransport.CreateFmt('connecting to pipe %s failed (error %d: %s)',
         [LNative, LErr, SysErrorMessage(LErr)]);
     LRemaining := Int64(LDeadline) - Int64(PcTickMs);
     if LRemaining <= 0 then
-      raise EPipeTimeout.CreateFmt('timeout (%u ms) connecting to pipe %s',
+      raise EPcTransportTimeout.CreateFmt('timeout (%u ms) connecting to pipe %s',
         [ATimeoutMs, LNative]);
     if LRemaining > 100 then
       LWaitMs := 100

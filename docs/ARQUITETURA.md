@@ -2407,3 +2407,147 @@ ASCII.
 | FPC 3.2.2 Linux x86_64 (`tools/test_fpc_docker.sh`, `-dPIPES_OPENSSL`) | unitária 137/137, integração 146/146, 0 vazamentos |
 | Delphi 12 Win32 e Win64 (build no IDE, exes por linha de comando) | unitária 137/137, integração 146/146, 0 leak/falha/erro |
 | `tests/Android` em aparelho | **pendente** — não executado nesta rodada; os três casos com texto (guarda do OpenSSL, `ptLocal` recusado, teste negativo do mTLS) foram atualizados mas não rodaram |
+
+## 26. Transporte sobre a `pascal-common-faa` (passo 2 do `transport-design.md` dela)
+
+O TCP, o TLS (SChannel e OpenSSL) e o socket POSIX que nasceram aqui (§7, §13, §19) foram
+extraídos para a pascal-common-faa (`PascalCommon.Transport`, `.Tcp`, `.Posix`, `.Tls`,
+`.SChannel`, `.OpenSSL`), porque amqp, redis e kafka precisam da mesma camada. O racional e
+as decisões T1-T8 estão em `docs/transport-design.md` de lá; esta seção registra o lado do
+pipes (o "passo 2" daquele documento). A common ainda não foi lançada com essas units (T8:
+só depois que pipes e redis passarem as suítes inteiras sobre elas), então o submódulo
+aponta para a branch `transport`, e a versão segue 1.26.0 — `PASCALCOMMON_VERSION` não tem
+como exigir as units novas.
+
+### 26.1 O que ficou no pipes
+
+- O contrato da camada de cima: `TPipeEndpoint`/`TPipeListener`, `PipeConnect`/
+  `PipeCreateListener` e a escolha `ptLocal`/`ptTcp`/`ptTls`.
+- O Named Pipe (`Pipes.Transport.Windows`) e o Android (`Pipes.Transport.Android`), como
+  subclasses de `TPcEndpoint`/`TPcListener` que levantam `EPcTransport*` (T4).
+- O UDS (`Pipes.Transport.Posix`) só MONTA o socket (caminho, unlink, bind/listen, connect
+  com re-tentativa em `ENOENT`/`ECONNREFUSED`) e entrega o fd a `TPcPosixSocketEndpoint`/
+  `TPcPosixSocketListener`, as mesmas classes que servem o TCP na common. A cópia que havia
+  aqui sumiu.
+- O laço de re-tentativa do connect TCP (T5), em `Pipes.Transport.Tcp`: `PcTcpConnect` tenta
+  cada endereço do nome UMA vez; o pipes insiste até `ATimeoutMs` enquanto a falha for
+  `EPcTransportRefused` (servidor ainda subindo), com 25 ms entre tentativas. Nome que não
+  resolve e qualquer outro erro sobem na hora, como antes. Cada volta passa à common o que
+  sobrou do prazo, nunca 0 (que lá significa "o padrão de 10 s").
+- `PipeParseHostPort`, com o comportamento antigo para IPv6 sem colchetes (26.4).
+
+### 26.2 A fronteira de exceções (T6)
+
+A aplicação continua vendo `EPipeClosed`/`EPipeTimeout`/`EPipeTls`/`EPipeError`. A tradução
+de `EPcTransport*` acontece num lugar só: `TPipeEndpoint` e `TPipeListener` são FACHADAS que
+embrulham o `TPcEndpoint`/`TPcListener` de baixo (donas dele, expostos em `Inner`), com um
+`try/except on E: EPcTransport do raise PipeTransportError(E)` em `Read`/`WriteExactly`/
+`Handshake`/`Accept`; as fábricas fazem o mesmo em volta da criação. A mensagem é a da
+common, sem prefixo. `EPcTransportRefused` vira `EPipeError` (o pipes não tem classe para
+isso, e ela só existe para o laço do connect).
+
+Duas formas descartadas:
+
+- **`TPipeEndpoint = TPcEndpoint` (alias) e traduzir em `Pipes.Server`/`Client`.** Os testes
+  de transporte (e qualquer app que use `PipeConnect` direto) chamam `Read` no endpoint e
+  esperam `EPipeClosed` com classe EXATA; a tradução teria de se espalhar por toda chamada.
+- **Os backends locais levantando `EPipe*` direto.** Funcionaria (a fachada deixa `EPipe*`
+  passar), mas quebraria o contrato de `TPcEndpoint` para quem os usasse como tal.
+
+`TPipeListener` NÃO descende de `TPcListener`: um override de `Accept` teria de devolver
+`TPcEndpoint`, e `Ep := Listener.Accept` deixaria de compilar. `TPipeEndpoint` descende de
+`TPcEndpoint` (é o que deixa `TPipeEndpointStream = TPcEndpointStream` ser um alias). O TLS
+sempre envolve o endpoint CRU da common, nunca a fachada: os backends contam com
+`EPcTransport*` vindo de baixo para manter a classe de um prazo ou de um `CloseAbort`.
+
+O custo é um `try/except` por `Read`/`WriteExactly`: tabela de exceções no Win64/Linux, um
+registro de frame no Win32. Não medido; a mesma ordem de grandeza do que um frame NPF1 já
+paga em chamadas virtuais.
+
+### 26.3 TLS: backend em runtime (T3)
+
+`TPipeTlsOptions` é alias de `TPcTlsOptions` e ganhou `Backend` (também em `TlsOptions` como
+property, travada com o componente ativo como as outras). `tbDefault` é resolvido pelo pipes
+antes de chegar à common (`PipeTlsEffectiveOptions`): `tbOpenSsl` sob `PIPES_OPENSSL`, senão
+o padrão da common (SChannel no Windows). Os defines mudaram de sentido:
+
+- `PIPES_TLS`: sempre definido (todo build tem TLS); ficou para não quebrar quem testa por ele.
+- `PIPES_OPENSSL`: "o padrão é OpenSSL". Opt-in no Windows; automático fora dele (Linux e
+  Android — fora do Windows não há outra opção).
+- `PIPES_SCHANNEL`: "o padrão é SChannel" (Windows sem `PIPES_OPENSSL`). Testes e samples
+  continuam usando-o para escolher o formato da credencial (PFX ou par PEM) do backend
+  padrão.
+
+No Android o cliente é `PcTlsWrap` sobre o endpoint Android e o servidor é `PcTlsListenOver`
+sobre o listener Android — função que não existia na common e foi acrescentada lá por esta
+migração (26.5).
+
+`PipeTlsBackendInfo` continua sem parâmetro, "o backend da última sessão TLS": as fábricas
+TLS chamam `PipeSetTlsBackendDetail(PcTlsBackendInfo(...))` depois de conectar/escutar.
+
+### 26.4 IPv6 sem colchetes
+
+`PcParseHostPort` recusa `'::1:5000'` (ambíguo: também é um IPv6 válido sem porta).
+`PipeParseHostPort` mantém a leitura antiga (o último `:` separa a porta) nesta versão minor,
+porque o endereço do pipes costuma vir de configuração gravada em campo (PDV de loja) e uma
+recusa nova apareceria como falha de conexão depois de uma atualização. Obsoleto no
+CHANGELOG; sai junto com os nomes antigos de unit. `PcTcpConnect` aceita o host com ou sem
+colchetes, então o host `'::1'` que sai daqui funciona.
+
+### 26.5 O que a migração encontrou na API da common
+
+Corrigido lá, na branch `transport` (T8: ainda de graça), com teste, em `8ad22db` (docs em `3d950b2`):
+
+1. **`PcTcpConnect` não distinguia recusa de nome que não resolve** — as duas eram
+   `EPcTransport`. O laço T5 só poderia separá-las pelo texto da mensagem. Agora há
+   `EPcTransportRefused`.
+2. **Não havia TLS servidor sobre um listener qualquer.** `TPcTlsListener.Create` é público,
+   mas as credenciais de servidor só eram criáveis na implementation da unit; o listener
+   Android (que `PcTcpListen` não constrói) ficava sem TLS servidor. Agora há
+   `PcTlsListenOver(AInner, ATls)`, dono de `AInner` inclusive quando levanta.
+3. **`PascalCommon.Transport.Tls` não compilaria no Delphi/Android**: ela usa
+   `PascalCommon.Transport.Tcp`, cujo ramo não-Windows é FPC-only (`BaseUnix`). Agora o ramo
+   Delphi-fora-do-Windows compila com `PcTcpConnect`/`PcTcpListen` levantando
+   `EPcTransport`. Não compilado para Android nesta rodada (o Delphi CE não compila por
+   linha de comando).
+
+### 26.6 Mudanças de comportamento que vieram junto
+
+Registradas no CHANGELOG: mensagens de socket/TLS em inglês da common; cliente SChannel com
+`CaFile` passa a validar contra ela (antes ignorava — os samples seguros e os dois testes de
+validação positiva deixaram de ser só OpenSSL); `SEC_I_INCOMPLETE_CREDENTIALS` continua o
+handshake sem certificado; `MSG_DONTWAIT` em `recv`/`send` no POSIX (gotcha 15 da common:
+o prazo de escrita não disparava numa escrita grande) — aplicado também ao backend Android,
+sem verificação em aparelho; prazo de IO repassado através do TLS; classe da falha mantida
+através do TLS; `AUTHTYPE_CLIENT` no mTLS do SChannel; um evento de acordar por direção no
+socket Windows.
+
+### 26.6.1 O bug de reconexão que o transporte novo expôs
+
+A primeira rodada Delphi falhou em `Mtls_MaxReconnectAttempts_AlcancaParQueAceitaEDerruba`
+(9 e 14 conexões até desistir, com teto ≤ 6). Repetido isolado, falhava também no FPC (6, 7,
+16). A linha do tempo dos eventos do cliente (agora na mensagem de falha do teste) mostrou
+sessões que morriam no mesmo tick em que nasciam, então o contador não zerava por sessão
+longa. A causa estava em `TPipeClient.TryReopenSession`, anterior a esta migração: a
+"duração" da sessão era `agora − FSessionUpTick` medida DEPOIS de `WaitBetweenRetries`, que
+espera até completar `ReconnectDelayMs` desde o início da tentativa (`FLastAttemptTick`).
+Para uma sessão que morre na hora isso dá `ReconnectDelayMs − D`, D = connect + handshake; com
+D abaixo de um tick de `PcTickMs` (~15,6 ms no Windows) o resultado é `ReconnectDelayMs` e a
+sessão passa por durável. O handshake mais rápido do transporte novo (o mesmo nos dois
+compiladores) tornou D < 1 tick comum em loopback. Correção: o fim da sessão
+(`LFimSessao`) é medido na entrada de `TryReopenSession`, logo depois do join do reader.
+Depois dela: 4 conexões (a inicial + 3 tentativas) em 8 de 8 rodadas.
+
+### 26.7 Verificação
+
+| Onde | Resultado |
+|---|---|
+| FPC 3.2.2 Windows x64 (`tools/test_fpc.sh`) | unitária 137/137, integração 170/170 (eram 146: `TPipeTlsOpenSslTests` repete os 24 testes de TLS com `tbOpenSsl`), 0 vazamentos |
+| FPC 3.2.2 Linux, Debian 12, OpenSSL 3 (`tools/test_fpc_docker.sh`, sem `-dPIPES_OPENSSL`) | unitária 137/137, integração 146/146 (TLS incluso), 0 vazamentos; também 3 containers simultâneos com `CPUS=1 RUNS=2`, 12/12 rodadas |
+| FPC 3.2.0 Linux, Debian 11, OpenSSL 1.1.1 (`FPC_IMAGE=fpc-bullseye-ssl`) | unitária 137/137, integração 146/146, 0 vazamentos |
+| 31 samples Lazarus (`lazbuild -B`) | todos compilam; `EchoSeguro` rodado ponta a ponta no Windows (SChannel validando o servidor pela `CaFile`, mTLS) |
+| pascal-common-faa FPC Windows, com as três correções de 26.5 | 553 testes, 0 vazamentos |
+| Delphi 12 Win32/Win64, antes da correção de 26.6.1 | unitária 137/137 nos dois, 0 leak; integração 169/170 nos dois (a falha é a de 26.6.1, no fixture OpenSSL) |
+| Delphi 12 Win32/Win64, depois da correção | unitária 137/137, integração 170/170 nos dois, 0 leak/falha/erro (build no IDE, exes por linha de comando) |
+| Delphi/Android (`tests/Android`) | **pendente**; inclui o ramo novo da common (26.5, item 3) e o `MSG_DONTWAIT` do backend Android |
+| FPC Windows com `-dPIPES_OPENSSL` | não rodado: o único efeito é `tbDefault` → `tbOpenSsl`, que `TPipeTlsOpenSslTests` já exercita |

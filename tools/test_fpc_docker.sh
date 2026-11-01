@@ -13,8 +13,9 @@
 #   FPC_IMAGE  imagem com FPC 3.2.2 no PATH (padrao: fpc322-bookworm).
 #   SUITES     "unit", "integration" ou "unit integration" (padrao: as duas).
 #   RUNS       quantas vezes rodar cada suite no mesmo container (padrao: 1).
-#   FPCOPT     opcoes extras do fpc, ex.: -dPIPES_OPENSSL (no POSIX o ptTls e'
-#              opt-in; sem isso a suite TPipeTlsTests nao e' registrada).
+#   FPCOPT     opcoes extras do fpc. Desde a 0.4.0 o ptTls (OpenSSL) entra em
+#              todo build POSIX: -dPIPES_OPENSSL nao e' mais preciso.
+#              FPC_IMAGE=fpc-bullseye-ssl roda com OpenSSL 1.1.1.
 #   CPUS       limite de CPU do container (docker --cpus), ex.: 1. Com varios
 #              containers ao mesmo tempo e CPUS=1 e' como as corridas de
 #              concorrencia aparecem (mesma pratica da pascal-common-faa).

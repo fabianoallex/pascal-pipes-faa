@@ -38,13 +38,11 @@ program ClienteRemoto;
   Credenciais: PKI de TESTE versionada em tests/pki (ver o LEIA-ME de la — NAO
   tem valor de seguranca).
 
-  Validacao do servidor: LIGADA no backend OpenSSL, onde CaFile basta para
-  ancorar a CA de teste. No SChannel ela e' desligada, e SO por la': o cliente
-  Windows valida contra o trust store do SO e ignora CaFile, entao com uma PKI
-  de teste nao instalada na maquina nao ha como validar sem desligar. Sem
-  validar o servidor, o cliente cifra o trafego mas nao sabe com quem fala, e a
-  sessao fica MITM-avel. Em producao: instale a CA no trust store do Windows,
-  ou use o backend OpenSSL com CaFile.
+  Validacao do servidor: LIGADA nos dois backends, com CaFile ancorando a CA
+  de teste (desde a 0.4.0 o cliente SChannel tambem usa CaFile; antes ele so'
+  olhava o trust store do Windows, e este sample desligava a validacao la'). Sem validar o
+  servidor, o cliente cifra o trafego mas nao sabe com quem fala, e a sessao
+  fica MITM-avel.
 
   Uso: ClienteRemoto [endereco] [identidade]
        (padroes: 127.0.0.1:5000, cli)
@@ -52,10 +50,10 @@ program ClienteRemoto;
 
   Compila nos dois mundos a partir do MESMO fonte:
     FPC (Windows): lazbuild ClienteRemoto.lpi
-    FPC (Linux):   fpc -MDelphi -Sh -Fu../../src -Fi../../src -dPIPES_OPENSSL \
+    FPC (Linux):   fpc -MDelphi -Sh -Fu../../src -Fi../../src \
                      ClienteRemoto.dpr
-                   (SChannel nao existe fora do Windows; -dPIPES_OPENSSL e'
-                   obrigatorio para ligar o backend TLS no Linux)
+                   (o TLS e' OpenSSL fora do Windows; desde a 0.4.0 nao
+                   precisa mais de -dPIPES_OPENSSL)
     Delphi:        abrir ClienteRemoto.dproj no IDE }
 
 {$I pipes.inc}
@@ -184,17 +182,10 @@ begin
     Log('identidade: ' + LBase);
   end;
 
-  {$IFDEF PIPES_SCHANNEL}
-  // SO no SChannel: aqui o cliente valida contra o trust store do Windows e
-  // ignora CaFile, entao com a PKI de teste nao ha como validar sem desligar.
-  // NUNCA em producao — ver o comentario no topo do arquivo.
-  FClient.TlsOptions.SkipServerVerification := True;
-  {$ELSE}
-  // No OpenSSL a validacao fica LIGADA: CaFile ancora a CA de teste e o
+  // Validacao LIGADA nos dois backends: CaFile ancora a CA de teste e o
   // certificado do gateway (CN=localhost, SAN localhost + 127.0.0.1) valida de
   // verdade. E' o comportamento que um sample deve demonstrar.
   FClient.TlsOptions.CaFile := APki + 'ca_cert.pem';
-  {$ENDIF}
 end;
 
 procedure TClienteRemotoApp.OnMsg(Sender: TObject; AConnId: TPipeConnectionId;

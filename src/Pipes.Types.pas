@@ -12,7 +12,8 @@ unit Pipes.Types;
 interface
 
 uses
-  SysUtils;
+  SysUtils,
+  PascalCommon.Transport;
 
 type
   /// Identifica uma conexao no servidor (sequencial atomico; 0 = invalido).
@@ -42,52 +43,47 @@ type
     - ptTls: o mesmo socket TCP, com TLS por cima. Address tem o formato de
       ptTcp; as credenciais vem de TlsOptions. E' a resposta ao paragrafo
       acima: cifra o trafego e, com CaFile no servidor (mTLS), autentica o
-      cliente por certificado. Exige build com backend TLS (ver pipes.inc). }
+      cliente por certificado. Todo build tem TLS desde a 0.4.0 (ver pipes.inc). }
   TPipeTransport = (ptLocal, ptTcp, ptTls);
 
-  { Credenciais e politica de validacao do ptTls. O mesmo record serve aos dois
-    lados; o que muda e' a leitura de cada campo:
+  { Credenciais e politica de validacao do ptTls: desde a 0.4.0 e' o
+    TPcTlsOptions da pascal-common-faa (PascalCommon.Transport), que nasceu
+    deste record. O mesmo record serve aos dois lados:
 
                   SERVIDOR                        CLIENTE
     CertFile      certificado do servidor         certificado do cliente (mTLS;
                   (obrigatorio)                   vazio = nao apresenta nenhum)
-    CertPassword  senha do PFX (so Schannel)      idem
+    CertPassword  senha do PFX (so SChannel)      idem
     KeyFile       chave PEM (so OpenSSL)          idem
-    CaFile        CA que assina os certificados   CA que valida o servidor
-                  de CLIENTE. Preenchido, LIGA    (vazio = usa o trust store
-                  mTLS: quem nao apresentar       do sistema; so' OpenSSL, ver
-                  certificado valido e' recusado  abaixo)
-    SkipServer... (implicito por CaFile)          NAO valida a cadeia do servidor
+    CaFile        CA que assina os certificados   CA que valida o servidor no
+                  de CLIENTE. Preenchido, LIGA    lugar do trust store do
+                  mTLS: quem nao apresentar       sistema (nos DOIS backends
+                  certificado valido e' recusado  desde a 0.4.0; antes o
+                                                  SChannel ignorava o campo)
+    SkipServer... ignorado                        NAO valida a cadeia do servidor
     Verification
+    HandshakeTimeoutMs  0 = PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT; desligar exige
+                  PIPE_TLS_HANDSHAKE_NO_TIMEOUT
+    Backend       tbDefault, tbSChannel ou tbOpenSsl (escolha em RUNTIME; ver
+                  abaixo)
 
-    O campo de validacao do servidor e' NEGATIVO de proposito: um record zerado
-    por FillChar valida o servidor (o comportamento seguro), e desligar exige
-    dizer SkipServerVerification := True em voz alta. So faz sentido em
-    laboratorio — sem isso, o cliente cifra o trafego mas nao sabe com quem
-    fala, e a sessao e' MITM-avel.
+    Record zerado = comportamento seguro (valida o servidor, prazo padrao no
+    handshake), por isso os campos de desligar sao os negativos.
 
-    Sobre formatos: o Schannel le um PFX unico (certificado + chave), enquanto o
-    OpenSSL le PEM separados — dai CertFile/KeyFile em vez de um campo so. }
-  TPipeTlsOptions = record
-    CertFile: string;
-    CertPassword: string;
-    KeyFile: string;
-    CaFile: string;
-    /// Cliente: desliga a validacao da cadeia do servidor (default False =
-    /// valida). Negativo para que o zero seja o seguro. Ignorado no servidor.
-    SkipServerVerification: Boolean;
-    /// Prazo do handshake TLS. 0 = PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT, para que
-    /// um record zerado por FillChar caia no comportamento seguro; desligar
-    /// exige o valor explicito PIPE_TLS_HANDSHAKE_NO_TIMEOUT.
-    ///
-    /// Sem prazo, quem abre o TCP e nunca manda o ClientHello prende a reader
-    /// thread daquela conexao para sempre — algumas dezenas de conexoes
-    /// meia-abertas esgotam o servidor sem enviar um byte util.
-    HandshakeTimeoutMs: Cardinal;
-  end;
+    Backend: tbDefault e' SChannel no Windows e OpenSSL no resto; compilar com
+    PIPES_OPENSSL so' troca esse padrao para tbOpenSsl (no Windows os dois
+    backends estao sempre compilados, e o OpenSSL so' e' carregado no primeiro
+    uso). tbSChannel fora do Windows levanta EPipeTls.
+
+    Formatos: o SChannel le um PFX (certificado + chave num arquivo), o OpenSSL
+    um par de PEM -- dai CertFile/KeyFile em vez de um campo so. CaFile e' PEM
+    nos dois. }
+  TPipeTlsOptions = TPcTlsOptions;
+  TPipeTlsBackend = TPcTlsBackend;
 
   { Quem e' o par do outro lado, segundo o certificado que ele apresentou e que
-    JA FOI VALIDADO contra a CA configurada.
+    JA FOI VALIDADO contra a CA configurada (TPcPeerIdentity da
+    pascal-common-faa desde a 0.4.0: CommonName e Subject).
 
     So existe sob mTLS (CaFile preenchido no servidor). Sem mTLS o cliente nao
     apresenta certificado nenhum e nao ha identidade — nem uma vazia "provisoria":
@@ -99,12 +95,7 @@ type
     seguro usar CommonName para identificar (mostrar, logar, rotear) — o que
     NAO se deve fazer e' o contrario: derivar autorizacao de um nome quando a
     cadeia nao foi validada. }
-  TPipePeerIdentity = record
-    /// CN do subject — 'pdv-loja-001'. E' o que se mostra na tela.
-    CommonName: string;
-    /// Subject completo (DN), para log e auditoria.
-    Subject: string;
-  end;
+  TPipePeerIdentity = TPcPeerIdentity;
 
   { Contadores de uma conexao ESTABELECIDA do servidor (ver
     TPipeServer.ConnectionStats). Morrem com a conexao, como TPipePeerIdentity
@@ -266,6 +257,12 @@ type
   EPipeTls = class(EPipeError);
 
 const
+  /// Os valores de TPipeTlsBackend, re-exportados para quem so' usa Pipes.*
+  /// (um alias de tipo nao traz os nomes do enum junto).
+  tbDefault = PascalCommon.Transport.tbDefault;
+  tbSChannel = PascalCommon.Transport.tbSChannel;
+  tbOpenSsl = PascalCommon.Transport.tbOpenSsl;
+
   PIPE_INVALID_CONNECTION = TPipeConnectionId(0);
   /// Teto padrao de payload por mensagem (protecao contra frame corrompido
   /// ou malicioso); ajustavel por instancia via MaxMessageSize.
@@ -300,17 +297,18 @@ const
   /// Prazo padrao do handshake TLS (TPipeTlsOptions.HandshakeTimeoutMs = 0).
   /// 15s cobre com folga um handshake sobre VPN ruim — o alvo nao e' a rede
   /// lenta, e' o par que nunca fala.
-  PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT = 15000;
+  PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT = PC_TLS_HANDSHAKE_TIMEOUT_DEFAULT;
   /// Desliga o prazo do handshake. Valor explicito de proposito: quem remove
   /// essa protecao devia estar dizendo isso em voz alta, nao deixando um campo
   /// em zero.
-  PIPE_TLS_HANDSHAKE_NO_TIMEOUT = Cardinal($FFFFFFFF);
+  PIPE_TLS_HANDSHAKE_NO_TIMEOUT = PC_TLS_HANDSHAKE_NO_TIMEOUT;
 
 /// Descreve o backend TLS efetivamente em uso (biblioteca, versao e de onde foi
 /// carregada), para log e diagnostico — a mensagem de "handshake falhou" sozinha
 /// raramente diz se o problema e' a DLL errada. Vazio ate o primeiro uso de TLS.
 function PipeTlsBackendInfo: string;
-/// Chamada pelos backends TLS ao carregar. Nao e' para uso da aplicacao.
+/// Chamada por Pipes.Transport.Tls depois de cada connect/listen TLS. Nao e'
+/// para uso da aplicacao.
 procedure PipeSetTlsBackendDetail(const ADetail: string);
 
 implementation

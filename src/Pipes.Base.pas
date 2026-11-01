@@ -66,6 +66,7 @@ type
     procedure SetCaFile(const AValue: string);
     procedure SetSkipServerVerification(AValue: Boolean);
     procedure SetHandshakeTimeoutMs(AValue: Cardinal);
+    procedure SetBackend(AValue: TPipeTlsBackend);
   public
     constructor Create(AOwner: TPipeBase);
     /// Snapshot para a camada de transporte.
@@ -80,7 +81,8 @@ type
     property KeyFile: string read FOptions.KeyFile write SetKeyFile;
     /// Servidor: CA que assina os certificados de CLIENTE. Preenchido, LIGA
     /// mTLS — quem nao apresentar certificado dela e' recusado.
-    /// Cliente: CA que valida o servidor (vazio = trust store do sistema).
+    /// Cliente: CA que valida o servidor no lugar do trust store do sistema
+    /// (vazio = trust store), nos dois backends desde a 0.4.0.
     property CaFile: string read FOptions.CaFile write SetCaFile;
     /// Cliente: desliga a validacao da cadeia do servidor (default False =
     /// valida). Ligar so' em laboratorio — sem validacao a sessao e' MITM-avel.
@@ -89,6 +91,12 @@ type
     /// Prazo do handshake; 0 = PIPE_TLS_HANDSHAKE_TIMEOUT_DEFAULT.
     property HandshakeTimeoutMs: Cardinal
       read FOptions.HandshakeTimeoutMs write SetHandshakeTimeoutMs;
+    /// Qual implementacao de TLS usar: tbDefault (SChannel no Windows, OpenSSL
+    /// no resto; OpenSSL tambem no Windows se compilado com PIPES_OPENSSL),
+    /// tbSChannel (so' Windows) ou tbOpenSsl. Escolha em RUNTIME desde a 0.4.0
+    /// — no Windows um build so' serve aos dois. Os formatos de CertFile mudam
+    /// com o backend (PFX no SChannel, PEM + KeyFile no OpenSSL).
+    property Backend: TPipeTlsBackend read FOptions.Backend write SetBackend;
   end;
 
   { Guarda refcounted dos eventos pdmMainThread: o componente e' o dono e a
@@ -697,6 +705,12 @@ procedure TPipeTlsConfig.SetHandshakeTimeoutMs(AValue: Cardinal);
 begin
   FOwner.EnsureInactive('TlsOptions.HandshakeTimeoutMs');
   FOptions.HandshakeTimeoutMs := AValue;
+end;
+
+procedure TPipeTlsConfig.SetBackend(AValue: TPipeTlsBackend);
+begin
+  FOwner.EnsureInactive('TlsOptions.Backend');
+  FOptions.Backend := AValue;
 end;
 
 { TPipeBase }

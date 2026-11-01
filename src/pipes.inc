@@ -47,31 +47,29 @@
   {$ENDIF}
 {$ENDIF}
 
-{ Backend TLS ativo. PIPES_WINDOWS sozinho NAO significa Schannel: um build
-  Windows com PIPES_OPENSSL usa OpenSSL nos dois lados. Definir isso aqui evita
-  espalhar IFDEFs aninhados por todo o codigo de TLS.
+{ Backend TLS PADRAO (desde a 0.4.0 o backend e' escolhido em runtime, por
+  TlsOptions.Backend; ver TPipeTlsOptions em Pipes.Types). Os dois backends
+  vem da pascal-common-faa: no Windows ambos estao sempre compilados, e o
+  OpenSSL (libssl/libcrypto carregadas dinamicamente) nao custa nada ate o
+  primeiro uso. Estes defines so' dizem qual deles tbDefault significa:
 
-  PIPES_OPENSSL  - unico backend no POSIX e no Android; opcional no Windows.
-  PIPES_SCHANNEL - SSPI nativo; padrao no Windows quando OpenSSL nao foi pedido.
-  PIPES_TLS      - ha ALGUM backend; sem ele, ptTls nao esta disponivel.
+  PIPES_OPENSSL  - tbDefault = OpenSSL. Unico backend fora do Windows (por
+                   isso definido automaticamente la); no Windows, opt-in com
+                   -dPIPES_OPENSSL, como antes.
+  PIPES_SCHANNEL - tbDefault = SChannel (SSPI nativo): Windows sem
+                   PIPES_OPENSSL.
+  PIPES_TLS      - sempre definido: ptTls existe em todo build. Ficou para nao
+                   quebrar quem testa por ele.
 
-  No Android o OpenSSL e' ligado automaticamente, diferente do POSIX/FPC (onde
-  e' opt-in): Schannel e' Windows-only, entao nao ha segunda opcao a escolher, e
-  deixar opt-in so renderia um "build sem backend TLS" em runtime. O carregamento
-  das libs e' preguicoso (primeiro uso de ptTls), entao um app Android que so use
-  ptTcp nao paga nada por isto — mas quem usar ptTls precisa empacotar
-  libssl.so/libcrypto.so por ABI no deployment (docs/ARQUITETURA.md secao 13.5). }
-{$IFDEF PIPES_ANDROID}
+  No Android quem usa ptTls precisa empacotar libssl.so/libcrypto.so por ABI
+  no deployment (docs/ARQUITETURA.md secao 13.5). }
+{$IFNDEF PIPES_WINDOWS}
   {$IFNDEF PIPES_OPENSSL}
     {$DEFINE PIPES_OPENSSL}
   {$ENDIF}
 {$ENDIF}
 
-{$IFDEF PIPES_OPENSSL}
-  {$DEFINE PIPES_TLS}
-{$ELSE}
-  {$IFDEF PIPES_WINDOWS}
-    {$DEFINE PIPES_SCHANNEL}
-    {$DEFINE PIPES_TLS}
-  {$ENDIF}
+{$IFNDEF PIPES_OPENSSL}
+  {$DEFINE PIPES_SCHANNEL}
 {$ENDIF}
+{$DEFINE PIPES_TLS}

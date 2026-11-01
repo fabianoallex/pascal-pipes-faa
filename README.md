@@ -91,8 +91,8 @@ Delphi/Win64 e FPC/POSIX. A API é a mesma; muda o que está disponível:
 - **`ptTcp` e `ptTls` funcionam**, cliente e servidor. `ptLocal` **não existe** — app
   Android é single-process e expor um Unix Domain Socket esbarra em sandboxing. Usá-lo
   levanta `EPipeError` dizendo o que fazer, em vez de falhar obscuramente adiante.
-- **`ptTls` é sempre OpenSSL** (Schannel é Windows-only), e por isso é o único alvo onde
-  `PIPES_OPENSSL` é ligado automaticamente. Você precisa empacotar `libcrypto.so` e
+- **`ptTls` é sempre OpenSSL** (Schannel é Windows-only; `TlsOptions.Backend` em
+  `tbDefault` já significa OpenSSL lá). Você precisa empacotar `libcrypto.so` e
   `libssl.so` por ABI no Deployment do app — ver `samples/EchoAndroid/LEIA-ME.md`.
 - **Permissão `INTERNET` no manifesto** é obrigatória, e `ptTcp` (texto claro) ainda exige
   `usesCleartextTraffic` do Android 9 em diante. Mais um motivo para preferir `ptTls`.
@@ -168,19 +168,26 @@ Para gerar sua própria CA/certificados (não a PKI de teste de `tests/pki`), ve
 
 #### O que muda entre os backends
 
-O backend é escolhido em **tempo de compilação** (ver `src/pipes.inc`): Schannel (SSPI
-nativo) é o padrão no Windows; OpenSSL é opt-in com `-dPIPES_OPENSSL`, e é o único no
-Linux. Três diferenças que importam na configuração:
+Desde a 0.4.0 o backend é escolhido em **tempo de execução**, por `TlsOptions.Backend`:
+`tbDefault` (Schannel no Windows, OpenSSL no resto), `tbSChannel` (só Windows; fora dele
+levanta `EPipeTls`) ou `tbOpenSsl`. No Windows os dois estão sempre no executável e o
+OpenSSL só é carregado no primeiro uso. Compilar com `-dPIPES_OPENSSL` continua valendo, mas
+agora só muda o que `tbDefault` significa (OpenSSL também no Windows). Os dois backends vêm
+da pascal-common-faa (`PascalCommon.Transport.Tls`).
+
+```pascal
+Cli.TlsOptions.Backend := tbOpenSsl;   // OpenSSL no Windows, sem outro build
+```
+
+Duas diferenças que importam na configuração:
 
 | | Schannel (Windows) | OpenSSL |
 |---|---|---|
 | Formato do certificado | `CertFile` = PFX (cert + chave juntos), `CertPassword` | `CertFile` = PEM, `KeyFile` = PEM da chave |
-| `CaFile` no **servidor** | CA dos certificados de cliente (mTLS) | idem |
-| `CaFile` no **cliente** | **ignorado** — o Windows valida contra o trust store do SO | CA usada para validar o servidor |
+| `CaFile` | PEM nos dois: no servidor, a CA dos certificados de cliente (mTLS); no cliente, a CA que valida o servidor no lugar do trust store | idem |
 
-A última linha é a pegadinha: uma PKI privada cujo certificado não esteja no trust store
-do Windows faz o *cliente* Schannel rejeitar o servidor mesmo com `CaFile` preenchido. Ou
-se instala a CA na máquina, ou se usa o backend OpenSSL.
+Até a 0.3.0 o cliente Schannel **ignorava** `CaFile` e só validava contra o trust store do
+Windows; uma PKI privada exigia instalar a CA na máquina ou usar o OpenSSL. Não exige mais.
 
 > **Como o cliente vê uma recusa de mTLS — e por que difere por backend.** O Schannel
 > completa o handshake e **só então** entrega o certificado do cliente para a aplicação
@@ -741,11 +748,18 @@ também usa outra lib `*-faa` (seriam duas cópias da mesma unit). Uma pascal-co
 demais para o build com "pascal-named-pipes-faa precisa da pascal-common-faa 1.0.0 ou mais
 nova".
 
+> **Desenvolvimento (após a 0.3.0):** o transporte TCP/TLS passou para a pascal-common-faa
+> (`PascalCommon.Transport*`), que ainda não foi lançada com ele: o submódulo aponta para a
+> branch `transport` dela, e a versão continua 1.26.0. Até o lançamento (1.27.0, pela regra
+> T8 do `docs/transport-design.md` de lá) a checagem de versão não tem como exigir essas
+> units; uma common sem elas falha no build com "unit PascalCommon.Transport não encontrada".
+
 **Dependências de execução:** nenhuma para `ptLocal` e `ptTcp`. Para `ptTls` depende do
 backend:
 
 - **Schannel** (padrão no Windows): nada a instalar — é SSPI, parte do SO.
-- **OpenSSL** (`-dPIPES_OPENSSL`; único no Linux): precisa de `libssl`/`libcrypto` **na
+- **OpenSSL** (`TlsOptions.Backend := tbOpenSsl`, ou o padrão com `-dPIPES_OPENSSL`; único
+  fora do Windows): precisa de `libssl`/`libcrypto` **na
   máquina que roda**. Elas são carregadas dinamicamente na primeira conexão TLS, então a
   ausência não impede compilar nem iniciar o programa — ela aparece como `EPipeTls`
   ("OpenSSL não encontrado") na primeira conexão. Aceita as séries 3.x e 1.1. No Linux as
@@ -997,6 +1011,23 @@ e `TPipeHeartbeatThread`. Duas diferenças de comportamento: o `PcPool` é do pr
 `TPipeKeyedDispatcher.Destroy` agora espera as drenagens em voo — a ordem "pool primeiro,
 dispatcher depois" deixou de ser obrigatória ([`docs/ARQUITETURA.md`](docs/ARQUITETURA.md)
 §15.4 e §23).
+
+**Transporte (0.4.0).** TCP, TLS e o socket POSIX vêm da pascal-common-faa
+([`docs/ARQUITETURA.md`](docs/ARQUITETURA.md) §26). A API pública (`TPipeServer`/
+`TPipeClient`, `PipeConnect`/`PipeCreateListener`, `TPipeEndpoint`/`TPipeListener`, as
+exceções `EPipe*`) não muda. O que mudou embaixo:
+
+- `TPipeTlsOptions` e `TPipePeerIdentity` são aliases de `TPcTlsOptions`/`TPcPeerIdentity`;
+  o record ganhou `Backend` (e `TlsOptions.Backend`, a property).
+- `Pipes.Transport.Tcp`/`.Tls` ficam com `TcpPipeConnect`/`TcpPipeCreateListener`/
+  `TlsPipeConnect`/`TlsPipeCreateListener` como funções obsoletas por esta versão minor;
+  `Pipes.Transport.Schannel`/`.OpenSSL` ficam vazias, só para não quebrar um `uses`. As
+  classes de backend (`TPipeTcpWinEndpoint`, `TPipePosixEndpoint`, `TPipeTlsEndpoint`,
+  `TPipeSchannelStream`, `TPipeOpenSslStream`...) não existem mais.
+- `TPipeEndpoint` e `TPipeListener` viraram fachadas sobre o `TPcEndpoint`/`TPcListener` de
+  baixo (`.Inner`); traduzem `EPcTransport*` para `EPipe*` com a mesma mensagem.
+- `PipeParseHostPort` continua aceitando IPv6 sem colchetes com porta (`'::1:5000'`), que
+  `PcParseHostPort` recusa por ser ambíguo. Forma obsoleta: use `'[::1]:5000'`.
 
 ## Samples (`samples/`)
 
@@ -1252,15 +1283,15 @@ aos testes dela.
   erros, 0 falhas, "0 unfreed memory blocks" do heaptrc e nenhuma linha "FINALIZATION CHECK
   FAILED"). À mão: `lazbuild` nos `.lpi` de `tests\*\fpc` e rodar os exes com
   `--all --format=plain` (sem parâmetros abre a GUI de testes).
-- Linux (Docker, FPC 3.2.2 do Debian Bookworm): `sh tools/test_fpc_docker.sh`.
-  `FPCOPT=-dPIPES_OPENSSL` liga o `ptTls` (e com ele a suíte de TLS); `CPUS=1` e `RUNS=N`
+- Linux (Docker, FPC 3.2.2 do Debian Bookworm): `sh tools/test_fpc_docker.sh`. A suíte de
+  TLS roda sempre (desde a 0.4.0 o `ptTls` existe em todo build); `CPUS=1` e `RUNS=N`
   servem para caçar corrida de concorrência (vários containers ao mesmo tempo, cada um
   limitado a 1 CPU). A imagem padrão é `fpc322-bookworm` (`debian:bookworm` + `apt-get
   install fpc`); `FPC_IMAGE` troca.
 
-- OpenSSL **1.1** (o outro ramo suportado): trocar a imagem por `debian:bullseye`, que traz
-  `libssl 1.1.1` e **não** tem a 3.x, e compilar com `-dPIPES_OPENSSL` (sem a diretiva não
-  há backend TLS e a suíte de `ptTls` não roda). Não é redundante com a anterior — é a
+- OpenSSL **1.1** (o outro ramo suportado): `FPC_IMAGE=fpc-bullseye-ssl sh
+  tools/test_fpc_docker.sh`, uma imagem `debian:bullseye` (FPC 3.2.0) com `libssl 1.1.1` e
+  **sem** a 3.x. À mão, como abaixo. Não é redundante com a anterior — é a
   única forma de exercitar as divergências 1.1/3.x, e **duas já morderam de verdade**:
 
   ```bash
@@ -1268,7 +1299,7 @@ aos testes dela.
     apt-get update -qq && apt-get install -y -qq fpc libssl1.1 >/dev/null
     cd /work/tests/Integration/fpc
     C=../../../external/pascal-common-faa/src
-    fpc -MDelphi -Sh -B -dPIPES_OPENSSL -Fu../../../src -Fi../../../src -Fu$C -Fi$C \
+    fpc -MDelphi -Sh -B -Fu../../../src -Fi../../../src -Fu$C -Fi$C \
       -FU/tmp -o/tmp/t PipesIntegrationTestsFpc.lpr
     /tmp/t --all --format=plain'
   ```
@@ -1292,8 +1323,10 @@ para os limites numéricos de cada caso e a rodada de referência.
 
 ### Testes de TLS
 
-O fixture `TPipeTlsTests` só existe se o build tiver backend TLS — no Linux, portanto, só
-com `-dPIPES_OPENSSL`. Cinco dos oito testes são de **recusa** (cliente sem certificado,
+O fixture `TPipeTlsTests` roda com o backend padrão do build; no Windows (Schannel padrão)
+`TPipeTlsOpenSslTests` repete os mesmos testes com `tbOpenSsl` na mesma rodada, se a libssl
+carregar (sem ela, um aviso no console e o fixture não é registrado). Boa parte dos testes é
+de **recusa** (cliente sem certificado,
 de outra CA, auto-assinado, mudo no handshake): é a metade que prova que existe
 autenticação, e não só que o caminho feliz funciona.
 
@@ -1312,7 +1345,8 @@ src/                 biblioteca (Pipes.Types, Pipes.Framing,
                      Pipes.Base, Pipes.Server, Pipes.Client, Pipes.Threading, pipes.inc)
                      pub/sub: Pipes.Topics (nomes, curingas e envelope; unit pura)
                      rede: Pipes.Transport.Tcp
-                     TLS: Pipes.Transport.Tls (fachada) + .Schannel / .OpenSSL (backends)
+                     TLS: Pipes.Transport.Tls (sobre PascalCommon.Transport.Tls;
+                     .Schannel / .OpenSSL sao units obsoletas, vazias)
                      descoberta LAN: Pipes.Discovery (broadcast UDP; complemento, nao transporte)
                      Pipes.Compression (deflate opcional, CompressionMinSize; kind pfkCompressed)
                      Pipes.Json (bytes<->JSON, OPCIONAL — nao acoplada ao core)

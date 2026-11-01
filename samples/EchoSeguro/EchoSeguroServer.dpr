@@ -15,10 +15,10 @@ program EchoSeguroServer;
 
   Compila nos dois mundos a partir do MESMO fonte:
     FPC (Windows): lazbuild EchoSeguroServer.lpi
-    FPC (Linux):   fpc -MDelphi -Sh -Fu../../src -Fi../../src -dPIPES_OPENSSL \
+    FPC (Linux):   fpc -MDelphi -Sh -Fu../../src -Fi../../src \
                      EchoSeguroServer.dpr
-                   (SChannel nao existe fora do Windows; -dPIPES_OPENSSL e'
-                   obrigatorio para ligar o backend TLS no Linux)
+                   (o TLS e' OpenSSL fora do Windows; desde a 0.4.0 nao
+                   precisa mais de -dPIPES_OPENSSL)
     Delphi:        abrir EchoSeguroServer.dproj no IDE
 
   Uso: EchoSeguroServer [endereco]   (padrao 0.0.0.0:5000) }

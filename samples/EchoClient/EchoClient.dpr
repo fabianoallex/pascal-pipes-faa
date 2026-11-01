@@ -28,11 +28,9 @@ program EchoClient;
   antigo. Servem para conferir do PC um servidor ptTcp/ptTls antes de culpar o
   celular (ver o sample EchoAndroid).
 
-  No modo tls, CaFile aponta para o ca_cert.pem do diretorio dado. ATENCAO: no
-  backend SChannel (padrao no Windows) o CaFile do CLIENTE e' IGNORADO — o
-  Windows valida contra o trust store do SO, onde a PKI de teste nao esta, e a
-  conexao sera recusada. Para conferir um servidor de PKI propria a partir do
-  PC, compile este sample com -dPIPES_OPENSSL (ou rode-o no Linux). }
+  No modo tls, CaFile aponta para o ca_cert.pem do diretorio dado e valida o
+  servidor nos dois backends (ate a 0.3.0 o cliente SChannel ignorava CaFile e
+  era preciso compilar com -dPIPES_OPENSSL para conferir uma PKI propria). }
 
 {$I pipes.inc}
 

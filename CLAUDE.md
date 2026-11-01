@@ -38,13 +38,15 @@ também numa aplicação que usa esta lib como submódulo):
   2026-10-04 — antes era uma cópia renomeada de `AMQP.Threading.pas`. `Pipes.Threading` ficou
   só com `TPipeKeyedDispatcher`/`TPipeMailboxDrainWork`/`PipeGroupDispatcher`/
   `TPipeHeartbeatThread` e com a checagem `{$IF PASCALCOMMON_VERSION < 10000}`. Submódulo em
-  `external/pascal-common-faa` (tag `v1.12.0`, sem `--recursive`) SÓ para testes/samples/
+  `external/pascal-common-faa` (branch `transport`, ainda não lançada — ver "Transporte
+  da common" abaixo; sem `--recursive`) SÓ para testes/samples/
   scripts; `pipes_faa.lpk` exige `pascal_common_faa` só pelo nome (`MinVersion Major="1"`, sem
   `DefaultFilename` — senão vira o diamante); todo `.lpi` de teste/sample lista
   `pascal_common_faa` PRIMEIRO com `DefaultFilename` em `external/` e `Prefer="True"`; todo
   `.dproj` tem `external\pascal-common-faa\src` no search path. **Não altere a
   pascal-common-faa daqui**: o que precisar mudar lá vai para um arquivo de achados (molde:
-  `.ci/f8-findings-for-pascal-common-faa.md`). Duas consequências que não se rediscutem sem
+  `.ci/f8-findings-for-pascal-common-faa.md`). Exceção, pedida pelo usuário: as units de
+  transporte, corrigidas direto na branch `transport` de lá enquanto ela não é lançada. Duas consequências que não se rediscutem sem
   ler `docs/ARQUITETURA.md` §23 e §15.4: o `PcPool` é do PROCESSO (outras libs `*-faa`
   disputam os workers e entram no `PoolQueueDepth`), e o `PipeGroupDispatcher` (criado na
   `initialization`) é liberado ANTES do `PcPool` — por isso `TPipeKeyedDispatcher.Destroy`
@@ -61,10 +63,24 @@ também numa aplicação que usa esta lib como submódulo):
   de 2x o intervalo; quem detecta chama `CloseAbort` (mecanismo já existente,
   thread-safe/idempotente) e segue o teardown normal — nenhuma interrupção nova foi
   inventada. Racional completo em `docs/ARQUITETURA.md` §10.
-- **Backend `ptTls`:** TCP + TLS via `Pipes.Transport.Tls.pas`, fachada neutra que delega
-  a `Pipes.Transport.Schannel.pas` (Windows, SSPI nativo) ou `Pipes.Transport.OpenSSL.pas`
-  (POSIX e Windows opt-in; **Android sem opt-in** — não há Schannel lá), com mTLS
-  suportado nos dois backends. Milestones T0-T5 em `docs/ARQUITETURA.md`.
+- **Backend `ptTls`:** TCP + TLS da pascal-common-faa (`PcTlsWrap`/`PcTlsListen`/
+  `PcTlsListenOver`), chamada por `Pipes.Transport.Tls.pas`; SChannel (Windows, SSPI) ou
+  OpenSSL, com mTLS nos dois. O backend é escolhido em RUNTIME (`TlsOptions.Backend`);
+  `PIPES_OPENSSL` só muda o que `tbDefault` significa (automático fora do Windows), e
+  `PIPES_TLS` está sempre definido. Milestones T0-T5 em `docs/ARQUITETURA.md`.
+- **Transporte da common (passo 2 do `docs/transport-design.md` dela, `docs/ARQUITETURA.md`
+  §26):** TCP, TLS e o socket POSIX são da pascal-common-faa (branch `transport`, ainda não
+  lançada por T8 — a versão segue 1.26.0, e `PASCALCOMMON_VERSION` não exige as units
+  novas). Ficam no pipes: Named Pipe e Android como subclasses de `TPcEndpoint` (T4), o UDS
+  que só monta o fd e o entrega a `TPcPosixSocketEndpoint`/`Listener`, o laço de
+  re-tentativa do connect sobre `EPcTransportRefused` (T5) e `PipeParseHostPort` (aceita
+  ainda `'::1:5000'`, que `PcParseHostPort` recusa). **Fronteira de exceções (T6):**
+  `TPipeEndpoint`/`TPipeListener` são FACHADAS donas do `TPcEndpoint`/`TPcListener` de
+  baixo (`Inner`) e traduzem `EPcTransport*` → `EPipe*` com a mesma mensagem
+  (`PipeTransportError`); o TLS envolve sempre o endpoint CRU, nunca a fachada.
+  `TPipeListener` não descende de `TPcListener` (senão `Accept` devolveria `TPcEndpoint`).
+  Erro na API da common achado aqui vai para a branch `transport` de lá enquanto T8 não
+  fechar (três já foram: §26.5).
 - **Backend Android (`PIPES_ANDROID`, milestones A0-A3):** terceiro eixo de plataforma, só
   `ptTcp`/`ptTls` (`ptLocal` é recusado com mensagem própria). `Pipes.Transport.Android.pas`
   usa as units `Posix.*` da RTL do Delphi + `poll()` declarado localmente, e a interrupção
@@ -398,8 +414,9 @@ src/Pipes.Compression.pas        (deflate opcional: System.ZLib/paszlib — ver 
 src/Pipes.Topics.pas             (pub/sub: nomes, curingas, envelope — unit PURA)
 src/Pipes.Transport.Windows.pas  src/Pipes.Transport.Posix.pas
 src/Pipes.Transport.Android.pas  (Delphi/Android: ptTcp/ptTls sobre Posix.* + poll)
-src/Pipes.Transport.Tcp.pas      src/Pipes.Transport.Tls.pas
-src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas
+src/Pipes.Transport.Tcp.pas      (laço de re-tentativa sobre PcTcpConnect — §26)
+src/Pipes.Transport.Tls.pas      (PcTlsWrap/PcTlsListen; backend em runtime — §26)
+src/Pipes.Transport.Schannel.pas src/Pipes.Transport.OpenSSL.pas (obsoletas, vazias)
 src/Pipes.Client.pas             src/Pipes.Server.pas
 src/Pipes.Discovery.pas          (descoberta LAN por broadcast UDP — complemento, não
                                   transporte; NÃO depende de Pipes.Transport — ver §16)
@@ -415,12 +432,13 @@ tests/Unit (Threading/Framing/Topics/Commands/Address/Discovery + FinalizationCh
 tests/Android (suite de DEVICE do backend Android; FMX, loopback, sem par dual-compiler)
 samples/ (20 amostras — ver README.md)  docs/ARQUITETURA.md  docs/INTEROP.md  README.md
 Pipes.groupproj (grupo Delphi) + Pipes.lpg (grupo Lazarus) na raiz
-external/pascal-common-faa (submódulo, tag v1.12.0 — só testes/samples/scripts)
+external/pascal-common-faa (submódulo, branch transport — só testes/samples/scripts)
 tools/gen_fpc_mirror.py (gerador dos espelhos FPCUnit; cópia sem alteração da skill)
 tools/test_fpc.sh (FPC Windows: --check dos espelhos, lazbuild + as duas suítes, heaptrc,
   checagem de finalização)
-tools/test_fpc_docker.sh (FPC Linux em Docker; FPCOPT=-dPIPES_OPENSSL liga ptTls, CPUS=1 e
-  RUNS=N para caçar corrida com vários containers ao mesmo tempo)
+tools/test_fpc_docker.sh (FPC Linux em Docker; ptTls sempre incluso; FPC_IMAGE=
+  fpc-bullseye-ssl para OpenSSL 1.1.1; CPUS=1 e RUNS=N para caçar corrida com vários
+  containers ao mesmo tempo)
 ```
 
 Todo `.dproj`/`.lpi` novo (teste, sample) deve ser registrado nos DOIS grupos da

@@ -791,6 +791,7 @@ function TPipeClient.TryReopenSession: Boolean;
 var
   LEndpoint: TPipeEndpoint;
   LTentado: string;
+  LFimSessao: UInt64;
 begin
   Result := False;
   if PcAtomicGet(FDeliberate) <> 0 then
@@ -801,6 +802,14 @@ begin
     FReader.WaitFor;
     FreeAndNil(FReader);
   end;
+  // Fim da sessao morta, para o criterio de sessao duravel abaixo: tem de ser
+  // medido AQUI, antes de WaitBetweenRetries. Medido depois, a "duracao"
+  // incluia a propria espera ate completar ReconnectDelayMs desde o inicio da
+  // tentativa: um par que aceita e derruba na hora dava ReconnectDelayMs - D
+  // (D = connect + handshake), e com D abaixo de um tick do relogio (~16 ms no
+  // Windows; loopback) isso chegava a ReconnectDelayMs — sessao "duravel",
+  // contador zerado, e MaxReconnectAttempts demorava a valer.
+  LFimSessao := PcTickMs;
   StopHeartbeat; // ANTES de liberar FStream/FEndpoint da sessao morta
   FWriteLock.Enter;
   try
@@ -843,7 +852,7 @@ begin
   // Sem isso, um cliente de longa duracao que reconecta legitimamente varias
   // vezes ao longo de dias acabaria esbarrando no teto.
   if (FSessionUpTick <> 0) and
-     (Int64(PcTickMs) - Int64(FSessionUpTick) >= Int64(FReconnectDelayMs)) then
+     (Int64(LFimSessao) - Int64(FSessionUpTick) >= Int64(FReconnectDelayMs)) then
   begin
     FReconnectAttempts := 0;
     // Sessao duravel: a proxima FALHA (se houver) volta a preferir o

@@ -270,13 +270,9 @@ begin
   FClient.TlsOptions.CertFile := Pki(LQuem + '_cert.pem');
   FClient.TlsOptions.KeyFile := Pki(LQuem + '_key.pem');
   {$ENDIF}
-  // A CA de teste nao esta no trust store da maquina; no OpenSSL isto basta
-  // para validar o hub. (No Schannel o cliente valida contra o store do SO —
-  // ver a tabela de diferencas entre backends no README.)
+  // A CA de teste nao esta no trust store da maquina; CaFile basta para
+  // validar o hub, nos dois backends desde a 0.4.0.
   FClient.TlsOptions.CaFile := Pki('ca_cert.pem');
-  {$IFDEF PIPES_SCHANNEL}
-  FClient.TlsOptions.SkipServerVerification := True; // so por ser PKI de teste
-  {$ENDIF}
   FClient.OnMessage := CliMessage;
   FClient.OnConnected := CliConnected;
   FClient.OnDisconnected := CliDisconnected;
