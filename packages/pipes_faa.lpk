@@ -90,7 +90,7 @@
            .lpi de testes/samples apontam para external/ com Prefer="True". -->
       <Item>
         <PackageName Value="pascal_common_faa"/>
-        <MinVersion Major="1" Valid="True"/>
+        <MinVersion Major="1" Minor="27" Valid="True"/>
       </Item>
       <Item>
         <PackageName Value="FCL"/>

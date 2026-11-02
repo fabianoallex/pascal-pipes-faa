@@ -40,8 +40,8 @@ uses
   PascalCommon.Version,
   PascalCommon.ThreadPool;
 
-{$IF PASCALCOMMON_VERSION < 10000}
-  {$MESSAGE FATAL 'pascal-named-pipes-faa precisa da pascal-common-faa 1.0.0 ou mais nova'}
+{$IF PASCALCOMMON_VERSION < 12700}
+  {$MESSAGE FATAL 'pascal-named-pipes-faa precisa da pascal-common-faa 1.27.0 ou mais nova (transporte TCP/TLS)'}
 {$IFEND}
 
 // --- Despacho por chave (ordem preservada por chave, paralelo entre chaves) -

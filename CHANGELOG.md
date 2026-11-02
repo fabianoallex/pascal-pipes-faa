@@ -7,8 +7,9 @@ uma versão minor pode mudar a API; toda mudança desse tipo aparece aqui.
 ## [Unreleased]
 
 O transporte TCP/TLS passou para a pascal-common-faa (`PascalCommon.Transport*`, passo 2 da
-"Migration order" do `docs/transport-design.md` de lá). Depende da branch `transport` da
-common, ainda não lançada (decisão T8 de lá); detalhes em `docs/ARQUITETURA.md` §26.
+"Migration order" do `docs/transport-design.md` de lá). Exige a pascal-common-faa
+1.27.0 (lançada em 2026-11-01, depois que pipes e redis passaram sobre ela: decisão T8 de lá);
+detalhes em `docs/ARQUITETURA.md` §26.
 
 ### Adicionado
 

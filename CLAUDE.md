@@ -37,8 +37,8 @@ também numa aplicação que usa esta lib como submódulo):
   `TPcWorkItem`, `TPcThreadPool`, `PcPool`, `PC_WAIT_INFINITE`), migrada na F8 dela em
   2026-10-04 — antes era uma cópia renomeada de `AMQP.Threading.pas`. `Pipes.Threading` ficou
   só com `TPipeKeyedDispatcher`/`TPipeMailboxDrainWork`/`PipeGroupDispatcher`/
-  `TPipeHeartbeatThread` e com a checagem `{$IF PASCALCOMMON_VERSION < 10000}`. Submódulo em
-  `external/pascal-common-faa` (branch `transport`, ainda não lançada — ver "Transporte
+  `TPipeHeartbeatThread` e com a checagem `{$IF PASCALCOMMON_VERSION < 12700}` (1.27.0: o transporte). Submódulo em
+  `external/pascal-common-faa` (tag `v1.27.0` — ver "Transporte
   da common" abaixo; sem `--recursive`) SÓ para testes/samples/
   scripts; `pipes_faa.lpk` exige `pascal_common_faa` só pelo nome (`MinVersion Major="1"`, sem
   `DefaultFilename` — senão vira o diamante); todo `.lpi` de teste/sample lista
@@ -69,9 +69,8 @@ também numa aplicação que usa esta lib como submódulo):
   `PIPES_OPENSSL` só muda o que `tbDefault` significa (automático fora do Windows), e
   `PIPES_TLS` está sempre definido. Milestones T0-T5 em `docs/ARQUITETURA.md`.
 - **Transporte da common (passo 2 do `docs/transport-design.md` dela, `docs/ARQUITETURA.md`
-  §26):** TCP, TLS e o socket POSIX são da pascal-common-faa (branch `transport`, ainda não
-  lançada por T8 — a versão segue 1.26.0, e `PASCALCOMMON_VERSION` não exige as units
-  novas). Ficam no pipes: Named Pipe e Android como subclasses de `TPcEndpoint` (T4), o UDS
+  §26):** TCP, TLS e o socket POSIX são da pascal-common-faa (lançado na 1.27.0, que é o
+  mínimo exigido: `Pipes.Threading` e o `.lpk`). Ficam no pipes: Named Pipe e Android como subclasses de `TPcEndpoint` (T4), o UDS
   que só monta o fd e o entrega a `TPcPosixSocketEndpoint`/`Listener`, o laço de
   re-tentativa do connect sobre `EPcTransportRefused` (T5) e `PipeParseHostPort` (aceita
   ainda `'::1:5000'`, que `PcParseHostPort` recusa). **Fronteira de exceções (T6):**
@@ -79,8 +78,8 @@ também numa aplicação que usa esta lib como submódulo):
   baixo (`Inner`) e traduzem `EPcTransport*` → `EPipe*` com a mesma mensagem
   (`PipeTransportError`); o TLS envolve sempre o endpoint CRU, nunca a fachada.
   `TPipeListener` não descende de `TPcListener` (senão `Accept` devolveria `TPcEndpoint`).
-  Erro na API da common achado aqui vai para a branch `transport` de lá enquanto T8 não
-  fechar (três já foram: §26.5).
+  Um erro na API da common achado aqui agora é uma versão nova de lá (a API está congelada
+  na major; T8 fechou com a 1.27.0). Três foram corrigidos antes do lançamento: §26.5.
 - **Backend Android (`PIPES_ANDROID`, milestones A0-A3):** terceiro eixo de plataforma, só
   `ptTcp`/`ptTls` (`ptLocal` é recusado com mensagem própria). `Pipes.Transport.Android.pas`
   usa as units `Posix.*` da RTL do Delphi + `poll()` declarado localmente, e a interrupção
