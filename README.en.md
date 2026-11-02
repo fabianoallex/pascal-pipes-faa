@@ -720,11 +720,11 @@ misreading bytes — update both sides.
 
 ## Installation
 
-Current version: **0.3.0**. While it is 0.x the API may change between minor versions; every
+Current version: **0.4.0**. While it is 0.x the API may change between minor versions; every
 change is listed in the [changelog](CHANGELOG.md) (in Portuguese).
 
 **Compile-time dependency: [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa)
-1.0.0 or later.** Atomics, monotonic ticks, the monitor and the thread pool (`PcPool`) come
+1.27.0 or later.** Atomics, monotonic ticks, the monitor and the thread pool (`PcPool`) come
 from it, shared with the other `*-faa` libraries (amqp, redis, db). The **application**
 provides one copy of it:
 
@@ -738,8 +738,8 @@ requirements (or use `lazbuild --add-package-link` on both `.lpk`).
 This repository has pascal-common-faa as a submodule in `external/pascal-common-faa`, **only**
 for its own tests and samples: don't build an application against that copy if it also uses
 another `*-faa` library (that would be two copies of the same unit). A pascal-common-faa that
-is too old stops the build with "pascal-named-pipes-faa precisa da pascal-common-faa 1.0.0 ou
-mais nova".
+is too old stops the build with "pascal-named-pipes-faa precisa da pascal-common-faa 1.27.0 ou
+mais nova (transporte TCP/TLS)".
 
 **Runtime dependencies:** none for `ptLocal` and `ptTcp`. For `ptTls` it depends on the
 backend:

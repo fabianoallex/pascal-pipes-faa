@@ -6,6 +6,8 @@ uma versão minor pode mudar a API; toda mudança desse tipo aparece aqui.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-01
+
 O transporte TCP/TLS passou para a pascal-common-faa (`PascalCommon.Transport*`, passo 2 da
 "Migration order" do `docs/transport-design.md` de lá). Exige a pascal-common-faa
 1.27.0 (lançada em 2026-11-01, depois que pipes e redis passaram sobre ela: decisão T8 de lá);
@@ -205,6 +207,9 @@ Domain Socket no Linux), `ptTcp` e `ptTls` (Schannel ou OpenSSL, mTLS opcional).
 - A documentação dizia que o `Destroy` do pool descartava os itens pendentes; ele sempre
   executou a fila inteira antes de retornar.
 
-[Unreleased]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/fabianoallex/pascal-pipes-faa/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fabianoallex/pascal-pipes-faa/releases/tag/v0.1.0

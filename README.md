@@ -727,11 +727,11 @@ errados — atualize os dois lados.
 
 ## Instalação
 
-Versão atual: **0.3.0**. Enquanto for 0.x, a API pode mudar entre versões minor; toda mudança
+Versão atual: **0.4.0**. Enquanto for 0.x, a API pode mudar entre versões minor; toda mudança
 está no [CHANGELOG](CHANGELOG.md).
 
 **Dependência de compilação: [pascal-common-faa](https://github.com/fabianoallex/pascal-common-faa)
-1.0.0 ou mais nova.** Atomics, ticks monotônicos, o monitor e o pool de threads (`PcPool`)
+1.27.0 ou mais nova.** Atomics, ticks monotônicos, o monitor e o pool de threads (`PcPool`)
 vêm dela, compartilhados com as outras libs `*-faa` (amqp, redis, db). A **aplicação**
 fornece uma cópia só:
 
@@ -745,14 +745,8 @@ requisitos do seu projeto (ou use `lazbuild --add-package-link` nos dois `.lpk`)
 Este repositório tem a pascal-common-faa como submódulo em `external/pascal-common-faa`,
 **só** para os próprios testes e samples: não compile uma aplicação contra essa cópia se ela
 também usa outra lib `*-faa` (seriam duas cópias da mesma unit). Uma pascal-common-faa velha
-demais para o build com "pascal-named-pipes-faa precisa da pascal-common-faa 1.0.0 ou mais
-nova".
-
-> **Desenvolvimento (após a 0.3.0):** o transporte TCP/TLS passou para a pascal-common-faa
-> (`PascalCommon.Transport*`), que ainda não foi lançada com ele: o submódulo aponta para a
-> branch `transport` dela, e a versão continua 1.26.0. Até o lançamento (1.27.0, pela regra
-> T8 do `docs/transport-design.md` de lá) a checagem de versão não tem como exigir essas
-> units; uma common sem elas falha no build com "unit PascalCommon.Transport não encontrada".
+demais para o build com "pascal-named-pipes-faa precisa da pascal-common-faa 1.27.0 ou mais
+nova (transporte TCP/TLS)".
 
 **Dependências de execução:** nenhuma para `ptLocal` e `ptTcp`. Para `ptTls` depende do
 backend:
